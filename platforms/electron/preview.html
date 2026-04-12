@@ -548,17 +548,49 @@ function renderFrame() {
             }
             ctx.stroke();
         } else {
-            // linestrip
-            const v0 = batch.vertices[0];
-            const [sx0, sy0] = worldToScreen(v0[0], v0[1]);
-            ctx.beginPath();
-            ctx.moveTo(sx0, sy0);
-            for (let i = 1; i < batch.vertices.length; i++) {
-                const v = batch.vertices[i];
-                const [sx, sy] = worldToScreen(v[0], v[1]);
-                ctx.lineTo(sx, sy);
+            // linestrip — use breaks array to split into separate entities
+            const breaks = batch.breaks;
+            if (breaks && breaks.length > 0) {
+                // Batch entities into a single path with moveTo breaks for efficiency
+                const margin = (vp.maxX - vp.minX) * 0.5;
+                ctx.beginPath();
+                let hasPath = false;
+                for (let ei = 0; ei < breaks.length; ei++) {
+                    const startIdx = breaks[ei];
+                    const endIdx = (ei + 1 < breaks.length) ? breaks[ei + 1] : batch.vertices.length;
+                    if (endIdx - startIdx < 2) continue;
+
+                    // Quick frustum cull using first and last vertex
+                    const vFirst = batch.vertices[startIdx];
+                    const vLast = batch.vertices[endIdx - 1];
+                    if (vFirst[0] < vp.minX - margin && vLast[0] < vp.minX - margin) continue;
+                    if (vFirst[0] > vp.maxX + margin && vLast[0] > vp.maxX + margin) continue;
+                    if (vFirst[1] < vp.minY - margin && vLast[1] < vp.minY - margin) continue;
+                    if (vFirst[1] > vp.maxY + margin && vLast[1] > vp.maxY + margin) continue;
+
+                    const [sx0, sy0] = worldToScreen(vFirst[0], vFirst[1]);
+                    ctx.moveTo(sx0, sy0);
+                    for (let i = startIdx + 1; i < endIdx; i++) {
+                        const v = batch.vertices[i];
+                        const [sx, sy] = worldToScreen(v[0], v[1]);
+                        ctx.lineTo(sx, sy);
+                    }
+                    hasPath = true;
+                }
+                if (hasPath) ctx.stroke();
+            } else {
+                // No breaks info — legacy: draw as one continuous path
+                const v0 = batch.vertices[0];
+                const [sx0, sy0] = worldToScreen(v0[0], v0[1]);
+                ctx.beginPath();
+                ctx.moveTo(sx0, sy0);
+                for (let i = 1; i < batch.vertices.length; i++) {
+                    const v = batch.vertices[i];
+                    const [sx, sy] = worldToScreen(v[0], v[1]);
+                    ctx.lineTo(sx, sy);
+                }
+                ctx.stroke();
             }
-            ctx.stroke();
         }
     }
 

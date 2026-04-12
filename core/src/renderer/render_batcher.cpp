@@ -42,7 +42,13 @@ void RenderBatcher::begin_frame(const Camera& camera) {
 }
 
 void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph& scene) {
+    submit_entity_impl(entity, scene, Matrix4x4::identity(), 0);
+}
+
+void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
+                                        const Matrix4x4& xform, int depth) {
     if (!entity.is_visible()) return;
+    if (depth > 16) return; // prevent infinite recursion
 
     // Resolve color: if color_override != 256 and != 0, use ACI color;
     // otherwise use the layer color.
@@ -75,6 +81,12 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
     int32_t entity_index = static_cast<int32_t>(entity.header.entity_id);
     uint16_t layer_u16 = static_cast<uint16_t>(entity.header.layer_index);
 
+    // Helper: transform a world point through the current xform
+    auto tx = [&xform](float x, float y) -> std::pair<float, float> {
+        Vec3 p = xform.transform_point({x, y, 0.0f});
+        return {p.x, p.y};
+    };
+
     switch (entity.header.type) {
 
     case EntityType::Line: {
@@ -84,7 +96,7 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        tessellate_line(line->start, line->end, *batch);
+        tessellate_line(line->start, line->end, *batch, xform);
         break;
     }
 
@@ -96,7 +108,8 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        tessellate_circle(circle->center, circle->radius, segments, *batch);
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
+        tessellate_circle(circle->center, circle->radius, segments, *batch, xform);
         break;
     }
 
@@ -110,7 +123,8 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        tessellate_arc(arc->center, arc->radius, arc->start_angle, arc->end_angle, segments, *batch);
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
+        tessellate_arc(arc->center, arc->radius, arc->start_angle, arc->end_angle, segments, *batch, xform);
         break;
     }
 
@@ -122,6 +136,7 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         int32_t count = poly->vertex_count;
         int32_t offset = poly->vertex_offset;
@@ -140,12 +155,12 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
                               ? poly->bulges[static_cast<size_t>(i)] : 0.0f;
 
             if (std::abs(bulge) < 1e-6f) {
-                // Straight segment
-                batch->vertex_data.push_back(p0.x);
-                batch->vertex_data.push_back(p0.y);
+                // Straight segment — transform the point
+                auto [tx0, ty0] = tx(p0.x, p0.y);
+                batch->vertex_data.push_back(tx0);
+                batch->vertex_data.push_back(ty0);
             } else {
-                // Bulge arc: bulge = tan(theta/4), where theta is the sweep angle.
-                // Positive bulge = arc to the left of p0->p1.
+                // Bulge arc: compute center/radius in local space, then transform
                 float theta = 4.0f * std::atan(std::abs(bulge));
                 float dx = p1.x - p0.x;
                 float dy = p1.y - p0.y;
@@ -153,13 +168,10 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
                 if (chord_len < 1e-12f) continue;
 
                 float radius = chord_len / (2.0f * std::sin(theta * 0.5f));
-                // Perpendicular direction from chord midpoint
                 float mx = (p0.x + p1.x) * 0.5f;
                 float my = (p0.y + p1.y) * 0.5f;
-                // Normalized perpendicular to chord direction
                 float nx = -dy / chord_len;
                 float ny = dx / chord_len;
-                // Signed distance from midpoint to center
                 float s = (bulge > 0) ? 1.0f : -1.0f;
                 float dist = radius * std::cos(theta * 0.5f);
                 float cx = mx + s * dist * nx;
@@ -167,7 +179,6 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
 
                 float start_a = std::atan2(p0.y - cy, p0.x - cx);
                 float end_a = std::atan2(p1.y - cy, p1.x - cx);
-                // Ensure sweep direction matches bulge sign
                 if (bulge > 0) {
                     if (end_a <= start_a) end_a += math::TWO_PI;
                 } else {
@@ -179,18 +190,19 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
                                                               ppu * m_tessellation_quality);
                 segs = std::max(segs, 4);
 
-                // Generate arc points, skipping the last if this is not the final segment
-                // (the next segment will start with its own point)
                 int limit = (i < count - 2) ? segs : segs + 1;
                 for (int j = 0; j < limit; ++j) {
                     float t = static_cast<float>(j) / static_cast<float>(segs);
                     float a = start_a + t * (end_a - start_a);
-                    batch->vertex_data.push_back(cx + radius * std::cos(a));
-                    batch->vertex_data.push_back(cy + radius * std::sin(a));
+                    float ax = cx + radius * std::cos(a);
+                    float ay = cy + radius * std::sin(a);
+                    auto [tax, tay] = tx(ax, ay);
+                    batch->vertex_data.push_back(tax);
+                    batch->vertex_data.push_back(tay);
                 }
             }
         }
-        // Add the last vertex if it wasn't added yet (for straight segments)
+        // Add the last vertex if it wasn't added yet
         {
             int32_t last_idx = offset + count - 1;
             if (last_idx >= 0 && static_cast<size_t>(last_idx) < vb.size()) {
@@ -198,8 +210,9 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
                 float last_bulge = (static_cast<size_t>(count - 2) < poly->bulges.size())
                                        ? poly->bulges[static_cast<size_t>(count - 2)] : 0.0f;
                 if (std::abs(last_bulge) < 1e-6f) {
-                    batch->vertex_data.push_back(last_pt.x);
-                    batch->vertex_data.push_back(last_pt.y);
+                    auto [tlx, tly] = tx(last_pt.x, last_pt.y);
+                    batch->vertex_data.push_back(tlx);
+                    batch->vertex_data.push_back(tly);
                 }
             }
         }
@@ -217,7 +230,7 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         const auto& all_entities = scene.entities();
 
         // Build the transform for this insert
-        Matrix4x4 xform = Matrix4x4::affine_2d(
+        Matrix4x4 insert_xform = Matrix4x4::affine_2d(
             ins->x_scale, ins->y_scale, ins->rotation,
             ins->insertion_point.x, ins->insertion_point.y);
 
@@ -226,14 +239,15 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
                 Vec3 offset(
                     static_cast<float>(col) * ins->column_spacing,
                     static_cast<float>(row) * ins->row_spacing, 0.0f);
-                Matrix4x4 block_xform = Matrix4x4::translation_2d(offset.x, offset.y) * xform;
+                Matrix4x4 block_xform = Matrix4x4::translation_2d(offset.x, offset.y) * insert_xform;
+                // Compose: parent xform * block_xform
+                Matrix4x4 final_xform = xform * block_xform;
 
                 for (int32_t ei : block.entity_indices) {
                     if (ei < 0 || static_cast<size_t>(ei) >= all_entities.size()) continue;
                     const auto& child = all_entities[static_cast<size_t>(ei)];
                     if (!child.is_visible()) continue;
-                    // Recursively submit block entities
-                    submit_entity(child, scene);
+                    submit_entity_impl(child, scene, final_xform, depth + 1);
                 }
             }
         }
@@ -249,6 +263,7 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         int32_t count = poly->vertex_count;
         int32_t offset = poly->vertex_offset;
@@ -256,8 +271,9 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
             int32_t idx = offset + i;
             if (idx < 0 || static_cast<size_t>(idx) >= vb.size()) continue;
             Vec3 pt = vb[static_cast<size_t>(idx)];
-            batch->vertex_data.push_back(pt.x);
-            batch->vertex_data.push_back(pt.y);
+            auto [tpx, tpy] = tx(pt.x, pt.y);
+            batch->vertex_data.push_back(tpx);
+            batch->vertex_data.push_back(tpy);
         }
         break;
     }
@@ -267,23 +283,23 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         auto* hatch = std::get_if<9>(&entity.data);
         if (!hatch || !hatch->is_solid || hatch->loops.empty()) break;
 
-        // Find or create a TriangleList batch for filled polygons
         auto* batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
 
-        // For each boundary loop, triangulate using fan triangulation
         for (const auto& loop : hatch->loops) {
             if (loop.vertices.size() < 3) continue;
-            // Fan triangulation: v0-v1-v2, v0-v2-v3, v0-v3-v4, ...
             for (size_t i = 1; i + 1 < loop.vertices.size(); ++i) {
-                batch->vertex_data.push_back(loop.vertices[0].x);
-                batch->vertex_data.push_back(loop.vertices[0].y);
-                batch->vertex_data.push_back(loop.vertices[i].x);
-                batch->vertex_data.push_back(loop.vertices[i].y);
-                batch->vertex_data.push_back(loop.vertices[i + 1].x);
-                batch->vertex_data.push_back(loop.vertices[i + 1].y);
+                auto [x0, y0] = tx(loop.vertices[0].x, loop.vertices[0].y);
+                auto [xi, yi] = tx(loop.vertices[i].x, loop.vertices[i].y);
+                auto [xip, yip] = tx(loop.vertices[i + 1].x, loop.vertices[i + 1].y);
+                batch->vertex_data.push_back(x0);
+                batch->vertex_data.push_back(y0);
+                batch->vertex_data.push_back(xi);
+                batch->vertex_data.push_back(yi);
+                batch->vertex_data.push_back(xip);
+                batch->vertex_data.push_back(yip);
             }
         }
         break;
@@ -299,46 +315,75 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
             static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
 
-        // DXF SOLID vertex order: 1,2,4,3 (not 1,2,3,4)
-        // Triangulate as: v0-v1-v3 and v1-v2-v3
-        if (solid->corner_count == 3) {
-            // Triangle: v0-v1-v2
-            batch->vertex_data.push_back(solid->corners[0].x);
-            batch->vertex_data.push_back(solid->corners[0].y);
-            batch->vertex_data.push_back(solid->corners[1].x);
-            batch->vertex_data.push_back(solid->corners[1].y);
-            batch->vertex_data.push_back(solid->corners[2].x);
-            batch->vertex_data.push_back(solid->corners[2].y);
-        } else {
-            // 4 vertices: DXF order is 1,2,4,3 → triangles v0-v1-v3 and v1-v2-v3
-            batch->vertex_data.push_back(solid->corners[0].x);
-            batch->vertex_data.push_back(solid->corners[0].y);
-            batch->vertex_data.push_back(solid->corners[1].x);
-            batch->vertex_data.push_back(solid->corners[1].y);
-            batch->vertex_data.push_back(solid->corners[3].x);
-            batch->vertex_data.push_back(solid->corners[3].y);
+        auto [x0, y0] = tx(solid->corners[0].x, solid->corners[0].y);
+        auto [x1, y1] = tx(solid->corners[1].x, solid->corners[1].y);
+        auto [x2, y2] = tx(solid->corners[2].x, solid->corners[2].y);
 
-            batch->vertex_data.push_back(solid->corners[1].x);
-            batch->vertex_data.push_back(solid->corners[1].y);
-            batch->vertex_data.push_back(solid->corners[2].x);
-            batch->vertex_data.push_back(solid->corners[2].y);
-            batch->vertex_data.push_back(solid->corners[3].x);
-            batch->vertex_data.push_back(solid->corners[3].y);
+        if (solid->corner_count == 3) {
+            batch->vertex_data.push_back(x0); batch->vertex_data.push_back(y0);
+            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
+            batch->vertex_data.push_back(x2); batch->vertex_data.push_back(y2);
+        } else {
+            auto [x3, y3] = tx(solid->corners[3].x, solid->corners[3].y);
+            // DXF order: 1,2,4,3 → triangles v0-v1-v3 and v1-v2-v3
+            batch->vertex_data.push_back(x0); batch->vertex_data.push_back(y0);
+            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
+            batch->vertex_data.push_back(x3); batch->vertex_data.push_back(y3);
+
+            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
+            batch->vertex_data.push_back(x2); batch->vertex_data.push_back(y2);
+            batch->vertex_data.push_back(x3); batch->vertex_data.push_back(y3);
         }
         break;
     }
 
-    // Ellipse — tessellate as arc
+    // Ellipse — tessellate as circle
     case EntityType::Ellipse: {
         auto* ellipse = std::get_if<12>(&entity.data);
         if (!ellipse) break;
-        // Simplified: treat as circle for now
-        int segments = compute_arc_segments(ellipse->radius);
+
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        tessellate_circle(ellipse->center, ellipse->radius, segments, *batch);
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
+
+        float major_r = ellipse->radius;
+        float minor_r = (ellipse->minor_radius > 0.0f) ? ellipse->minor_radius : major_r;
+        float rotation = ellipse->rotation;
+        float start_a = ellipse->start_angle;
+        float end_a = ellipse->end_angle;
+
+        // Full ellipse if start==end==0
+        bool is_full = (start_a == 0.0f && end_a == 0.0f) ||
+                       std::abs(end_a - start_a - 2.0f * math::PI) < 0.01f;
+        if (is_full) {
+            start_a = 0.0f;
+            end_a = math::TWO_PI;
+        }
+
+        int segments = compute_arc_segments(std::max(major_r, minor_r));
+        float span = end_a - start_a;
+
+        float cos_r = std::cos(rotation);
+        float sin_r = std::sin(rotation);
+        float cx = ellipse->center.x;
+        float cy = ellipse->center.y;
+
+        for (int i = 0; i <= segments; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(segments);
+            float angle = start_a + t * span;
+            // Parametric ellipse point (before rotation)
+            float px = major_r * std::cos(angle);
+            float py = minor_r * std::sin(angle);
+            // Apply rotation and translate
+            float x = px * cos_r - py * sin_r + cx;
+            float y = px * sin_r + py * cos_r + cy;
+            // Apply entity transform (INSERT etc.)
+            auto [tx_x, tx_y] = tx(x, y);
+            batch->vertex_data.push_back(tx_x);
+            batch->vertex_data.push_back(tx_y);
+        }
         break;
     }
 
@@ -351,12 +396,13 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
-        // Use fit points if available, otherwise control points
         const auto& pts = spline->fit_points.empty() ? spline->control_points : spline->fit_points;
         for (const auto& pt : pts) {
-            batch->vertex_data.push_back(pt.x);
-            batch->vertex_data.push_back(pt.y);
+            auto [tpx, tpy] = tx(pt.x, pt.y);
+            batch->vertex_data.push_back(tpx);
+            batch->vertex_data.push_back(tpy);
         }
         break;
     }
@@ -368,20 +414,20 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         if (!text) text = std::get_if<7>(&entity.data);
         if (!text || text->height <= 0.0f) break;
 
-        // Draw a placeholder rectangle showing the text bounds
-        float hw = text->height * text->text.size() * text->width_factor * 0.3f; // rough width estimate
+        float hw = text->height * text->text.size() * text->width_factor * 0.3f;
         float hh = text->height;
         float x = text->insertion_point.x;
         float y = text->insertion_point.y;
 
-        // Simple axis-aligned rectangle
+        auto [rx0, ry0] = tx(x, y);
+        auto [rx1, ry1] = tx(x + hw, y + hh);
+
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
         // Four edges of the text box
-        float x0 = x, y0 = y, x1 = x + hw, y1 = y + hh;
-        float verts[] = { x0,y0, x1,y0,  x1,y0, x1,y1,  x1,y1, x0,y1,  x0,y1, x0,y0 };
+        float verts[] = { rx0,ry0, rx1,ry0,  rx1,ry0, rx1,ry1,  rx1,ry1, rx0,ry1,  rx0,ry1, rx0,ry0 };
         for (float v : verts) batch->vertex_data.push_back(v);
         break;
     }
@@ -391,15 +437,16 @@ void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph&
         auto* pt = std::get_if<11>(&entity.data);
         if (!pt) break;
 
+        auto [px, py] = tx(pt->x, pt->y);
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        float s = 2.0f; // cross half-size
-        batch->vertex_data.push_back(pt->x - s); batch->vertex_data.push_back(pt->y);
-        batch->vertex_data.push_back(pt->x + s); batch->vertex_data.push_back(pt->y);
-        batch->vertex_data.push_back(pt->x); batch->vertex_data.push_back(pt->y - s);
-        batch->vertex_data.push_back(pt->x); batch->vertex_data.push_back(pt->y + s);
+        float s = 2.0f;
+        batch->vertex_data.push_back(px - s); batch->vertex_data.push_back(py);
+        batch->vertex_data.push_back(px + s); batch->vertex_data.push_back(py);
+        batch->vertex_data.push_back(px); batch->vertex_data.push_back(py - s);
+        batch->vertex_data.push_back(px); batch->vertex_data.push_back(py + s);
         break;
     }
 
@@ -420,35 +467,42 @@ void RenderBatcher::end_frame() {
               });
 }
 
-void RenderBatcher::tessellate_line(const Vec3& p0, const Vec3& p1, RenderBatch& batch) {
-    batch.vertex_data.push_back(p0.x);
-    batch.vertex_data.push_back(p0.y);
-    batch.vertex_data.push_back(p1.x);
-    batch.vertex_data.push_back(p1.y);
+void RenderBatcher::tessellate_line(const Vec3& p0, const Vec3& p1,
+                                     RenderBatch& batch, const Matrix4x4& xform) {
+    Vec3 tp0 = xform.transform_point(p0);
+    Vec3 tp1 = xform.transform_point(p1);
+    batch.vertex_data.push_back(tp0.x);
+    batch.vertex_data.push_back(tp0.y);
+    batch.vertex_data.push_back(tp1.x);
+    batch.vertex_data.push_back(tp1.y);
 }
 
 void RenderBatcher::tessellate_circle(const Vec3& center, float radius,
-                                       int segments, RenderBatch& batch) {
+                                       int segments, RenderBatch& batch,
+                                       const Matrix4x4& xform) {
     for (int i = 0; i <= segments; ++i) {
         float angle = static_cast<float>(i) / static_cast<float>(segments) * math::TWO_PI;
         float x = center.x + radius * std::cos(angle);
         float y = center.y + radius * std::sin(angle);
-        batch.vertex_data.push_back(x);
-        batch.vertex_data.push_back(y);
+        Vec3 tp = xform.transform_point({x, y, 0.0f});
+        batch.vertex_data.push_back(tp.x);
+        batch.vertex_data.push_back(tp.y);
     }
 }
 
 void RenderBatcher::tessellate_arc(const Vec3& center, float radius,
                                     float start_angle, float end_angle,
-                                    int segments, RenderBatch& batch) {
+                                    int segments, RenderBatch& batch,
+                                    const Matrix4x4& xform) {
     float arc_span = end_angle - start_angle;
     for (int i = 0; i <= segments; ++i) {
         float t = static_cast<float>(i) / static_cast<float>(segments);
         float angle = start_angle + t * arc_span;
         float x = center.x + radius * std::cos(angle);
         float y = center.y + radius * std::sin(angle);
-        batch.vertex_data.push_back(x);
-        batch.vertex_data.push_back(y);
+        Vec3 tp = xform.transform_point({x, y, 0.0f});
+        batch.vertex_data.push_back(tp.x);
+        batch.vertex_data.push_back(tp.y);
     }
 }
 

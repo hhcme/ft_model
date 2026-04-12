@@ -58,8 +58,13 @@ struct LineEntity {
 
 struct CircleEntity {
     Vec3 center;
-    float radius = 0.0f;
+    float radius = 0.0f;           // major radius for ellipse
     Vec3 normal = Vec3::unit_z();
+    // Ellipse extensions (ignored for pure circles):
+    float minor_radius = 0.0f;     // 0 means circle (minor == major)
+    float rotation = 0.0f;         // major axis rotation angle (radians)
+    float start_angle = 0.0f;      // parametric start angle (radians, 0 for full)
+    float end_angle = 0.0f;        // parametric end angle (radians, 2*pi for full)
 };
 
 struct ArcEntity {

@@ -17,6 +17,7 @@ private:
     void parse_circle(DxfTokenizer& tokenizer, SceneGraph& scene);
     void parse_arc(DxfTokenizer& tokenizer, SceneGraph& scene);
     void parse_lwpolyline(DxfTokenizer& tokenizer, SceneGraph& scene);
+    void parse_polyline(DxfTokenizer& tokenizer, SceneGraph& scene);
     void parse_insert(DxfTokenizer& tokenizer, SceneGraph& scene);
 
     // Phase 2: stub readers (skip to next entity)

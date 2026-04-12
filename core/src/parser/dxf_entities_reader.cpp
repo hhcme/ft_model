@@ -75,7 +75,7 @@ Result DxfEntitiesReader::read(DxfTokenizer& tokenizer, SceneGraph& scene) {
         else if (entity_type == "ELLIPSE")      parse_ellipse(tokenizer, scene);
         else if (entity_type == "POINT")        parse_point(tokenizer, scene);
         else if (entity_type == "SOLID")        parse_solid(tokenizer, scene);
-        else if (entity_type == "POLYLINE")     skip_unknown_entity(tokenizer);
+        else if (entity_type == "POLYLINE")     parse_polyline(tokenizer, scene);
         else                                    skip_unknown_entity(tokenizer);
     }
 }
@@ -239,6 +239,85 @@ void DxfEntitiesReader::parse_lwpolyline(DxfTokenizer& tokenizer, SceneGraph& sc
     scene.add_polyline(make_entity(hdr, EntityData{std::in_place_index<4>, std::move(data)}));
 }
 
+void DxfEntitiesReader::parse_polyline(DxfTokenizer& tokenizer, SceneGraph& scene) {
+    // Classic POLYLINE: header followed by VERTEX sub-entities and SEQEND.
+    // Structure:
+    //   POLYLINE  (66=1 means vertices follow, 70=flags)
+    //     VERTEX  (10/20/30=position, 42=bulge)
+    //     VERTEX  ...
+    //   SEQEND
+    PolylineEntity data{};
+    EntityHeader hdr{};
+    hdr.type = EntityType::Polyline;
+    hdr.is_visible = true;
+    hdr.dimensionality = 0x02;
+    std::string layer_name;
+    std::vector<Vec3> vertices;
+    std::vector<float> bulges;
+
+    // Read POLYLINE header
+    while (true) {
+        auto next = tokenizer.next();
+        if (!next.ok() || !next.value) break;
+        const auto& gv = tokenizer.current();
+        if (gv.code == 0) break;
+        switch (gv.code) {
+            case 70: data.is_closed = (gv.as_int() & 1) != 0; break;
+            case 8:  layer_name = gv.value; break;
+            default: read_entity_header_field(hdr, gv); break;
+        }
+    }
+
+    // Read VERTEX sub-entities until SEQEND or non-VERTEX
+    while (true) {
+        const auto& gv = tokenizer.current();
+        if (gv.code != 0) break;
+
+        if (gv.value == "VERTEX") {
+            Vec3 vert{};
+            float bulge = 0.0f;
+            while (true) {
+                auto next = tokenizer.next();
+                if (!next.ok() || !next.value) break;
+                const auto& vgv = tokenizer.current();
+                if (vgv.code == 0) break;
+                switch (vgv.code) {
+                    case 10: vert.x = vgv.as_float(); break;
+                    case 20: vert.y = vgv.as_float(); break;
+                    case 30: vert.z = vgv.as_float(); break;
+                    case 42: bulge = vgv.as_float(); break;
+                    default: break;
+                }
+            }
+            vertices.push_back(vert);
+            bulges.push_back(bulge);
+        } else if (gv.value == "SEQEND") {
+            // Consume SEQEND and its trailing group codes
+            while (true) {
+                auto next = tokenizer.next();
+                if (!next.ok() || !next.value) break;
+                if (tokenizer.current().code == 0) break;
+            }
+            break;
+        } else {
+            // Not VERTEX and not SEQEND — next entity, stop
+            break;
+        }
+    }
+
+    data.vertex_count = static_cast<int32_t>(vertices.size());
+    data.bulges = std::move(bulges);
+    hdr.bounds = Bounds3d::empty();
+    for (const auto& v : vertices) hdr.bounds.expand(v);
+    if (!layer_name.empty()) hdr.layer_index = scene.find_or_add_layer(layer_name);
+
+    if (data.vertex_count >= 2) {
+        int32_t offset = scene.add_polyline_vertices(vertices.data(), vertices.size());
+        data.vertex_offset = offset;
+        scene.add_polyline(make_entity(hdr, EntityData{std::in_place_index<3>, std::move(data)}));
+    }
+}
+
 void DxfEntitiesReader::parse_insert(DxfTokenizer& tokenizer, SceneGraph& scene) {
     InsertEntity data{};
     EntityHeader hdr{};
@@ -367,13 +446,13 @@ void DxfEntitiesReader::parse_mtext(DxfTokenizer& tokenizer, SceneGraph& scene) 
 
 void DxfEntitiesReader::parse_ellipse(DxfTokenizer& tokenizer, SceneGraph& scene) {
     CircleEntity data{};
-    data.normal = Vec3::unit_z();
     EntityHeader hdr{};
     hdr.type = EntityType::Ellipse;
     hdr.is_visible = true;
     hdr.dimensionality = 0x02;
     std::string layer_name;
     float major_x = 0.0f, major_y = 0.0f;
+    float ratio = 1.0f;
 
     while (true) {
         auto next = tokenizer.next();
@@ -386,24 +465,31 @@ void DxfEntitiesReader::parse_ellipse(DxfTokenizer& tokenizer, SceneGraph& scene
             case 30: data.center.z = gv.as_float(); break;
             case 11: major_x       = gv.as_float(); break;
             case 21: major_y       = gv.as_float(); break;
-            case 40: /* minor/major ratio — stored for future use */ break;
-            case 41: /* start angle (radians) — ignored for now */ break;
-            case 42: /* end angle (radians) — ignored for now */ break;
+            case 40: ratio         = gv.as_float(); break; // minor/major ratio
+            case 41: data.start_angle = gv.as_float(); break; // start angle (radians)
+            case 42: data.end_angle   = gv.as_float(); break; // end angle (radians)
             case 8:  layer_name    = gv.value; break;
             default: read_entity_header_field(hdr, gv); break;
         }
     }
 
-    // Major axis length = distance from center to endpoint
     float major_len = std::sqrt(major_x * major_x + major_y * major_y);
     data.radius = major_len;
-    // Store major axis direction in normal field for future ellipse rendering
-    data.normal = Vec3{major_x, major_y, 0.0f};
+    data.minor_radius = major_len * ratio;
+    data.rotation = std::atan2(major_y, major_x); // major axis angle
 
-    float r = data.radius;
+    // Bounds: approximate using axis-aligned bounding box of rotated ellipse
+    float cos_r = std::cos(data.rotation);
+    float sin_r = std::sin(data.rotation);
+    float a = data.radius;
+    float b = data.minor_radius;
+    // AABB half-extents of a rotated ellipse
+    float hw = std::sqrt(a * a * cos_r * cos_r + b * b * sin_r * sin_r);
+    float hh = std::sqrt(a * a * sin_r * sin_r + b * b * cos_r * cos_r);
+
     hdr.bounds = Bounds3d{
-        {data.center.x - r, data.center.y - r, data.center.z},
-        {data.center.x + r, data.center.y + r, data.center.z}};
+        {data.center.x - hw, data.center.y - hh, data.center.z},
+        {data.center.x + hw, data.center.y + hh, data.center.z}};
     if (!layer_name.empty()) hdr.layer_index = scene.find_or_add_layer(layer_name);
     scene.add_entity(make_entity(hdr, EntityData{std::in_place_index<12>, std::move(data)}));
 }
@@ -575,16 +661,22 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
     std::string layer_name;
 
     int32_t path_count = 0;
-    int32_t pattern_type = 0;  // 1 = solid
-    // State machine for nested boundary data
-    enum class ParseState { Header, Paths, InPath, InEdge };
-    ParseState state = ParseState::Header;
+    bool is_solid_fill = false;
 
+    // Current loop being built
     HatchEntity::BoundaryLoop current_loop;
     int32_t current_path_type = 0;
-    int32_t edges_remaining = 0;
-    bool collecting_vertices = false;
+    bool collecting_polyline_vertices = false;
     Vec3 current_vertex{};
+
+    // Edge parsing state
+    int32_t edges_remaining = 0;
+    int32_t current_edge_type = 0;
+    // Accumulators for edge data
+    float edge_x1 = 0, edge_y1 = 0, edge_x2 = 0, edge_y2 = 0; // line edge
+    float edge_cx = 0, edge_cy = 0, edge_radius = 0;            // arc edge
+    float edge_start_angle = 0, edge_end_angle = 0;
+    int32_t edge_ccw = 1;
 
     auto finish_loop = [&]() {
         if (!current_loop.vertices.empty()) {
@@ -592,8 +684,41 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
         }
         current_loop = HatchEntity::BoundaryLoop{};
         current_path_type = 0;
+        collecting_polyline_vertices = false;
         edges_remaining = 0;
-        collecting_vertices = false;
+    };
+
+    auto tessellate_arc_edge = [&](float cx, float cy, float radius,
+                                   float start_a, float end_a, bool ccw) {
+        // Tessellate arc into line segments
+        float span = end_a - start_a;
+        if (ccw) {
+            if (span < 0) span += math::TWO_PI;
+        } else {
+            if (span > 0) span -= math::TWO_PI;
+        }
+        int segs = std::max(4, static_cast<int>(std::abs(span) * radius / 5.0f));
+        segs = std::min(segs, 64);
+        for (int i = 0; i <= segs; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(segs);
+            float a = start_a + t * span;
+            float x = cx + radius * std::cos(a);
+            float y = cy + radius * std::sin(a);
+            current_loop.vertices.push_back({x, y, 0.0f});
+        }
+    };
+
+    auto flush_edge = [&]() {
+        if (current_edge_type == 1) {
+            // Line edge: add start and end points
+            current_loop.vertices.push_back({edge_x1, edge_y1, 0.0f});
+            current_loop.vertices.push_back({edge_x2, edge_y2, 0.0f});
+        } else if (current_edge_type == 2) {
+            // Arc edge: tessellate
+            tessellate_arc_edge(edge_cx, edge_cy, edge_radius,
+                                edge_start_angle, edge_end_angle, edge_ccw != 0);
+        }
+        current_edge_type = 0;
     };
 
     while (true) {
@@ -603,67 +728,120 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
         if (gv.code == 0) break;
 
         switch (gv.code) {
-            // Layer
             case 8:  layer_name = gv.value; break;
 
-            // Elevation point (HATCH origin)
-            case 10:
-                if (collecting_vertices) {
-                    // Flush previous vertex if pending
-                    current_vertex.y = 0.0f; // reset y in case it wasn't set
-                    current_vertex.x = gv.as_float();
-                }
-                break;
-            case 20:
-                if (collecting_vertices) {
-                    current_vertex.y = gv.as_float();
-                    current_loop.vertices.push_back(current_vertex);
-                }
-                break;
-            case 30:
-                if (collecting_vertices) {
-                    current_vertex.z = gv.as_float();
-                    if (!current_loop.vertices.empty()) {
-                        current_loop.vertices.back().z = current_vertex.z;
-                    }
-                }
+            // Hatch solid fill flag (1=solid, 0=pattern)
+            case 60: /* boundary annotation — skip */ break;
+
+            // Hatch pattern type: 0=user, 1=predefined, 2=custom
+            case 75: break;
+
+            // Solid fill flag (group code 70 for HATCH): 1 = solid, 0 = patterned
+            case 71:
+                is_solid_fill = (gv.as_int() == 1);
                 break;
 
-            // Bulge (for polyline vertices with arcs)
-            case 42:
-                // Stored on BoundaryLoop if needed later; ignored for solid fill
-                break;
-
-            // Hatch style (0=normal, 1=outermost, 2=ignore)
-            case 75: /* hatch style — stored for future use */ break;
-
-            // Hatch pattern type (0=user-defined, 1=predefined, 2=custom)
+            // Pattern type (0=user, 1=predefined, 2=custom)
             case 76:
-                pattern_type = gv.as_int();
+                if (gv.as_int() == 1) is_solid_fill = true;
+                break;
+
+            // Pattern name
+            case 2:
+                data.pattern_name = gv.value;
+                break;
+
+            // Pattern scale
+            case 41:
+                data.pattern_scale = gv.as_float();
+                break;
+
+            // Pattern angle
+            case 52:
+                data.pattern_angle = gv.as_float();
                 break;
 
             // Number of boundary paths (loops)
             case 91:
                 path_count = gv.as_int();
-                state = ParseState::Paths;
                 break;
 
-            // Path type flag
+            // Path type flag — start of a new boundary loop
             case 92:
-                finish_loop();  // finalize any previous loop
+                flush_edge();      // flush any pending edge
+                finish_loop();     // finalize any previous loop
                 current_path_type = gv.as_int();
-                // bit 2 (0x02) = polyline boundary
-                collecting_vertices = (current_path_type & 2) != 0;
-                state = ParseState::InPath;
+                // bit 2 (0x04) = polyline, bit 0 (0x01) = edge-defined
+                collecting_polyline_vertices = (current_path_type & 0x04) != 0;
                 break;
 
-            // Number of edges in this boundary path
+            // Number of edges for edge-defined path
             case 93:
                 edges_remaining = gv.as_int();
                 break;
 
-            // Source boundary object references (group 97, 330, etc.) — skip
-            case 97:  /* number of source boundary objects */ break;
+            // Edge type (1=line, 2=arc, 3=ellipse arc, 4=spline)
+            case 72:
+                flush_edge(); // flush previous edge if any
+                current_edge_type = gv.as_int();
+                break;
+
+            // LINE edge: start point
+            case 10:
+                if (collecting_polyline_vertices) {
+                    current_vertex = {};
+                    current_vertex.x = gv.as_float();
+                } else if (current_edge_type == 1) {
+                    edge_x1 = gv.as_float();
+                } else if (current_edge_type == 2) {
+                    edge_cx = gv.as_float();
+                }
+                break;
+            case 20:
+                if (collecting_polyline_vertices) {
+                    current_vertex.y = gv.as_float();
+                    current_loop.vertices.push_back(current_vertex);
+                } else if (current_edge_type == 1) {
+                    edge_y1 = gv.as_float();
+                } else if (current_edge_type == 2) {
+                    edge_cy = gv.as_float();
+                }
+                break;
+
+            // LINE edge: end point (group codes 11/21)
+            case 11:
+                if (current_edge_type == 1) edge_x2 = gv.as_float();
+                break;
+            case 21:
+                if (current_edge_type == 1) edge_y2 = gv.as_float();
+                break;
+
+            // ARC edge: radius
+            case 40:
+                if (current_edge_type == 2) edge_radius = gv.as_float();
+                break;
+
+            // ARC edge: start angle (degrees)
+            case 50:
+                if (current_edge_type == 2) edge_start_angle = gv.as_float() * math::DEG_TO_RAD;
+                break;
+
+            // ARC edge: end angle (degrees)
+            case 51:
+                if (current_edge_type == 2) edge_end_angle = gv.as_float() * math::DEG_TO_RAD;
+                break;
+
+            // ARC edge: CCW flag
+            case 73:
+                if (current_edge_type == 2) edge_ccw = gv.as_int();
+                break;
+
+            // Source boundary object references — skip
+            case 97:  break;
+            case 330: break;
+
+            // Bulge (for polyline vertices with arcs)
+            case 42: break;
 
             default:
                 read_entity_header_field(hdr, gv);
@@ -671,16 +849,13 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
         }
     }
 
-    // Flush the last loop
+    // Flush any remaining edge and loop
+    flush_edge();
     finish_loop();
 
-    // Only create entity for solid fill hatches (pattern type 1 = predefined solid)
-    if (pattern_type != 1 || data.loops.empty()) {
-        // Non-solid or empty hatch — skip. The tokens have already been consumed.
-        return;
-    }
+    if (data.loops.empty()) return;
 
-    data.is_solid = true;
+    data.is_solid = true; // Render all hatch boundaries as solid fill for visual preview
 
     // Compute bounds from all loop vertices
     hdr.bounds = Bounds3d::empty();

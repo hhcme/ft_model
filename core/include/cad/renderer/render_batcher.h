@@ -51,6 +51,9 @@ struct RenderBatch {
     void* pipeline = nullptr; // GfxPipeline*, void* to avoid full include
     std::vector<float> vertex_data;
     std::vector<uint32_t> index_data;
+    // For LineStrip topology: records the vertex index (into vertex_data/2)
+    // where each entity starts, so the renderer can break the path.
+    std::vector<uint32_t> entity_starts;
     Matrix4x4 transform_matrix;
     LinePattern line_pattern;
     Color color;
@@ -75,11 +78,18 @@ public:
     std::vector<RenderBatch>& batches() { return m_batches; }
 
 private:
-    // Tessellation helpers
-    void tessellate_line(const Vec3& p0, const Vec3& p1, RenderBatch& batch);
-    void tessellate_circle(const Vec3& center, float radius, int segments, RenderBatch& batch);
+    // Internal submit with optional transform (for INSERT block entities)
+    void submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
+                            const Matrix4x4& xform, int depth);
+
+    // Tessellation helpers — transform applied to output vertices
+    void tessellate_line(const Vec3& p0, const Vec3& p1, RenderBatch& batch,
+                         const Matrix4x4& xform);
+    void tessellate_circle(const Vec3& center, float radius, int segments,
+                           RenderBatch& batch, const Matrix4x4& xform);
     void tessellate_arc(const Vec3& center, float radius, float start_angle,
-                        float end_angle, int segments, RenderBatch& batch);
+                        float end_angle, int segments, RenderBatch& batch,
+                        const Matrix4x4& xform);
 
     float m_tessellation_quality;
     std::vector<RenderBatch> m_batches;

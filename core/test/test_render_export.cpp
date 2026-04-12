@@ -15,6 +15,7 @@
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace cad;
@@ -61,6 +62,16 @@ int main(int argc, char** argv) {
     auto& entities = scene.entities();
     printf("Parsed %zu entities\n", entities.size());
 
+    // Build set of entity indices that belong to block definitions.
+    // These should only be rendered through INSERT references, not directly.
+    std::unordered_set<int32_t> block_entity_indices;
+    for (const auto& block : scene.blocks()) {
+        for (int32_t ei : block.entity_indices) {
+            block_entity_indices.insert(ei);
+        }
+    }
+    printf("Block definition entities: %zu\n", block_entity_indices.size());
+
     // Setup camera to fit the scene
     Camera camera;
     auto bounds = scene.total_bounds();
@@ -73,8 +84,11 @@ int main(int argc, char** argv) {
     RenderBatcher batcher;
     batcher.begin_frame(camera);
 
-    for (auto& entity : entities) {
-        batcher.submit_entity(entity, scene);
+    for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
+        // Skip entities that belong to block definitions — they are rendered
+        // through INSERT entity references with proper transforms.
+        if (block_entity_indices.count(i)) continue;
+        batcher.submit_entity(entities[i], scene);
     }
 
     batcher.end_frame();
@@ -149,6 +163,15 @@ int main(int argc, char** argv) {
         out << "\"color\": [" << (int)batch.color.r << "," << (int)batch.color.g << "," << (int)batch.color.b << "], ";
         out << "\"layerIndex\": " << layer_idx << ", ";
         out << "\"layerName\": \"" << escape_json(layer_name_out) << "\", ";
+        // Export entity break points for linestrip topology
+        if (batch.topology == PrimitiveTopology::LineStrip && !batch.entity_starts.empty()) {
+            out << "\"breaks\": [";
+            for (size_t ei = 0; ei < batch.entity_starts.size(); ++ei) {
+                if (ei > 0) out << ",";
+                out << batch.entity_starts[ei];
+            }
+            out << "], ";
+        }
         out << "\"vertices\": [";
 
         for (int i = 0; i < vert_count; ++i) {
