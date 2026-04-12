@@ -608,6 +608,13 @@ function renderFrame() {
             // Skip tiny text (less than 3 pixels)
             if (screenHeight < 3) continue;
 
+            // Strip MTEXT formatting codes: \P (newline), {\\...}, etc.
+            let cleanText = txt.text;
+            cleanText = cleanText.replace(/\\P/g, '\n');
+            cleanText = cleanText.replace(/\{\\[^}]*\}/g, '');
+            cleanText = cleanText.replace(/[{}]/g, '');
+            if (!cleanText) continue;
+
             const [r, g, b] = txt.color;
             let drawR = r, drawG = g, drawB = b;
             const brightness = (r + g + b) / 3;
@@ -627,13 +634,13 @@ function renderFrame() {
                 // Negate rotation because screen Y is flipped
                 ctx.rotate(-txt.rotation);
                 ctx.scale(txt.widthFactor || 1, 1);
-                ctx.fillText(txt.text, 0, 0);
+                ctx.fillText(cleanText, 0, 0);
                 ctx.restore();
             } else {
                 ctx.save();
                 ctx.translate(sx, sy);
                 ctx.scale(txt.widthFactor || 1, 1);
-                ctx.fillText(txt.text, 0, 0);
+                ctx.fillText(cleanText, 0, 0);
                 ctx.restore();
             }
         }
