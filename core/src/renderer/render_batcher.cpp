@@ -239,9 +239,10 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                 Vec3 offset(
                     static_cast<float>(col) * ins->column_spacing,
                     static_cast<float>(row) * ins->row_spacing, 0.0f);
-                Matrix4x4 block_xform = Matrix4x4::translation_2d(offset.x, offset.y) * insert_xform;
-                // Compose: parent xform * block_xform
-                Matrix4x4 final_xform = xform * block_xform;
+                // Row-vector convention: apply insert_xform first, then array offset
+                Matrix4x4 block_xform = insert_xform * Matrix4x4::translation_2d(offset.x, offset.y);
+                // Row-vector convention: child (block) first, then parent
+                Matrix4x4 final_xform = block_xform * xform;
 
                 for (int32_t ei : block.entity_indices) {
                     if (ei < 0 || static_cast<size_t>(ei) >= all_entities.size()) continue;
