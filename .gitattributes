@@ -1,0 +1,2 @@
+*.dwg !text !filter !merge !diff
+*.scs !text !filter !merge !diff

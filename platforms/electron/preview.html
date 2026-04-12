@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAD Engine Preview</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+canvas:active { cursor: grabbing; }
+
+/* Toolbar */
+#toolbar {
+    position: absolute; top: 12px; left: 12px; z-index: 10;
+    display: flex; gap: 8px; align-items: center;
+}
+#toolbar button {
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+    color: #fff; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+}
+#toolbar button:hover { background: rgba(255,255,255,0.2); }
+#toolbar input[type="file"] { color: #fff; font-size: 13px; }
+
+/* Layer panel */
+#layerPanel {
+    position: absolute; top: 52px; left: 12px; z-index: 20;
+    width: 280px; max-height: 70vh;
+    background: rgba(18, 18, 35, 0.95);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+#layerPanel.collapsed { height: 38px !important; }
+#layerHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+}
+#layerHeader:hover { background: rgba(255,255,255,0.07); }
+#layerHeader .title { color: #ccc; font-size: 13px; font-weight: 600; }
+#layerHeader .toggle { color: #888; font-size: 11px; transition: transform 0.2s; }
+#layerPanel.collapsed #layerHeader .toggle { transform: rotate(-90deg); }
+#layerBody { display: flex; flex-direction: column; height: calc(100% - 38px); }
+#layerPanel.collapsed #layerBody { display: none; }
+#layerActions {
+    display: flex; gap: 6px; padding: 6px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+#layerActions button {
+    flex: 1;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+    color: #bbb; padding: 4px 0; border-radius: 4px; cursor: pointer; font-size: 11px;
+    transition: background 0.15s;
+}
+#layerActions button:hover { background: rgba(255,255,255,0.15); color: #fff; }
+#layerSearch {
+    margin: 6px 10px; padding: 5px 8px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; color: #ccc; font-size: 12px; outline: none;
+    width: calc(100% - 20px);
+}
+#layerSearch::placeholder { color: #666; }
+#layerSearch:focus { border-color: rgba(100,140,255,0.5); }
+#layerList {
+    flex: 1; overflow-y: auto; padding: 4px 0;
+    max-height: 55vh;
+}
+#layerList::-webkit-scrollbar { width: 6px; }
+#layerList::-webkit-scrollbar-track { background: transparent; }
+#layerList::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+#layerList::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+.layer-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.layer-row:hover { background: rgba(255,255,255,0.06); }
+.layer-row.hidden-layer { opacity: 0.45; }
+.layer-row input[type="checkbox"] {
+    accent-color: #5588ff;
+    width: 14px; height: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.layer-color-swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.2);
+    flex-shrink: 0;
+}
+.layer-name {
+    font-size: 12px; color: #bbb;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1;
+}
+
+/* Status bar */
+#statusBar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+    background: rgba(12, 12, 25, 0.85);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 5px 14px;
+    display: flex; align-items: center; gap: 20px;
+    font-size: 11px; color: rgba(255,255,255,0.5);
+}
+#statusBar .sep { color: rgba(255,255,255,0.15); }
+#statusBar .fps { margin-left: auto; color: #6a6; font-variant-numeric: tabular-nums; }
+
+/* View info (top right) */
+#viewInfo {
+    position: absolute; top: 12px; right: 12px; z-index: 10;
+    color: rgba(255,255,255,0.7); font-size: 12px; text-align: right;
+    background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px;
+    white-space: pre-line;
+}
+
+/* Debug overlay */
+#debugOverlay {
+    position: absolute; bottom: 30px; right: 12px; z-index: 10;
+    color: #f88; font-size: 11px; font-family: monospace;
+    background: rgba(0,0,0,0.6); padding: 8px 10px; border-radius: 6px;
+    display: none; max-width: 350px; white-space: pre-wrap;
+}
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <input type="file" id="fileInput" accept=".json,.dxf" />
+    <button id="fitBtn">Fit View</button>
+    <button id="resetBtn">Reset</button>
+    <button id="layerBtn">Layers</button>
+</div>
+<div id="viewInfo"></div>
+
+<!-- Layer panel -->
+<div id="layerPanel" class="collapsed">
+    <div id="layerHeader">
+        <span class="title">Layers (<span id="layerCount">0</span>)</span>
+        <span class="toggle">&#9660;</span>
+    </div>
+    <div id="layerBody">
+        <div id="layerActions">
+            <button id="showAllBtn">Show All</button>
+            <button id="hideAllBtn">Hide All</button>
+            <button id="invertBtn">Invert</button>
+        </div>
+        <input type="text" id="layerSearch" placeholder="Filter layers..." />
+        <div id="layerList"></div>
+    </div>
+</div>
+
+<!-- Debug overlay -->
+<div id="debugOverlay"></div>
+
+<!-- Status bar -->
+<div id="statusBar">
+    <span id="statusFile">Open a JSON file exported by render_export</span>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+// ============================================================
+// DOM references
+// ============================================================
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const fileInput = document.getElementById('fileInput');
+const fitBtn = document.getElementById('fitBtn');
+const resetBtn = document.getElementById('resetBtn');
+const layerBtn = document.getElementById('layerBtn');
+const viewInfoEl = document.getElementById('viewInfo');
+const layerPanel = document.getElementById('layerPanel');
+const layerHeader = document.getElementById('layerHeader');
+const layerList = document.getElementById('layerList');
+const layerCountEl = document.getElementById('layerCount');
+const layerSearch = document.getElementById('layerSearch');
+const showAllBtn = document.getElementById('showAllBtn');
+const hideAllBtn = document.getElementById('hideAllBtn');
+const invertBtn = document.getElementById('invertBtn');
+const statusFile = document.getElementById('statusFile');
+const statusBar = document.getElementById('statusBar');
+const debugOverlay = document.getElementById('debugOverlay');
+
+// ============================================================
+// State
+// ============================================================
+let viewCenterX = 0, viewCenterY = 0;
+let viewZoom = 1;
+let drawData = null;
+let fileName = '';
+
+// Layer visibility by layer NAME (not color)
+let layerVisibleMap = new Map(); // name -> boolean
+// Layer metadata by name
+let layerMetaMap = new Map();    // name -> { name, color, frozen, locked }
+
+// Batch bounding box cache for frustum culling
+let batchBounds = [];
+
+// Dirty flag — starts FALSE so initial markDirty() schedules the first frame
+let dirty = false;
+let rafId = null;
+
+// Pan/drag
+let isDragging = false;
+let dragStartX = 0, dragStartY = 0;
+let dragStartCenterX = 0, dragStartCenterY = 0;
+
+// FPS
+let fpsFrameCount = 0;
+let fpsLastTime = performance.now();
+let fpsValue = 0;
+
+// ============================================================
+// Canvas resize
+// ============================================================
+function resizeCanvas() {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    markDirty();
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ============================================================
+// Dirty / render scheduling
+// ============================================================
+function markDirty() {
+    if (!dirty) {
+        dirty = true;
+        rafId = requestAnimationFrame(renderFrame);
+    }
+}
+
+// ============================================================
+// Coordinate transforms
+// ============================================================
+function worldToScreen(wx, wy) {
+    const sx = (wx - viewCenterX) * viewZoom + canvas.width / 2;
+    const sy = -(wy - viewCenterY) * viewZoom + canvas.height / 2;
+    return [sx, sy];
+}
+
+function screenToWorld(sx, sy) {
+    const wx = (sx - canvas.width / 2) / viewZoom + viewCenterX;
+    const wy = -(sy - canvas.height / 2) / viewZoom + viewCenterY;
+    return [wx, wy];
+}
+
+// ============================================================
+// Fit view - find the densest cluster using vertex sampling
+// ============================================================
+function fitView() {
+    if (!drawData || batchBounds.length === 0) return;
+
+    // Collect valid batch entries
+    const validEntries = [];
+    for (let i = 0; i < batchBounds.length; i++) {
+        const bb = batchBounds[i];
+        if (!bb) continue;
+        const batch = drawData.batches[i];
+        if (!batch || !batch.vertices || batch.vertices.length === 0) continue;
+        validEntries.push({ bb, verts: batch.vertices.length, idx: i });
+    }
+    if (validEntries.length === 0) return;
+
+    // Sample vertex positions to find the densest region
+    // Take up to 5000 samples uniformly from all batches
+    let totalVerts = 0;
+    for (const e of validEntries) totalVerts += e.verts;
+
+    const sampleSize = Math.min(totalVerts, 5000);
+    const sampleInterval = Math.max(1, Math.floor(totalVerts / sampleSize));
+
+    const samplesX = [];
+    const samplesY = [];
+
+    let globalIdx = 0;
+    for (const e of validEntries) {
+        const batch = drawData.batches[e.idx];
+        for (let j = 0; j < batch.vertices.length; j++) {
+            if (globalIdx % sampleInterval === 0) {
+                samplesX.push(batch.vertices[j][0]);
+                samplesY.push(batch.vertices[j][1]);
+            }
+            globalIdx++;
+        }
+    }
+
+    if (samplesX.length === 0) return;
+
+    // Sort samples and use median to find the main cluster center
+    const sortedX = [...samplesX].sort((a, b) => a - b);
+    const sortedY = [...samplesY].sort((a, b) => a - b);
+    const n = sortedX.length;
+
+    // Use median as cluster center
+    const medianX = sortedX[Math.floor(n / 2)];
+    const medianY = sortedY[Math.floor(n / 2)];
+
+    // Compute MAD (median absolute deviation) for scale estimation
+    const devX = samplesX.map(x => Math.abs(x - medianX)).sort((a, b) => a - b);
+    const devY = samplesY.map(y => Math.abs(y - medianY)).sort((a, b) => a - b);
+    const madX = devX[Math.floor(n / 2)];
+    const madY = devY[Math.floor(n / 2)];
+
+    // Use 10 * MAD as threshold (captures ~99% of data if normal-ish)
+    const threshX = Math.max(madX * 10, 1);
+    const threshY = Math.max(madY * 10, 1);
+
+    // Compute bounds from samples within threshold
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let clusterCount = 0;
+    for (let i = 0; i < n; i++) {
+        if (Math.abs(samplesX[i] - medianX) > threshX) continue;
+        if (Math.abs(samplesY[i] - medianY) > threshY) continue;
+        if (samplesX[i] < minX) minX = samplesX[i];
+        if (samplesY[i] < minY) minY = samplesY[i];
+        if (samplesX[i] > maxX) maxX = samplesX[i];
+        if (samplesY[i] > maxY) maxY = samplesY[i];
+        clusterCount++;
+    }
+
+    if (!isFinite(minX) || clusterCount < 10) {
+        // Fallback: use IQR bounds
+        const lo = Math.floor(n * 0.05);
+        const hi = Math.floor(n * 0.95);
+        minX = sortedX[lo]; maxX = sortedX[hi];
+        minY = sortedY[lo]; maxY = sortedY[hi];
+    }
+
+    const w = (maxX - minX) || 1;
+    const h = (maxY - minY) || 1;
+    viewCenterX = minX + w / 2;
+    viewCenterY = minY + h / 2;
+    const margin = 0.9;
+    viewZoom = Math.min((canvas.width * margin) / w, (canvas.height * margin) / h);
+
+    console.log('[fitView] Median:', medianX.toFixed(0), medianY.toFixed(0),
+        'MAD:', madX.toFixed(0), madY.toFixed(0),
+        'Bounds:', minX.toFixed(0), minY.toFixed(0), 'to', maxX.toFixed(0), maxY.toFixed(0),
+        'Size:', w.toFixed(0), 'x', h.toFixed(0),
+        'Zoom:', viewZoom.toFixed(6), 'Cluster samples:', clusterCount);
+    markDirty();
+}
+
+// ============================================================
+// Precompute batch bounding boxes
+// ============================================================
+function computeBatchBounds() {
+    batchBounds = [];
+    if (!drawData || !drawData.batches) return;
+    for (const batch of drawData.batches) {
+        if (!batch.vertices || batch.vertices.length === 0) {
+            batchBounds.push(null);
+            continue;
+        }
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const v of batch.vertices) {
+            const x = v[0], y = v[1];
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+        batchBounds.push({ minX, minY, maxX, maxY });
+    }
+}
+
+// ============================================================
+// Viewport bounds in world coords
+// ============================================================
+function getViewportWorldBounds() {
+    const [wx0, wy0] = screenToWorld(0, canvas.height);
+    const [wx1, wy1] = screenToWorld(canvas.width, 0);
+    return { minX: wx0, maxX: wx1, minY: wy0, maxY: wy1 };
+}
+
+// ============================================================
+// Frustum cull test
+// ============================================================
+function isVisibleInViewport(bb, vp) {
+    if (!bb) return false;
+    return !(bb.maxX < vp.minX || bb.minX > vp.maxX ||
+             bb.maxY < vp.minY || bb.minY > vp.maxY);
+}
+
+// ============================================================
+// Grid drawing
+// ============================================================
+function drawGrid() {
+    const worldWidth = canvas.width / viewZoom;
+    const targetScreenPx = 80;
+    const targetWorldSpacing = targetScreenPx / viewZoom;
+
+    const pow = Math.pow(10, Math.floor(Math.log10(Math.max(targetWorldSpacing, 1e-10))));
+    let spacing;
+    if (targetWorldSpacing < 2 * pow) spacing = 2 * pow;
+    else if (targetWorldSpacing < 5 * pow) spacing = 5 * pow;
+    else spacing = 10 * pow;
+
+    const screenSpacing = spacing * viewZoom;
+    if (screenSpacing < 20 || screenSpacing > 300) return;
+
+    const vp = getViewportWorldBounds();
+    const startX = Math.floor(vp.minX / spacing) * spacing;
+    const startY = Math.floor(vp.minY / spacing) * spacing;
+    const endX = Math.ceil(vp.maxX / spacing) * spacing;
+    const endY = Math.ceil(vp.maxY / spacing) * spacing;
+
+    // Limit grid lines to avoid performance issues
+    const maxLines = 200;
+    if ((endX - startX) / spacing > maxLines || (endY - startY) / spacing > maxLines) return;
+
+    const alpha = Math.max(0.03, Math.min(0.12, 0.12 - Math.abs(screenSpacing - 80) / 2000));
+
+    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+
+    for (let wx = startX; wx <= endX; wx += spacing) {
+        const [sx] = worldToScreen(wx, 0);
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, canvas.height);
+    }
+    for (let wy = startY; wy <= endY; wy += spacing) {
+        const [, sy] = worldToScreen(0, wy);
+        ctx.moveTo(0, sy);
+        ctx.lineTo(canvas.width, sy);
+    }
+    ctx.stroke();
+}
+
+// ============================================================
+// Check if a batch's layer is visible
+// ============================================================
+function isBatchLayerVisible(batch) {
+    const name = batch.layerName;
+    if (!name || name === '') {
+        // Batch without layer info - always visible
+        return true;
+    }
+    if (layerVisibleMap.has(name)) {
+        return layerVisibleMap.get(name);
+    }
+    // Unknown layer - visible by default
+    return true;
+}
+
+// ============================================================
+// Render frame
+// ============================================================
+function renderFrame() {
+    dirty = false;
+
+    const dpr = devicePixelRatio;
+    const now = performance.now();
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Background
+    ctx.fillStyle = '#1e1e2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Grid
+    drawGrid();
+
+    if (!drawData || !drawData.batches || drawData.batches.length === 0) {
+        viewInfoEl.textContent = 'No data loaded';
+        updateFps(now);
+        return;
+    }
+
+    const vp = getViewportWorldBounds();
+    let visibleBatches = 0;
+    let drawnVertices = 0;
+    let culledBatches = 0;
+    let hiddenBatches = 0;
+    const totalBatches = drawData.batches.length;
+
+    for (let bi = 0; bi < totalBatches; bi++) {
+        const batch = drawData.batches[bi];
+        if (!batch.vertices || batch.vertices.length === 0) continue;
+
+        // Frustum culling
+        const bb = batchBounds[bi];
+        if (!isVisibleInViewport(bb, vp)) { culledBatches++; continue; }
+
+        // Layer visibility check (by name, not color)
+        if (!isBatchLayerVisible(batch)) { hiddenBatches++; continue; }
+
+        visibleBatches++;
+        drawnVertices += batch.vertices.length;
+
+        const [r, g, b] = batch.color;
+
+        // Skip fully black lines on dark background (they'd be invisible)
+        // Use a minimum brightness threshold
+        const brightness = (r + g + b) / 3;
+        let drawR = r, drawG = g, drawB = b;
+        if (brightness < 30) {
+            // Boost very dark colors so they're visible on dark background
+            drawR = Math.max(r, 60);
+            drawG = Math.max(g, 60);
+            drawB = Math.max(b, 60);
+        }
+
+        ctx.strokeStyle = `rgb(${drawR},${drawG},${drawB})`;
+        ctx.lineWidth = Math.max(1, 1 * dpr);
+
+        if (batch.topology === 'triangles') {
+            // Filled triangles (HATCH, SOLID)
+            ctx.fillStyle = `rgb(${drawR},${drawG},${drawB})`;
+            ctx.beginPath();
+            for (let i = 0; i < batch.vertices.length; i += 3) {
+                const v0 = batch.vertices[i];
+                const v1 = batch.vertices[i + 1];
+                const v2 = batch.vertices[i + 2];
+                const [sx0, sy0] = worldToScreen(v0[0], v0[1]);
+                const [sx1, sy1] = worldToScreen(v1[0], v1[1]);
+                const [sx2, sy2] = worldToScreen(v2[0], v2[1]);
+                ctx.moveTo(sx0, sy0);
+                ctx.lineTo(sx1, sy1);
+                ctx.lineTo(sx2, sy2);
+                ctx.closePath();
+            }
+            ctx.fill();
+        } else if (batch.topology === 'lines') {
+            ctx.beginPath();
+            for (let i = 0; i < batch.vertices.length; i += 2) {
+                const v0 = batch.vertices[i];
+                const v1 = batch.vertices[i + 1];
+                const [sx0, sy0] = worldToScreen(v0[0], v0[1]);
+                const [sx1, sy1] = worldToScreen(v1[0], v1[1]);
+                ctx.moveTo(sx0, sy0);
+                ctx.lineTo(sx1, sy1);
+            }
+            ctx.stroke();
+        } else {
+            // linestrip
+            const v0 = batch.vertices[0];
+            const [sx0, sy0] = worldToScreen(v0[0], v0[1]);
+            ctx.beginPath();
+            ctx.moveTo(sx0, sy0);
+            for (let i = 1; i < batch.vertices.length; i++) {
+                const v = batch.vertices[i];
+                const [sx, sy] = worldToScreen(v[0], v[1]);
+                ctx.lineTo(sx, sy);
+            }
+            ctx.stroke();
+        }
+    }
+
+    // Update view info
+    viewInfoEl.textContent =
+        `Zoom: ${viewZoom.toFixed(4)}x\n` +
+        `Center: (${viewCenterX.toFixed(1)}, ${viewCenterY.toFixed(1)})\n` +
+        `Viewport: [${vp.minX.toFixed(0)}, ${vp.minY.toFixed(0)}] - [${vp.maxX.toFixed(0)}, ${vp.maxY.toFixed(0)}]`;
+
+    // One-time debug log
+    if (!window._renderDebugLogged && visibleBatches > 0) {
+        window._renderDebugLogged = true;
+        console.log('[render] Drawing:', visibleBatches, 'batches,', drawnVertices, 'verts',
+            '| Culled:', culledBatches, 'Hidden:', hiddenBatches,
+            '| Canvas:', canvas.width, 'x', canvas.height);
+        // Log first visible batch screen coords
+        for (let bi2 = 0; bi2 < totalBatches; bi2++) {
+            const b2 = drawData.batches[bi2];
+            if (!b2.vertices || b2.vertices.length < 2) continue;
+            const bb2 = batchBounds[bi2];
+            if (!isVisibleInViewport(bb2, vp)) continue;
+            if (!isBatchLayerVisible(b2)) continue;
+            const sv0 = worldToScreen(b2.vertices[0][0], b2.vertices[0][1]);
+            const sv1 = worldToScreen(b2.vertices[1][0], b2.vertices[1][1]);
+            console.log('[render] First visible batch[' + bi2 + ']:',
+                'layer=' + b2.layerName, 'color=' + b2.color,
+                'screen0=', sv0, 'screen1=', sv1);
+            break;
+        }
+    }
+
+    // Update status bar
+    updateStatusBar(visibleBatches, totalBatches, drawnVertices);
+
+    // FPS
+    updateFps(now);
+}
+
+function updateFps(now) {
+    fpsFrameCount++;
+    if (now - fpsLastTime >= 1000) {
+        fpsValue = Math.round(fpsFrameCount * 1000 / (now - fpsLastTime));
+        fpsFrameCount = 0;
+        fpsLastTime = now;
+    }
+    let fpsSpan = document.getElementById('fpsVal');
+    if (!fpsSpan) {
+        fpsSpan = document.createElement('span');
+        fpsSpan.id = 'fpsVal';
+        fpsSpan.className = 'fps';
+        statusBar.appendChild(fpsSpan);
+    }
+    fpsSpan.textContent = fpsValue + ' FPS';
+}
+
+function updateStatusBar(visibleBatches, totalBatches, drawnVertices) {
+    const ec = drawData ? (drawData.entityCount || 0) : 0;
+    const vc = drawData ? (drawData.totalVertices || 0) : 0;
+    statusFile.textContent = fileName || 'No file loaded';
+
+    // Remove old dynamic spans
+    statusBar.querySelectorAll('.stat-item').forEach(el => el.remove());
+
+    const items = [
+        `${ec.toLocaleString()} entities`,
+        `${vc.toLocaleString()} vertices`,
+        `${visibleBatches}/${totalBatches} batches`,
+    ];
+    const fpsEl = document.getElementById('fpsVal');
+    items.forEach((text, idx) => {
+        if (idx > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'sep stat-item';
+            sep.textContent = '|';
+            statusBar.insertBefore(sep, fpsEl);
+        }
+        const span = document.createElement('span');
+        span.className = 'stat-item';
+        span.textContent = text;
+        statusBar.insertBefore(span, fpsEl);
+    });
+}
+
+// ============================================================
+// Mouse input
+// ============================================================
+canvas.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    dragStartX = e.clientX * devicePixelRatio;
+    dragStartY = e.clientY * devicePixelRatio;
+    dragStartCenterX = viewCenterX;
+    dragStartCenterY = viewCenterY;
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX * devicePixelRatio - dragStartX;
+    const dy = e.clientY * devicePixelRatio - dragStartY;
+    viewCenterX = dragStartCenterX - dx / viewZoom;
+    viewCenterY = dragStartCenterY + dy / viewZoom;
+    markDirty();
+});
+
+canvas.addEventListener('mouseup', () => { isDragging = false; });
+canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const mx = e.clientX * devicePixelRatio;
+    const my = e.clientY * devicePixelRatio;
+    const [wx, wy] = screenToWorld(mx, my);
+
+    viewZoom *= factor;
+    viewZoom = Math.max(0.001, Math.min(viewZoom, 1e8));
+
+    // Zoom toward mouse position
+    viewCenterX = wx - (mx - canvas.width / 2) / viewZoom;
+    viewCenterY = wy + (my - canvas.height / 2) / viewZoom;
+
+    markDirty();
+}, { passive: false });
+
+// ============================================================
+// Touch input
+// ============================================================
+let lastTouchDist = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+        isDragging = true;
+        dragStartX = e.touches[0].clientX * devicePixelRatio;
+        dragStartY = e.touches[0].clientY * devicePixelRatio;
+        dragStartCenterX = viewCenterX;
+        dragStartCenterY = viewCenterY;
+    } else if (e.touches.length === 2) {
+        isDragging = false;
+        const dx = e.touches[1].clientX - e.touches[0].clientX;
+        const dy = e.touches[1].clientY - e.touches[0].clientY;
+        lastTouchDist = Math.sqrt(dx * dx + dy * dy);
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (e.touches.length === 1 && isDragging) {
+        const dx = e.touches[0].clientX * devicePixelRatio - dragStartX;
+        const dy = e.touches[0].clientY * devicePixelRatio - dragStartY;
+        viewCenterX = dragStartCenterX - dx / viewZoom;
+        viewCenterY = dragStartCenterY + dy / viewZoom;
+        markDirty();
+    } else if (e.touches.length === 2) {
+        const dx = e.touches[1].clientX - e.touches[0].clientX;
+        const dy = e.touches[1].clientY - e.touches[0].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (lastTouchDist > 0) {
+            const factor = dist / lastTouchDist;
+            viewZoom *= factor;
+            viewZoom = Math.max(0.001, Math.min(viewZoom, 1e8));
+            markDirty();
+        }
+        lastTouchDist = dist;
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => {
+    isDragging = false;
+    lastTouchDist = 0;
+});
+
+// ============================================================
+// Buttons
+// ============================================================
+fitBtn.addEventListener('click', fitView);
+resetBtn.addEventListener('click', () => {
+    viewCenterX = 0; viewCenterY = 0; viewZoom = 1;
+    markDirty();
+});
+layerBtn.addEventListener('click', () => {
+    layerPanel.classList.toggle('collapsed');
+});
+
+// ============================================================
+// Layer panel
+// ============================================================
+layerHeader.addEventListener('click', () => {
+    layerPanel.classList.toggle('collapsed');
+});
+
+function buildLayerPanel() {
+    layerMetaMap.clear();
+    layerVisibleMap.clear();
+    layerList.innerHTML = '';
+
+    if (!drawData || !drawData.layers) {
+        layerCountEl.textContent = '0';
+        return;
+    }
+
+    const layers = drawData.layers;
+    layerCountEl.textContent = layers.length;
+
+    layers.forEach((layer) => {
+        const name = layer.name;
+        layerMetaMap.set(name, layer);
+
+        // Default: frozen layers hidden, all others visible
+        const visible = !layer.frozen;
+        layerVisibleMap.set(name, visible);
+
+        addLayerRow(layer, visible);
+    });
+}
+
+function addLayerRow(layer, visible) {
+    const row = document.createElement('div');
+    row.className = 'layer-row' + (visible ? '' : ' hidden-layer');
+    row.dataset.layerName = layer.name;
+    row.dataset.searchName = layer.name.toLowerCase();
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = visible;
+
+    const swatch = document.createElement('div');
+    swatch.className = 'layer-color-swatch';
+    swatch.style.backgroundColor = `rgb(${layer.color[0]},${layer.color[1]},${layer.color[2]})`;
+
+    const name = document.createElement('span');
+    name.className = 'layer-name';
+    name.textContent = layer.name;
+    name.title = layer.name;
+
+    row.appendChild(cb);
+    row.appendChild(swatch);
+    row.appendChild(name);
+
+    row.addEventListener('click', (e) => {
+        if (e.target === cb) return;
+        cb.checked = !cb.checked;
+        applyLayerVisibility(layer.name, cb.checked, row);
+    });
+
+    cb.addEventListener('change', () => {
+        applyLayerVisibility(layer.name, cb.checked, row);
+    });
+
+    layerList.appendChild(row);
+}
+
+function applyLayerVisibility(name, visible, row) {
+    layerVisibleMap.set(name, visible);
+    if (visible) {
+        row.classList.remove('hidden-layer');
+    } else {
+        row.classList.add('hidden-layer');
+    }
+    markDirty();
+}
+
+// Show all / Hide all / Invert
+showAllBtn.addEventListener('click', () => {
+    layerVisibleMap.forEach((_, name) => {
+        layerVisibleMap.set(name, true);
+    });
+    layerList.querySelectorAll('.layer-row').forEach(row => {
+        row.classList.remove('hidden-layer');
+        row.querySelector('input[type="checkbox"]').checked = true;
+    });
+    markDirty();
+});
+
+hideAllBtn.addEventListener('click', () => {
+    layerVisibleMap.forEach((_, name) => {
+        layerVisibleMap.set(name, false);
+    });
+    layerList.querySelectorAll('.layer-row').forEach(row => {
+        row.classList.add('hidden-layer');
+        row.querySelector('input[type="checkbox"]').checked = false;
+    });
+    markDirty();
+});
+
+invertBtn.addEventListener('click', () => {
+    layerList.querySelectorAll('.layer-row').forEach(row => {
+        const name = row.dataset.layerName;
+        const now = layerVisibleMap.get(name);
+        const next = !now;
+        layerVisibleMap.set(name, next);
+        row.querySelector('input[type="checkbox"]').checked = next;
+        row.classList.toggle('hidden-layer', !next);
+    });
+    markDirty();
+});
+
+// Layer search/filter
+layerSearch.addEventListener('input', () => {
+    const query = layerSearch.value.toLowerCase();
+    layerList.querySelectorAll('.layer-row').forEach(row => {
+        const name = row.dataset.searchName;
+        row.style.display = name.includes(query) ? '' : 'none';
+    });
+});
+
+// ============================================================
+// File input
+// ============================================================
+fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    statusFile.textContent = 'Loading ' + file.name + '...';
+    console.log('[load] Reading file:', file.name, 'size:', file.size);
+
+    try {
+        const text = await file.text();
+        console.log('[load] Text length:', text.length);
+
+        drawData = JSON.parse(text);
+        fileName = file.name;
+
+        console.log('[load] Parsed JSON:', {
+            entityCount: drawData.entityCount,
+            batchCount: drawData.batches ? drawData.batches.length : 0,
+            layerCount: drawData.layers ? drawData.layers.length : 0,
+            bounds: drawData.bounds,
+            totalVertices: drawData.totalVertices
+        });
+
+        // Log first batch for debugging
+        if (drawData.batches && drawData.batches.length > 0) {
+            const b0 = drawData.batches[0];
+            console.log('[load] First batch:', {
+                topology: b0.topology,
+                color: b0.color,
+                layerName: b0.layerName,
+                vertexCount: b0.vertices ? b0.vertices.length : 0,
+                firstVertex: b0.vertices && b0.vertices[0],
+                lastVertex: b0.vertices && b0.vertices[b0.vertices.length - 1]
+            });
+        }
+
+        computeBatchBounds();
+        buildLayerPanel();
+        fitView();
+
+        statusFile.textContent = file.name + ' loaded';
+    } catch (err) {
+        console.error('[load] Error:', err);
+        statusFile.textContent = 'Error: ' + err.message;
+    }
+});
+
+// ============================================================
+// Auto-load from URL param
+// ============================================================
+const params = new URLSearchParams(window.location.search);
+const dataUrl = params.get('data');
+if (dataUrl) {
+    statusFile.textContent = 'Loading from ' + dataUrl + '...';
+    console.log('[auto-load] Fetching:', dataUrl);
+    fetch(dataUrl)
+        .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(data => {
+            drawData = data;
+            fileName = dataUrl.split('/').pop();
+
+            console.log('[auto-load] Loaded:', {
+                entityCount: data.entityCount,
+                batchCount: data.batches ? data.batches.length : 0,
+                bounds: data.bounds,
+                totalVertices: data.totalVertices
+            });
+
+            computeBatchBounds();
+            buildLayerPanel();
+            fitView();
+            statusFile.textContent = fileName + ' loaded';
+        })
+        .catch(err => {
+            console.error('[auto-load] Error:', err);
+            statusFile.textContent = 'Load error: ' + err.message;
+            debugOverlay.style.display = 'block';
+            debugOverlay.textContent = 'Load error: ' + err.message;
+        });
+}
+
+// ============================================================
+// Initial FPS span and kick off render
+// ============================================================
+(function() {
+    const fpsSpan = document.createElement('span');
+    fpsSpan.id = 'fpsVal';
+    fpsSpan.className = 'fps';
+    fpsSpan.textContent = '0 FPS';
+    statusBar.appendChild(fpsSpan);
+})();
+
+// Initial render
+markDirty();
+</script>
+</body>
+</html>

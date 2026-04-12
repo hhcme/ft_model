@@ -1,0 +1,37 @@
+# Build
+build/
+cmake-build-*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.bak
+
+# Large test data
+test_data/*.json
+test_data/*.dxf
+test_data/*.dwg
+test_dwg/*.dwg
+test_dwg/*.pdf
+test_dwg/*.png
+
+# Compiled
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.wasm
+*.js.map
+node_modules/
