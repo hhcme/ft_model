@@ -594,6 +594,51 @@ function renderFrame() {
         }
     }
 
+    // Render text entities
+    if (drawData.texts && drawData.texts.length > 0) {
+        for (const txt of drawData.texts) {
+            // Layer visibility check
+            if (txt.layerName && layerVisibleMap.has(txt.layerName) && !layerVisibleMap.get(txt.layerName)) continue;
+
+            const [sx, sy] = worldToScreen(txt.x, txt.y);
+            // Skip if off-screen
+            if (sx < -500 || sx > canvas.width + 500 || sy < -500 || sy > canvas.height + 500) continue;
+
+            const screenHeight = txt.height * viewZoom;
+            // Skip tiny text (less than 3 pixels)
+            if (screenHeight < 3) continue;
+
+            const [r, g, b] = txt.color;
+            let drawR = r, drawG = g, drawB = b;
+            const brightness = (r + g + b) / 3;
+            if (brightness < 30) {
+                drawR = Math.max(r, 60);
+                drawG = Math.max(g, 60);
+                drawB = Math.max(b, 60);
+            }
+
+            ctx.fillStyle = `rgb(${drawR},${drawG},${drawB})`;
+            ctx.font = `${screenHeight}px sans-serif`;
+            ctx.textBaseline = 'bottom';
+
+            if (txt.rotation !== 0) {
+                ctx.save();
+                ctx.translate(sx, sy);
+                // Negate rotation because screen Y is flipped
+                ctx.rotate(-txt.rotation);
+                ctx.scale(txt.widthFactor || 1, 1);
+                ctx.fillText(txt.text, 0, 0);
+                ctx.restore();
+            } else {
+                ctx.save();
+                ctx.translate(sx, sy);
+                ctx.scale(txt.widthFactor || 1, 1);
+                ctx.fillText(txt.text, 0, 0);
+                ctx.restore();
+            }
+        }
+    }
+
     // Update view info
     viewInfoEl.textContent =
         `Zoom: ${viewZoom.toFixed(4)}x\n` +

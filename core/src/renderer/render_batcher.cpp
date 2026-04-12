@@ -222,6 +222,16 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     case EntityType::Insert: {
         auto* ins = std::get_if<10>(&entity.data);
         if (!ins) break;
+
+        // Sanity check: skip INSERT entities with extreme coordinates
+        // that indicate corrupt data (e.g. survey coords > 1e8 with scale 1000)
+        {
+            float max_coord = 1e8f;
+            float ip = std::max(std::abs(ins->insertion_point.x), std::abs(ins->insertion_point.y));
+            float sc = std::max(std::abs(ins->x_scale), std::abs(ins->y_scale));
+            if (ip > max_coord || sc > 1e4f || (ip * sc > 1e9f)) break;
+        }
+
         const auto& blocks = scene.blocks();
         if (ins->block_index < 0 ||
             static_cast<size_t>(ins->block_index) >= blocks.size()) break;
@@ -408,28 +418,29 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
-    // Text — render as placeholder rectangle
+    // Text — render as a thin underline indicator (actual text rendered by viewer)
     case EntityType::Text:
     case EntityType::MText: {
         auto* text = std::get_if<6>(&entity.data);
         if (!text) text = std::get_if<7>(&entity.data);
         if (!text || text->height <= 0.0f) break;
 
-        float hw = text->height * text->text.size() * text->width_factor * 0.3f;
-        float hh = text->height;
+        // Draw a small underline at the text insertion point to show its position
         float x = text->insertion_point.x;
         float y = text->insertion_point.y;
+        float hw = std::min(text->height * 4.0f, text->height * text->text.size() * text->width_factor * 0.3f);
 
         auto [rx0, ry0] = tx(x, y);
-        auto [rx1, ry1] = tx(x + hw, y + hh);
+        auto [rx1, ry1] = tx(x + hw, y);
 
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        // Four edges of the text box
-        float verts[] = { rx0,ry0, rx1,ry0,  rx1,ry0, rx1,ry1,  rx1,ry1, rx0,ry1,  rx0,ry1, rx0,ry0 };
-        for (float v : verts) batch->vertex_data.push_back(v);
+        batch->vertex_data.push_back(rx0);
+        batch->vertex_data.push_back(ry0);
+        batch->vertex_data.push_back(rx1);
+        batch->vertex_data.push_back(ry1);
         break;
     }
 
@@ -451,8 +462,53 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
-    // Skip truly unimplemented types
-    case EntityType::Dimension:
+    // Dimension — render as dimension lines (extension lines + dimension line)
+    case EntityType::Dimension: {
+        auto* dim = std::get_if<8>(&entity.data);
+        if (!dim) break;
+
+        auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
+        batch->sort_key = RenderKey::make(layer_u16,
+            static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
+            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+
+        // The definition_point (10/20/30) is typically the point where dimension line meets
+        // the second extension line. We need to draw:
+        // 1. Extension lines from ext origins toward the dimension line
+        // 2. Dimension line between the two definition points
+        // Since we only have definition_point and text_midpoint, we draw the dimension line
+        // and short extension line indicators.
+
+        auto [dx, dy] = tx(dim->definition_point.x, dim->definition_point.y);
+        auto [mx, my] = tx(dim->text_midpoint.x, dim->text_midpoint.y);
+
+        // Draw a simple dimension line from midpoint to definition point
+        // (In a full implementation, we'd use ext1/ext2 start points for extension lines)
+        batch->vertex_data.push_back(mx);
+        batch->vertex_data.push_back(my);
+        batch->vertex_data.push_back(dx);
+        batch->vertex_data.push_back(dy);
+
+        // Draw tick marks at the definition point end
+        float tick_size = 3.0f;
+        float angle = std::atan2(dy - my, dx - mx);
+        float perp_x = -std::sin(angle) * tick_size;
+        float perp_y = std::cos(angle) * tick_size;
+
+        // Tick at definition point
+        batch->vertex_data.push_back(dx - perp_x);
+        batch->vertex_data.push_back(dy - perp_y);
+        batch->vertex_data.push_back(dx + perp_x);
+        batch->vertex_data.push_back(dy + perp_y);
+
+        // Tick at midpoint side (mirrored direction)
+        batch->vertex_data.push_back(mx - perp_x);
+        batch->vertex_data.push_back(my - perp_y);
+        batch->vertex_data.push_back(mx + perp_x);
+        batch->vertex_data.push_back(my + perp_y);
+        break;
+    }
+
     case EntityType::Ray:
     case EntityType::XLine:
     case EntityType::Viewport:

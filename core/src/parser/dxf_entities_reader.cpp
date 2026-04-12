@@ -650,7 +650,57 @@ void DxfEntitiesReader::parse_spline(DxfTokenizer& tokenizer, SceneGraph& scene)
 }
 
 // Phase 2 stubs — complex entities deferred to Phase 3
-void DxfEntitiesReader::parse_dimension(DxfTokenizer& t, SceneGraph&)  { skip_unknown_entity(t); }
+void DxfEntitiesReader::parse_dimension(DxfTokenizer& tokenizer, SceneGraph& scene) {
+    DimensionEntity data{};
+    EntityHeader hdr{};
+    hdr.type = EntityType::Dimension;
+    hdr.is_visible = true;
+    hdr.dimensionality = 0x02;
+    std::string layer_name;
+
+    // Definition point (group 10/20/30) — the point where the dimension line meets the extension line
+    // Text midpoint (group 11/21/31) — where the dimension text is placed
+    // First extension line start (group 13/23/33)
+    // Second extension line start (group 14/24/34)
+    // Angle (group 50) — rotation for linear/aligned dimensions
+    Vec3 ext1_start{}, ext2_start{};
+
+    while (true) {
+        auto next = tokenizer.next();
+        if (!next.ok() || !next.value) break;
+        const auto& gv = tokenizer.current();
+        if (gv.code == 0) break;
+        switch (gv.code) {
+            case 10: data.definition_point.x = gv.as_float(); break;
+            case 20: data.definition_point.y = gv.as_float(); break;
+            case 30: data.definition_point.z = gv.as_float(); break;
+            case 11: data.text_midpoint.x = gv.as_float(); break;
+            case 21: data.text_midpoint.y = gv.as_float(); break;
+            case 31: data.text_midpoint.z = gv.as_float(); break;
+            case 13: ext1_start.x = gv.as_float(); break;
+            case 23: ext1_start.y = gv.as_float(); break;
+            case 33: ext1_start.z = gv.as_float(); break;
+            case 14: ext2_start.x = gv.as_float(); break;
+            case 24: ext2_start.y = gv.as_float(); break;
+            case 34: ext2_start.z = gv.as_float(); break;
+            case 70: data.dimension_type = gv.as_int(); break;
+            case 50: data.rotation = math::radians(gv.as_float()); break;
+            case 1:  data.text = gv.value; break;
+            case 8:  layer_name = gv.value; break;
+            default: read_entity_header_field(hdr, gv); break;
+        }
+    }
+
+    // Compute bounds from definition point and extension line origins
+    hdr.bounds = Bounds3d::empty();
+    hdr.bounds.expand(data.definition_point);
+    hdr.bounds.expand(data.text_midpoint);
+    hdr.bounds.expand(ext1_start);
+    hdr.bounds.expand(ext2_start);
+
+    if (!layer_name.empty()) hdr.layer_index = scene.find_or_add_layer(layer_name);
+    scene.add_entity(make_entity(hdr, EntityData{std::in_place_index<8>, std::move(data)}));
+}
 
 void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) {
     HatchEntity data{};

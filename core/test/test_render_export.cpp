@@ -80,6 +80,19 @@ int main(int argc, char** argv) {
         camera.fit_to_bounds(bounds, 0.05f);
     }
 
+    // Collect text entities for JSON export (rendered as actual text by the viewer)
+    struct TextEntry {
+        float x, y;
+        float height;
+        float rotation;
+        float width_factor;
+        std::string text;
+        uint8_t r, g, b;
+        int32_t layer_index;
+        std::string layer_name;
+    };
+    std::vector<TextEntry> text_entries;
+
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
     batcher.begin_frame(camera);
@@ -88,7 +101,91 @@ int main(int argc, char** argv) {
         // Skip entities that belong to block definitions — they are rendered
         // through INSERT entity references with proper transforms.
         if (block_entity_indices.count(i)) continue;
-        batcher.submit_entity(entities[i], scene);
+
+        const auto& entity = entities[i];
+
+        // Extract text entities for separate rendering
+        if (entity.type() == EntityType::Text || entity.type() == EntityType::MText) {
+            const TextEntity* te = nullptr;
+            if (entity.type() == EntityType::Text) {
+                te = std::get_if<6>(&entity.data);
+            } else {
+                te = std::get_if<7>(&entity.data);
+            }
+            if (te && te->height > 0.0f && !te->text.empty()) {
+                TextEntry entry;
+                entry.x = te->insertion_point.x;
+                entry.y = te->insertion_point.y;
+                entry.height = te->height;
+                entry.rotation = te->rotation;
+                entry.width_factor = (te->width_factor > 0.0f) ? te->width_factor : 1.0f;
+                entry.text = te->text;
+                entry.layer_index = entity.header.layer_index;
+
+                // Resolve color
+                Color text_color;
+                if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+                    text_color = Color::from_aci(entity.header.color_override);
+                } else {
+                    int32_t li = entity.header.layer_index;
+                    const auto& layers = scene.layers();
+                    if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
+                        text_color = layers[static_cast<size_t>(li)].color;
+                    } else {
+                        text_color = Color::white();
+                    }
+                }
+                entry.r = text_color.r;
+                entry.g = text_color.g;
+                entry.b = text_color.b;
+
+                // Layer name
+                const auto& layers = scene.layers();
+                if (entry.layer_index >= 0 && static_cast<size_t>(entry.layer_index) < layers.size()) {
+                    entry.layer_name = layers[static_cast<size_t>(entry.layer_index)].name;
+                }
+
+                text_entries.push_back(std::move(entry));
+            }
+        } else if (entity.type() == EntityType::Dimension) {
+            // Also export dimension text as text entries
+            const auto* dim = std::get_if<8>(&entity.data);
+            if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " ") {
+                TextEntry entry;
+                entry.x = dim->text_midpoint.x;
+                entry.y = dim->text_midpoint.y;
+                entry.height = 3.0f; // Default dimension text height
+                entry.rotation = dim->rotation;
+                entry.width_factor = 1.0f;
+                entry.text = dim->text;
+                entry.layer_index = entity.header.layer_index;
+
+                Color text_color;
+                if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+                    text_color = Color::from_aci(entity.header.color_override);
+                } else {
+                    int32_t li = entity.header.layer_index;
+                    const auto& layers = scene.layers();
+                    if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
+                        text_color = layers[static_cast<size_t>(li)].color;
+                    } else {
+                        text_color = Color::white();
+                    }
+                }
+                entry.r = text_color.r;
+                entry.g = text_color.g;
+                entry.b = text_color.b;
+
+                const auto& layers = scene.layers();
+                if (entry.layer_index >= 0 && static_cast<size_t>(entry.layer_index) < layers.size()) {
+                    entry.layer_name = layers[static_cast<size_t>(entry.layer_index)].name;
+                }
+
+                text_entries.push_back(std::move(entry));
+            }
+        }
+
+        batcher.submit_entity(entity, scene);
     }
 
     batcher.end_frame();
@@ -183,6 +280,24 @@ int main(int argc, char** argv) {
         out << "\n";
     }
     out << "  ],\n";
+
+    // Export text entities
+    out << "  \"texts\": [\n";
+    for (size_t ti = 0; ti < text_entries.size(); ++ti) {
+        const auto& te = text_entries[ti];
+        out << "    {\"x\": " << te.x << ", \"y\": " << te.y
+            << ", \"height\": " << te.height
+            << ", \"rotation\": " << te.rotation
+            << ", \"widthFactor\": " << te.width_factor
+            << ", \"text\": \"" << escape_json(te.text) << "\""
+            << ", \"color\": [" << (int)te.r << "," << (int)te.g << "," << (int)te.b << "]"
+            << ", \"layerIndex\": " << te.layer_index
+            << ", \"layerName\": \"" << escape_json(te.layer_name) << "\"}";
+        if (ti + 1 < text_entries.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ],\n";
+
     out << "  \"totalVertices\": " << total_vertices << "\n";
     out << "}\n";
 
