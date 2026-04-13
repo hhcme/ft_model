@@ -135,10 +135,17 @@ python3 -m http.server 8080
 ## Git Workflow
 
 - Remote: `origin` → `https://gitee.com/smarthhc/ft_model.git`
-- Branch: `main`
-- Commit style: conventional commits (`feat:`, `fix:`, `refactor:`, etc.)
+- Branch: `main` (开发阶段直推，后续可引入 feature 分支)
+- Commit style: conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`)
 - Co-authored commits with Claude: add `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
 - Push with: `git push origin main`
+
+### PR / Change Review Standards
+
+- **核心结构变更**（EntityVariant, RenderBatch, SceneGraph 接口）需说明影响范围并通知相关 Agent
+- **C++ 性能敏感代码**审查要点：避免不必要的拷贝、关注内存布局和 cache 友好性
+- **不得针对特定测试文件特殊处理**，所有修复必须是通用改进
+- 变更后须通过 `big.dxf` 回归验证
 
 ## Testing
 
@@ -146,3 +153,22 @@ python3 -m http.server 8080
 - Validate with `test_data/big.dxf` as primary real-world test case.
 - Visual comparison against `test_dwg/big.png` reference image.
 - Never commit test_data JSON files to git (they are in .gitignore).
+
+## Agent Team
+
+项目按模块划分 5 个 Agent 角色，每个 Agent 有独立的指令文件（`.claude/agents/`）。
+
+| Agent | 指令文件 | 负责模块 |
+|-------|---------|---------|
+| **Parser** | `.claude/agents/parser.md` | DXF/DWG 解析 (`core/src/parser/`) |
+| **Renderer** | `.claude/agents/renderer.md` | 渲染管线、tessellation (`core/src/renderer/`) |
+| **Scene/Infra** | `.claude/agents/scene-infra.md` | SceneGraph、空间索引、内存、数学类型 (`core/src/scene/`, `core/src/memory/`, `cad_types.h`) |
+| **Platform** | `.claude/agents/platform.md` | Canvas/WebGL 前端、WASM 桥接 (`platforms/electron/`, `gfx/`) |
+| **QA** | `.claude/agents/qa.md` | 测试、回归、性能基准 (`core/test/`, `scripts/`) |
+
+### 协作规则
+
+1. **模块边界清晰** — 每个 Agent 只修改自己负责的文件，不越界修改其他模块
+2. **跨模块变更需协调** — 新增实体类型需 Parser → Scene/Infra → Renderer → Platform 串行配合
+3. **变更通知链**：核心结构变更（EntityVariant、RenderBatch 格式、SceneGraph 接口）必须通知所有受影响的 Agent
+4. **QA Agent 有只读全局权限** — 可审读任何模块代码，但不得修改生产代码，发现问题报给对应 Agent
