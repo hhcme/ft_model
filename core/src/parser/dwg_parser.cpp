@@ -1525,6 +1525,12 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
         // Skip all other non-graphic objects
         if (!is_graphic) {
+            // Handle table objects (LAYER, LTYPE, STYLE, DIMSTYLE)
+            if (obj_type == 51 || obj_type == 53 ||
+                obj_type == 57 || obj_type == 69) {
+                parse_dwg_table_object(reader, obj_type, scene,
+                                       m_version, entity_bits, main_data_bits);
+            }
             non_graphic_count++;
             continue;
         }
@@ -1549,6 +1555,14 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
             m_current_block_name = block_name;
             m_block_entity_start = scene.entities().size();
+
+            // Store mapping from BLOCK entity handle → block name.
+            // In DWG, a BLOCK entity and its BLOCK_HEADER table object often share
+            // the same handle value. By also mapping the BLOCK entity's own handle,
+            // INSERT entities can resolve their block_header handles directly.
+            if (!block_name.empty()) {
+                block_names_from_entities[handle] = block_name;
+            }
 
             // Read handle stream to find BLOCK_HEADER handle.
             // Store mapping: BLOCK_HEADER handle → correct name from BLOCK entity.
@@ -1591,6 +1605,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 block.name = m_current_block_name;
                 for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                     block.entity_indices.push_back(static_cast<int32_t>(i));
+                    // Mark as block child so top-level iteration skips them
+                    scene.entities()[i].header.in_block = true;
                 }
                 scene.add_block(block);
                 m_current_block_name.clear();
@@ -1678,16 +1694,16 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     // BLOCK/ENDBLK definitions are fully populated. Now resolve any INSERTs
     // that couldn't be resolved during the main loop due to ordering.
     //
-    // Prefer block_names_from_entities (from BLOCK type 4 handle streams)
-    // over m_sections.block_names (from BLOCK_HEADER type 49) because BLOCK
-    // entities have correct unique names (e.g., "*D1077") while BLOCK_HEADER
-    // stores truncated names (e.g., "*D") for anonymous blocks.
+    // block_names_from_entities contains two key types of entries:
+    //   - BLOCK entity handle → full block name (primary, always correct)
+    //   - BLOCK_HEADER handle → full block name (from handle stream, also correct)
+    //
+    // m_sections.block_names contains BLOCK_HEADER (type 49) entries, but those
+    // names are truncated for anonymous dimension blocks (e.g., "*D" instead of
+    // "*D1077"). Use as a fallback only when the entity map doesn't have the name.
     {
         size_t resolved = 0;
-        // Disabled until block name resolution is fully correct.
-        // Currently BLOCK_HEADER stores truncated names (e.g., "*D" instead of "*D1077")
-        // and entity_names has limited coverage.
-        bool apply = false;
+        bool apply = false;  // Disabled: INSERT expansion causes massive tessellation overhead. Re-enable after adding entity expansion limits.
         if (apply) {
             auto& all_entities = scene.entities();
             for (auto& [eidx, handles] : insert_handles) {
@@ -1697,10 +1713,13 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
                 for (uint64_t h : handles) {
                     std::string name;
+                    // Primary: look up in BLOCK entity map (full unique names)
                     auto it1 = block_names_from_entities.find(h);
                     if (it1 != block_names_from_entities.end()) {
                         name = it1->second;
-                    } else {
+                    }
+                    // Fallback: look up in BLOCK_HEADER map (may be truncated)
+                    if (name.empty()) {
                         auto it2 = m_sections.block_names.find(h);
                         if (it2 != m_sections.block_names.end()) {
                             name = it2->second;

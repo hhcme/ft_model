@@ -29,6 +29,15 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
                        const EntityHeader& header, SceneGraph& scene,
                        DwgVersion version);
 
+// Parse a DWG table/object entry (LAYER, LTYPE, STYLE, DIMSTYLE).
+// The reader is positioned after the common object header.
+// For R2010+, a handle stream at the end of the object data
+// contains linetype/plotstyle/material handles.
+// This function reads those handles after the main fields.
+void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
+                              SceneGraph& scene, DwgVersion version,
+                              size_t entity_bits, size_t main_data_bits);
+
 // Diagnostic helper: returns a map of successfully parsed DWG type -> count.
 std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts();
 

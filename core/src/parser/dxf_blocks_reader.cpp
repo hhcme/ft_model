@@ -195,16 +195,17 @@ void DxfBlocksReader::parse_block(DxfTokenizer& tokenizer, SceneGraph& scene) {
         if (!adv.ok() || !adv.value) break;
     }
 
-    // Record entity indices for this block
+    // Record entity indices for this block and mark as block children
     size_t entity_count_after = scene.total_entity_count();
     auto& blocks = const_cast<std::vector<Block>&>(scene.blocks());
+    auto& entities = scene.entities();
     for (size_t i = entity_count_before; i < entity_count_after; ++i) {
         blocks[block_index].entity_indices.push_back(static_cast<int32_t>(i));
+        entities[i].header.in_block = true;
     }
 
     // Update block bounds from its entities
     Bounds3d block_bounds = Bounds3d::empty();
-    auto& entities = scene.entities();
     for (size_t i = entity_count_before; i < entity_count_after; ++i) {
         block_bounds.expand(entities[i].bounds());
     }

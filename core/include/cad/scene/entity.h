@@ -43,6 +43,7 @@ struct EntityHeader {
     int32_t color_override = 256;      // ACI color, 256 = BYLAYER
     float lineweight = 0.0f;           // 0 = BYLAYER, negative = BYBLOCK
     bool is_visible = true;
+    bool in_block = false;             // True if entity belongs to a block definition (skip in top-level iteration)
     Bounds3d bounds = Bounds3d::empty();
     int32_t block_index = -1;          // For INSERT: resolved block index (-1 = unresolved)
     uint8_t dimensionality = 0x02;     // 0x02 = 2D, 0x03 = 3D (reserved)

@@ -34,16 +34,9 @@ void DxfTablesReader::parse_ltype_table(DxfTokenizer& tokenizer, SceneGraph& sce
         }
     }
 
-    // Store dash array into the LinePattern's dash_array
-    // The existing Linetype has a LinePattern with float* dash_array and dash_count.
-    // We need to allocate storage. Use a separate vector on Linetype or store here.
-    // Since LinePattern uses a raw pointer, we need to manage the memory.
-    // For now, store the dash elements count and allocate.
+    // Store dash array into the LinePattern's dash_array (std::vector<float>)
     if (!dash_elements.empty()) {
-        lt.pattern.dash_count = static_cast<int>(dash_elements.size());
-        lt.pattern.dash_array = new float[dash_elements.size()];
-        std::memcpy(lt.pattern.dash_array, dash_elements.data(),
-                     dash_elements.size() * sizeof(float));
+        lt.pattern.dash_array = dash_elements;
     }
 
     scene.add_linetype(std::move(lt));

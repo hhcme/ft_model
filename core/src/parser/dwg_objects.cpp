@@ -1,5 +1,6 @@
 #include "cad/parser/dwg_objects.h"
 #include "cad/parser/dwg_parser.h"
+#include "cad/parser/dwg_reader.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/cad_types.h"
 
@@ -188,7 +189,11 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
 
     uint32_t num_points = r.read_bl();
     if (!reader_ok(r)) { dbg_lw_fail("num_points"); return; }
-    if (num_points == 0 || num_points > 100000) { dbg_lw_fail("num_points_bounds"); return; }
+
+    // Guard against degenerate/overflowed reads: only enforce upper bound
+    // if num_points is implausibly large (>10M vertices), treating exact 0
+    // as valid (handled by empty_vertices check later).
+    if (num_points > 10000000) { dbg_lw_fail("num_points_bounds"); return; }
 
     uint32_t num_bulges = 0;
     uint32_t num_widths = 0;
@@ -207,7 +212,7 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
         }
     };
 
-    if (num_bulges > 100000 || num_widths > 100000) { dbg_lw_fail2("bulge_width_bounds"); return; }
+    if (num_bulges > 10000000 || num_widths > 10000000) { dbg_lw_fail2("bulge_width_bounds"); return; }
 
     std::vector<Vec3> vertices;
     vertices.reserve(num_points);
@@ -819,18 +824,25 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
             (void)r.read_bd();                 // shift_value
             r.read_cmc_r2004(version);         // color (R2004+ CMC)
         }
-        // gradient_name: skip for R2007+ (in string stream or absent)
+        // gradient_name: R2007+ uses string stream via read_t()
         if (version < DwgVersion::R2007) {
             (void)r.read_tv();
+        } else {
+            (void)r.read_t();  // gradient_name from string stream
         }
     }
 
     (void)r.read_bd();  // elevation
     r.read_bd(); r.read_bd(); r.read_bd();  // extrusion x,y,z (3BD)
-    // pattern_name: skip for R2007+ (in string stream or absent)
+
+    // pattern_name: R2007+ from string stream (via read_t()), pre-R2007 from main stream
+    std::string pattern_name;
     if (version < DwgVersion::R2007) {
-        (void)r.read_tv();
+        pattern_name = r.read_tv();
+    } else {
+        pattern_name = r.read_t();  // R2007+ string stream
     }
+
     bool is_solid_fill = r.read_b();    // is_solid_fill
     (void)r.read_b();                   // is_associative
     uint32_t num_boundary_paths = r.read_bl();
@@ -838,7 +850,9 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     if (!reader_ok(r)) { dbg_hatch_fail(2); return; }
     if (num_boundary_paths > 10000) { dbg_hatch_fail(3); return; }
 
-    // Read and tessellate each boundary path into a polygon.
+    // Collect all boundary paths into loops before emitting any entity.
+    std::vector<HatchEntity::BoundaryLoop> loops;
+
     for (uint32_t p = 0; p < num_boundary_paths; ++p) {
         std::vector<Vec3> verts;
 
@@ -908,7 +922,6 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
                     break;
                 }
             }
-            // Edge loop error handled inline above
         } else {
             // Polyline boundary path
             bool bulges_present = r.read_b();  // B bulges_present
@@ -924,14 +937,11 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
             }
         }
 
-        // Read num_boundary_handles (skip, handle data read later)
-        uint32_t num_bh = r.read_bl();
-        // boundary handles are in the handle stream, skip count only
+        // Read num_boundary_handles (skip; handle data read later in handle stream)
+        (void)r.read_bl();
 
-        // Triangulate polygon (fan) and add as SolidEntity triangles
+        // Clean up vertices: remove duplicate consecutive points
         if (verts.size() < 3) continue;
-
-        // Remove duplicate consecutive vertices
         std::vector<Vec3> clean;
         clean.push_back(verts[0]);
         for (size_t i = 1; i < verts.size(); ++i) {
@@ -943,54 +953,62 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
         }
         if (clean.size() < 3) continue;
 
-        // Fan triangulation: create one triangle per adjacent pair of vertices
-        const Vec3& v0 = clean[0];
-        for (size_t i = 1; i + 1 < clean.size(); ++i) {
-            SolidEntity tri;
-            tri.corners[0] = v0;
-            tri.corners[1] = clean[i];
-            tri.corners[2] = clean[i + 1];
-            tri.corner_count = 3;
-
-            EntityHeader tri_hdr = hdr;
-            tri_hdr.type = EntityType::Solid;
-            tri_hdr.bounds = entity_bounds_solid(tri);
-            scene.add_entity(make_entity<16>(tri_hdr, std::move(tri)));
-        }
+        HatchEntity::BoundaryLoop loop;
+        loop.vertices = std::move(clean);
+        loop.is_closed = true;
+        loops.push_back(std::move(loop));
     }
 
-    // Post-path data (only matters for non-solid fills)
+    // Guard: if reader is exhausted before we reach post-path data, bail out.
+    // Some large hatches exhaust the bit stream during boundary path reading.
+    if (!reader_ok(r)) { dbg_hatch_fail(7); return; }
+
+    // Read post-path data (pattern definition for non-solid fills)
+    (void)r.read_bs();  // style
+    (void)r.read_bs();  // pattern_type
+    float pattern_angle = 0.0f;
+    float pattern_scale = 1.0f;
+    if (!is_solid_fill) {
+        pattern_angle = static_cast<float>(r.read_bd());  // angle
+        pattern_scale = static_cast<float>(r.read_bd());  // scale_spacing
+        (void)r.read_b();   // double_flag
+        uint32_t num_deflines = r.read_bs();
+        if (num_deflines <= 10000) {
+            for (uint32_t d = 0; d < num_deflines && reader_ok(r); ++d) {
+                (void)r.read_bd();  // angle
+                (void)r.read_bd(); (void)r.read_bd();  // pt0
+                (void)r.read_bd(); (void)r.read_bd();  // offset
+                uint32_t nd = r.read_bs();
+                for (uint32_t j = 0; j < nd && reader_ok(r); ++j) (void)r.read_bd();
+            }
+        }
+    }
+    // seeds
     if (reader_ok(r)) {
-        (void)r.read_bs();  // style
-        (void)r.read_bs();  // pattern_type
-        if (!is_solid_fill) {
-            (void)r.read_bd();  // angle
-            (void)r.read_bd();  // scale_spacing
-            (void)r.read_b();   // double_flag
-            uint32_t num_deflines = r.read_bs();
-            if (num_deflines <= 10000) {
-                for (uint32_t d = 0; d < num_deflines && reader_ok(r); ++d) {
-                    (void)r.read_bd();  // angle
-                    (void)r.read_bd(); (void)r.read_bd();  // pt0
-                    (void)r.read_bd(); (void)r.read_bd();  // offset
-                    uint32_t nd = r.read_bs();
-                    for (uint32_t j = 0; j < nd && reader_ok(r); ++j) (void)r.read_bd();
-                }
-            }
-        }
-        // seeds
-        if (reader_ok(r)) {
-            uint32_t num_seeds = r.read_bl();
-            if (num_seeds <= 10000) {
-                for (uint32_t s = 0; s < num_seeds && reader_ok(r); ++s) {
-                    (void)r.read_rd(); (void)r.read_rd();  // 2RD seed point
-                }
+        uint32_t num_seeds = r.read_bl();
+        if (num_seeds <= 10000) {
+            for (uint32_t s = 0; s < num_seeds && reader_ok(r); ++s) {
+                (void)r.read_rd(); (void)r.read_rd();  // 2RD seed point
             }
         }
     }
-    if (r.has_error()) {
-        dbg_hatch_fail(7);
-    }
+    if (!reader_ok(r)) { dbg_hatch_fail(7); return; }
+
+    // Emit a single HatchEntity covering all boundary paths.
+    // RenderBatcher handles tessellation (solid: TriangleList; pattern: deferred).
+    if (loops.empty()) return;
+
+    HatchEntity hatch;
+    hatch.pattern_name = std::move(pattern_name);
+    hatch.is_solid = true;  // Always render as solid fill (pattern rendering deferred to renderer agent)
+    hatch.pattern_angle = pattern_angle;
+    hatch.pattern_scale = pattern_scale;
+    hatch.loops = std::move(loops);
+
+    EntityHeader hatch_hdr = hdr;
+    hatch_hdr.type = EntityType::Hatch;
+    hatch_hdr.bounds = entity_bounds_hatch(hatch);
+    scene.add_entity(make_entity<9>(hatch_hdr, std::move(hatch)));
 }
 
 // ============================================================
@@ -1323,6 +1341,300 @@ void parse_xline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 }
 
 } // anonymous namespace
+
+// ============================================================
+// Table/object parsers — LAYER, LTYPE, STYLE, DIMSTYLE
+// These are non-graphic objects. The reader is positioned after
+// the common object header (reactors, xdic flag).
+// For R2010+ objects, a handle stream at the end contains
+// linetype/plotstyle/material handles.
+// ============================================================
+
+namespace {
+
+// Helper: read one handle from the handle stream.
+// Creates a temporary reader starting at handle_bits_offset,
+// with up to (bit_limit - handle_bits_offset) bits available.
+DwgBitReader::HandleRef read_one_handle(const uint8_t* data, size_t data_bytes,
+                          size_t handle_bits_offset, size_t bit_limit) {
+    DwgBitReader hr(data, data_bytes);
+    hr.set_bit_offset(handle_bits_offset);
+    hr.set_bit_limit(bit_limit);
+    return hr.read_h();
+}
+
+// Read TU (UTF-16LE) text for table objects.
+// For R2007+ table objects, text fields are inline UTF-16TU in the main
+// data stream (NOT in a separate string stream, which is empty for table objects).
+// We read the BS length prefix then UTF-16LE code units directly.
+std::string read_table_text(DwgBitReader& r) {
+    uint16_t char_len = r.read_bs();  // TU length in UTF-16 code units
+    if (r.has_error() || char_len == 0 || char_len > 8192) {
+        return {};
+    }
+    std::string result;
+    result.reserve(char_len);
+    for (uint16_t i = 0; i < char_len && !r.has_error(); ++i) {
+        uint16_t ch = r.read_rs();  // UTF-16LE code unit
+        if (ch >= 1 && ch < 0xD800) {
+            // BMP character (exclude NUL and surrogate range)
+            result.push_back(static_cast<char>(ch));
+        } else if (ch >= 0xD800 && ch < 0xDC00 && i + 1 < char_len) {
+            // High surrogate — read low surrogate
+            uint16_t lo = r.read_rs();
+            uint32_t cp = 0x10000 + ((ch - 0xD800) << 10) + (lo - 0xDC00);
+            // UTF-8 encode
+            if (cp < 0x80) {
+                result.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                result.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+                result.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+            i++;
+        }
+    }
+    return result;
+}
+
+} // anonymous namespace
+
+// ============================================================
+// LAYER (type 51) table object
+// Fields: [class_version RC] + [standard_flags BS] + [name TU]
+//         + [color CMC] + [linetype handle H] + [more handles]
+// ============================================================
+static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
+                                DwgVersion version,
+                                const uint8_t* obj_data, size_t obj_bytes,
+                                size_t main_data_bits, size_t entity_bits) {
+    if (version >= DwgVersion::R2010) {
+        (void)r.read_raw_char();  // class_version (RC)
+    }
+
+    (void)r.read_bs();  // standard_flags
+
+    // Read layer name (TU in R2007+, TV in older)
+    std::string name;
+    if (version >= DwgVersion::R2007) {
+        name = read_table_text(r);
+    } else {
+        name = r.read_tv();
+    }
+
+    // Read color (CMC) — returns ACI color index
+    uint16_t color_index = r.read_cmc_r2004(version);
+    Color color = Color::from_aci(static_cast<int>(color_index));
+
+    // Skip remaining handles before the handle stream
+    while (!r.has_error() && r.bit_offset() < main_data_bits) {
+        auto h = r.read_h();
+        if (h.value == 0 && h.code == 0) break;
+    }
+
+    // Read linetype handle from handle stream (at end of entity data)
+    int32_t linetype_index = 0;
+    if (main_data_bits < entity_bits) {
+        auto lt_handle = read_one_handle(obj_data, obj_bytes, main_data_bits, entity_bits);
+        if (lt_handle.value != 0) {
+            linetype_index = static_cast<int32_t>(lt_handle.value);
+        }
+    }
+
+    if (!reader_ok(r)) return;
+
+    // Add/update layer in SceneGraph
+    int32_t layer_idx = scene.find_or_add_layer(name);
+    Layer layer;
+    layer.name = name;
+    layer.color = color;
+    if (linetype_index != 0) {
+        layer.linetype_index = linetype_index;
+    }
+    scene.update_layer(layer_idx, layer);
+}
+
+// ============================================================
+// LTYPE (type 57) table object
+// Fields: [class_version RC] + [flags BS] + [name TU] + [description TU]
+//         + [pattern_length BD] + [num_dashes BL]
+//         + num_dashes × [BD(dash_or_gap)]
+// ============================================================
+static void parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
+                                DwgVersion version,
+                                const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
+                                size_t main_data_bits, size_t entity_bits) {
+    if (version >= DwgVersion::R2010) {
+        (void)r.read_raw_char();  // class_version (RC)
+    }
+
+    (void)r.read_bs();  // flags
+
+    std::string name;
+    if (version >= DwgVersion::R2007) {
+        name = read_table_text(r);
+    } else {
+        name = r.read_tv();
+    }
+
+    std::string description;
+    if (version >= DwgVersion::R2007) {
+        description = read_table_text(r);
+    } else {
+        description = r.read_tv();
+    }
+
+    double pattern_length = r.read_bd();
+    (void)pattern_length;
+
+    uint32_t num_dashes = r.read_bl();
+    if (num_dashes > 32) num_dashes = 32;
+
+    std::vector<float> dash_lengths;
+    dash_lengths.reserve(num_dashes);
+    for (uint32_t i = 0; i < num_dashes && !r.has_error(); ++i) {
+        dash_lengths.push_back(static_cast<float>(r.read_bd()));
+    }
+
+    // Skip any remaining handles
+    while (!r.has_error() && r.bit_offset() < main_data_bits) {
+        auto h = r.read_h();
+        if (h.value == 0 && h.code == 0) break;
+    }
+    (void)main_data_bits; (void)entity_bits;
+
+    if (!reader_ok(r)) return;
+
+    Linetype lt;
+    lt.name = name;
+    lt.description = description;
+    if (!dash_lengths.empty()) {
+        lt.pattern.dash_array = std::move(dash_lengths);
+    }
+
+    scene.add_linetype(std::move(lt));
+}
+
+// ============================================================
+// STYLE (type 53) table object
+// Fields: [class_version RC] + [flags BL] + [name TU]
+//         + [font_name TU] + [bigfont_name TU]
+//         + [height BD] + [width BD] + [oblique BD] + [flags2 BL]
+// ============================================================
+static void parse_style_object(DwgBitReader& r, SceneGraph& scene,
+                                DwgVersion version,
+                                const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
+                                size_t main_data_bits, size_t entity_bits) {
+    if (version >= DwgVersion::R2010) {
+        (void)r.read_raw_char();  // class_version (RC)
+    }
+
+    (void)r.read_bl();  // flags
+
+    std::string name;
+    if (version >= DwgVersion::R2007) {
+        name = read_table_text(r);
+    } else {
+        name = r.read_tv();
+    }
+
+    std::string font_name;
+    if (version >= DwgVersion::R2007) {
+        font_name = read_table_text(r);
+    } else {
+        font_name = r.read_tv();
+    }
+
+    std::string bigfont_name;
+    if (version >= DwgVersion::R2007) {
+        bigfont_name = read_table_text(r);
+    } else {
+        bigfont_name = r.read_tv();
+    }
+
+    double height = r.read_bd();
+    double width = r.read_bd();
+    double oblique = r.read_bd();
+    (void)oblique;
+    (void)r.read_bl();  // flags2
+
+    // Skip remaining handles
+    while (!r.has_error() && r.bit_offset() < main_data_bits) {
+        auto h = r.read_h();
+        if (h.value == 0 && h.code == 0) break;
+    }
+    (void)main_data_bits; (void)entity_bits;
+
+    if (!reader_ok(r)) return;
+
+    TextStyle style;
+    style.name = name;
+    style.font_file = font_name;
+    style.fixed_height = static_cast<float>(height);
+    style.width_factor = static_cast<float>(width);
+    style.is_shx = !bigfont_name.empty();
+
+    scene.add_text_style(std::move(style));
+}
+
+// ============================================================
+// DIMSTYLE (type 69) table object
+// Complex structure: skip most fields, create placeholder.
+// ============================================================
+static void parse_dimstyle_object(DwgBitReader& r, SceneGraph& scene,
+                                   DwgVersion version,
+                                   const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
+                                   size_t main_data_bits, size_t entity_bits) {
+    if (version >= DwgVersion::R2010) {
+        (void)r.read_raw_char();  // class_version (RC)
+    }
+
+    // DIMSTYLE is very complex — skip all fields
+    while (!r.has_error() && r.bit_offset() < main_data_bits) {
+        (void)r.read_bl();
+    }
+    (void)main_data_bits; (void)entity_bits;
+
+    if (!reader_ok(r)) return;
+
+    TextStyle dimstyle;
+    dimstyle.name = "[DIMSTYLE]";
+    scene.add_text_style(std::move(dimstyle));
+}
+
+// ============================================================
+// Public entry point for table objects
+// ============================================================
+void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
+                              SceneGraph& scene, DwgVersion version,
+                              size_t entity_bits, size_t main_data_bits) {
+    const uint8_t* obj_data = reader.data();
+    size_t obj_bytes = reader.data_size();
+
+    switch (obj_type) {
+        case 51:  // LAYER
+            parse_layer_object(reader, scene, version, obj_data, obj_bytes,
+                               main_data_bits, entity_bits);
+            break;
+        case 57:  // LTYPE
+            parse_ltype_object(reader, scene, version, obj_data, obj_bytes,
+                               main_data_bits, entity_bits);
+            break;
+        case 53:  // STYLE
+            parse_style_object(reader, scene, version, obj_data, obj_bytes,
+                               main_data_bits, entity_bits);
+            break;
+        case 69:  // DIMSTYLE
+            parse_dimstyle_object(reader, scene, version, obj_data, obj_bytes,
+                                  main_data_bits, entity_bits);
+            break;
+        default:
+            break;
+    }
+}
 
 // ============================================================
 // Public entry point — dispatches to type-specific parsers

@@ -42,6 +42,8 @@ void RenderBatcher::begin_frame(const Camera& camera) {
 }
 
 void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph& scene) {
+    // Skip block child entities — they are only rendered through INSERT expansion
+    if (entity.header.in_block) return;
     submit_entity_impl(entity, scene, Matrix4x4::identity(), 0);
 }
 

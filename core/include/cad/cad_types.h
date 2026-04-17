@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 
 namespace cad {
 
@@ -353,16 +354,13 @@ enum class LineJoinStyle : uint8_t {
 struct LinePattern {
     // Dash/gap lengths in drawing units. Empty = solid line.
     // Format: [dash, gap, dash, gap, ...]
-    float* dash_array = nullptr;
-    int dash_count = 0;
+    std::vector<float> dash_array;
 
-    bool is_solid() const { return dash_count == 0; }
+    bool is_solid() const { return dash_array.empty(); }
 
     float total_length() const {
         float total = 0;
-        for (int i = 0; i < dash_count; ++i) {
-            total += dash_array[i];
-        }
+        for (float v : dash_array) total += v;
         return total;
     }
 };

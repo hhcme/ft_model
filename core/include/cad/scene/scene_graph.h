@@ -85,6 +85,10 @@ public:
     // Find or create a layer by name. Returns the layer index.
     int32_t find_or_add_layer(const std::string& name);
 
+    // Update an existing layer's properties by index.
+    // Returns true if the layer was found and updated.
+    bool update_layer(int32_t index, const Layer& layer);
+
     const std::vector<Layer>& layers() const;
     const std::vector<Linetype>& linetypes() const;
     const std::vector<TextStyle>& text_styles() const;

@@ -150,6 +150,14 @@ int32_t SceneGraph::find_or_add_layer(const std::string& name) {
     return add_layer(std::move(layer));
 }
 
+bool SceneGraph::update_layer(int32_t index, const Layer& layer) {
+    if (index < 0 || index >= static_cast<int32_t>(m_impl->layers.size())) {
+        return false;
+    }
+    m_impl->layers[index] = layer;
+    return true;
+}
+
 const std::vector<Layer>& SceneGraph::layers() const { return m_impl->layers; }
 const std::vector<Linetype>& SceneGraph::linetypes() const { return m_impl->linetypes; }
 const std::vector<TextStyle>& SceneGraph::text_styles() const { return m_impl->text_styles; }
