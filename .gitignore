@@ -21,9 +21,14 @@ Thumbs.db
 test_data/*.json
 test_data/*.dxf
 test_data/*.dwg
+test_dwg/*.json
 test_dwg/*.dwg
 test_dwg/*.pdf
 test_dwg/*.png
+test_dwg/*.nwd
+
+# Cache
+.cache/
 
 # Compiled
 *.o
