@@ -10,6 +10,10 @@ option(CAD_BUILD_TESTS "Build unit tests" ON)
 option(CAD_BUILD_WASM "Build for WebAssembly (Emscripten)" OFF)
 option(CAD_BUILD_FLUTTER_PLUGIN "Build Flutter plugin native library" OFF)
 
+if(CAD_BUILD_TESTS)
+    enable_testing()
+endif()
+
 # Third-party dependencies
 # add_subdirectory(third_party)  # fmt not needed for now
 
@@ -26,8 +30,4 @@ endif()
 
 if(CAD_BUILD_FLUTTER_PLUGIN)
     add_subdirectory(platforms/flutter)
-endif()
-
-if(CAD_BUILD_TESTS)
-    enable_testing()
 endif()

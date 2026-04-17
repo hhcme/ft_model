@@ -227,6 +227,14 @@ struct Bounds3d {
     }
 
     void expand(const Vec3& point) {
+        // DWG R2010+ encodes unset coordinate fields as half-float
+        // exponent=31, which half_to_float maps to ±1e9f.
+        // Skip sentinel coordinates to avoid corrupting bounds.
+        constexpr float kSentinel = 1e9f;
+        if (std::abs(point.x) >= kSentinel) return;
+        if (std::abs(point.y) >= kSentinel) return;
+        if (std::abs(point.z) >= kSentinel) return;
+
         min.x = std::min(min.x, point.x);
         min.y = std::min(min.y, point.y);
         min.z = std::min(min.z, point.z);

@@ -18,9 +18,14 @@ Commercial product — no GPL or copyleft dependencies.
 # Build (from project root)
 cd build && cmake --build . --target render_export
 cd build && cmake --build . --target cad_core
+cd build && cmake --build . --target regression_smoke
 
 # Generate preview data from DXF
 ./build/core/test/render_export test_data/big.dxf test_data/big.json
+
+# Run parser/render smoke regression
+./build/core/test/regression_smoke
+ctest --test-dir build --output-on-failure -R regression_smoke
 
 # Serve Canvas 2D preview
 python3 -m http.server 8080
@@ -112,20 +117,6 @@ python3 -m http.server 8080
 - Text rendering: Canvas `fillText()` with proper world-to-screen transform, Y-flip, rotation, width scaling.
 - MTEXT formatting codes: strip `\P` → newline, remove `{\...}` style codes, remove stray braces.
 
-## DWG Parsing Rules
-
-- Reference implementation: libredwg (`/tmp/libredwg/`), used ONLY for spec verification — never copy code (GPL).
-- Entity type numbers are HEX in spec but DECIMAL in our dispatch: LINE=19(0x13), ARC=17(0x11), CIRCLE=18(0x12), TEXT=1, INSERT=7, HATCH=78(0x4E), etc.
-- **Object map**: per libredwg R2004 decoder, BOTH handle and offset accumulators reset per section.
-- **R2004+ CMC (Encoded Color)**: reads `BS(index)` + `BL(rgb)` + `RC(flag)` + conditional text. NOT just BS. Use `read_cmc_r2004()`.
-- **R2007+ string stream**: text fields (TV/TU/T) are in a separate string stream, NOT the main entity data stream. Skip text reads when version >= R2007 until string stream is implemented.
-- **HATCH edges**: 2RD coordinates use `read_rd()` (raw double), NOT `read_bd()`. Curve_type uses `read_raw_char()` (RC).
-- **DIMENSION common fields (R2010)**: `RC(class_version)` → `3BD(extrusion)` → `2RD(text_midpt)` → `BD(elevation)` → `RC(flag1)` → text → BD0×2 → 3BD_1 → BD0 → BS×3 → BD → B×3 → 2RD0. Note `2RD` = raw doubles.
-- Table objects (BLOCK_HEADER=49, LAYER=51, LTYPE=57, etc.) are non-graphical — dispatch but produce no geometry.
-- BLOCK(4)/ENDBLK(5) are stream markers — dispatch but produce no geometry.
-- Entity type dispatch in `dwg_objects.cpp` switch statement; add new types by case number + parser function.
-- `DwgVersion` enum: R2004=2, R2007=3, R2010=4.
-
 ## Canvas Preview (preview.html) Notes
 
 - Y-axis flip: `sy = -(wy - viewCenterY) * viewZoom + canvas.height / 2`
@@ -146,12 +137,20 @@ python3 -m http.server 8080
 - Include order: corresponding header → project headers → system headers.
 - **No special-casing for specific test files.** All fixes must be general algorithmic/math improvements.
 
+## DWG Development Rules
+
+- **DWG support is a general parser effort, not a `big.dwg` tuning exercise.**
+- `test_dwg/big.dwg` is a **sentinel regression fixture**, not a golden file whose exact object count or vertex layout should drive parser logic.
+- Prioritize fixes in this order: container/section decoding → object framing → handle/reference resolution → entity semantics → rendering/export validation.
+- Do not add filename checks, handle whitelists, coordinate heuristics, or object-type exceptions that only make one DWG pass.
+- When DWG behavior changes, verify it against both synthetic DXF fixtures and real-world sentinel files before considering the change valid.
+
 ## Git Workflow
 
 - Remote: `origin` → `https://gitee.com/smarthhc/ft_model.git`
 - Branch: `main` (开发阶段直推，后续可引入 feature 分支)
 - Commit style: conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `perf:`, `test:`)
-- Co-authored commits with Claude: add `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
+- Co-authored commits with Codex: add `Co-Authored-By: Codex Opus 4.6 <noreply@anthropic.com>`
 - Push with: `git push origin main`
 
 ### PR / Change Review Standards
@@ -167,6 +166,9 @@ python3 -m http.server 8080
 - Validate with `test_data/big.dxf` as primary real-world test case.
 - Visual comparison against `test_dwg/big.png` reference image.
 - Never commit test_data JSON files to git (they are in .gitignore).
+- `core/test/test_regression_smoke.cpp` is the lightweight parser/render gate for ongoing development.
+- `regression_smoke` must cover synthetic DXF fixtures exactly, and treat `test_dwg/big.dwg` as a lower-bound sentinel only.
+- DWG progress should be measured by broader fixture coverage and object/entity success rate improvements, not by matching one file's exact output.
 
 ## Agent Team
 
@@ -186,3 +188,32 @@ python3 -m http.server 8080
 2. **跨模块变更需协调** — 新增实体类型需 Parser → Scene/Infra → Renderer → Platform 串行配合
 3. **变更通知链**：核心结构变更（EntityVariant、RenderBatch 格式、SceneGraph 接口）必须通知所有受影响的 Agent
 4. **QA Agent 有只读全局权限** — 可审读任何模块代码，但不得修改生产代码，发现问题报给对应 Agent
+
+### 临时 DWG 攻坚小组（DWG Strike Team）
+
+在 DWG 支持完成之前（Phase 4），临时在 **Parser Agent** 内部增设 4 个专业子 Agent，以并行化庞大的实体解析工作。这些子 Agent 都工作在 `core/src/parser/` 目录下，但通过**文件级分工**和**阶段锁**避免冲突：
+
+| Sub-Agent | 指令文件 | 负责内容 | 依赖关系 |
+|-----------|---------|---------|---------|
+| **DWG Infra** | `.claude/agents/dwg-infra.md` | `read_bot`、CED 头、Classes Section、Object Map 基础设施 | **无阻塞，必须先完成** |
+| **DWG Geometry** | `.claude/agents/dwg-geometry.md` | 几何实体：POLYLINE/LWPOLYLINE、SPLINE、HATCH、SOLID、ELLIPSE、3DFACE | 依赖 DWG Infra |
+| **DWG Annotation** | `.claude/agents/dwg-annotation.md` | 标注文字：TEXT、MTEXT、DIMENSION、ATTRIB/ATTDEF | 依赖 DWG Infra |
+| **DWG Insert** | `.claude/agents/dwg-insert.md` | 块引用：INSERT/MINSERT、handle stream、block resolution | 依赖 DWG Infra |
+
+#### 并行策略与冲突规避
+
+- **阶段 1（串行）**：只有 **DWG Infra Agent** 修改 `dwg_reader.cpp` 和 `dwg_parser.cpp`。在它提交之前，其他 DWG 子 Agent 只能做代码审查和准备工作。
+- **阶段 2（并行）**：DWG Infra 完成后，**Geometry / Annotation / Insert** 三个子 Agent 可以**同时**修改 `dwg_objects.cpp` 的不同函数区域：
+  - Geometry Agent 负责 `parse_polyline*`、`parse_spline`、`parse_hatch`、`parse_solid`、`parse_ellipse`、`parse_3dface`
+  - Annotation Agent 负责 `parse_text`、`parse_mtext`、`parse_dimension`、`parse_attrib`
+  - Insert Agent 负责 `parse_insert` 以及 `dwg_parser.cpp` 中 handle-resolution 的辅助逻辑
+- **协调机制**：
+  - 所有子 Agent 在修改 `dwg_objects.cpp` 的 `switch (obj_type)` dispatch 表时，必须采用**追加-only**策略，不得重排已有 case。
+  - 如果多个子 Agent 同时需要修改同一个辅助函数（如 `half_to_float`），由 **DWG Infra Agent** 或主线程统一仲裁。
+- **Renderer / QA Agent 参与方式**：
+  - Renderer Agent 在 P1 中期介入，验证新增实体类型的 batcher 支持（大部分已有 DXF 对应逻辑）。
+  - QA Agent 全程跟踪，每次 P0 或 P1 里程碑后更新 `regression_smoke` 基线。
+
+#### 何时解散
+
+当 `test_dwg/big.dwg` 的解析结果在视觉上与 `test_dwg/big.png` 基本对齐，且 `skip_bits < 100` 时，DWG 攻坚小组解散，后续工作回归标准的 5-Agent 模块制。

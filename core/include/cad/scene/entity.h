@@ -44,6 +44,7 @@ struct EntityHeader {
     float lineweight = 0.0f;           // 0 = BYLAYER, negative = BYBLOCK
     bool is_visible = true;
     Bounds3d bounds = Bounds3d::empty();
+    int32_t block_index = -1;          // For INSERT: resolved block index (-1 = unresolved)
     uint8_t dimensionality = 0x02;     // 0x02 = 2D, 0x03 = 3D (reserved)
 };
 

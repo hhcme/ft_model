@@ -13,6 +13,9 @@ add_library(cad_core STATIC
     src/parser/dxf_blocks_reader.cpp
     src/parser/dxf_entities_reader.cpp
     src/parser/dxf_objects_reader.cpp
+    src/parser/dwg_reader.cpp
+    src/parser/dwg_parser.cpp
+    src/parser/dwg_objects.cpp
     src/scene/scene_graph.cpp
     src/scene/entity.cpp
     src/scene/layer.cpp

@@ -1,9 +1,12 @@
 // Export DXF entities to JSON for browser preview.
 // Usage: ./render_export input.dxf output.json
+//        ./render_export input.dwg output.json
 //
 // Output format: { "entities": [ { "type": "line", "points": [[x,y],...], "color": [r,g,b] }, ... ] }
 
 #include "cad/parser/dxf_parser.h"
+#include "cad/parser/dwg_parser.h"
+#include "cad/parser/dwg_objects.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/entity.h"
 #include "cad/renderer/render_batcher.h"
@@ -17,6 +20,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <map>
 
 using namespace cad;
 
@@ -52,10 +56,40 @@ int main(int argc, char** argv) {
     printf("Parsing: %s\n", input_path);
 
     SceneGraph scene;
-    DxfParser parser;
-    auto result = parser.parse_file(input_path, scene);
-    if (!result.ok()) {
-        fprintf(stderr, "Parse error: %s\n", result.message.c_str());
+
+    // Dispatch to DWG or DXF parser based on file extension
+    bool is_dwg = false;
+    const char* ext = input_path + strlen(input_path);
+    while (ext > input_path && *ext != '.' && *ext != '/' && *ext != '\\') ext--;
+    if (*ext == '.') {
+        is_dwg = (strcasecmp(ext, ".dwg") == 0);
+    }
+
+    Result parse_result;
+    if (is_dwg) {
+        fprintf(stderr, "[test] Using DwgParser for %s\n", input_path);
+        DwgParser dwg_parser;
+        parse_result = dwg_parser.parse_file(input_path, scene);
+
+        auto dispatch_counts = get_dwg_entity_dispatch_counts();
+        auto success_counts  = get_dwg_entity_success_counts();
+        fprintf(stderr, "[DWG] dispatch vs success by type:\n");
+        std::map<uint32_t, size_t> sorted_dispatch(dispatch_counts.begin(), dispatch_counts.end());
+        for (const auto& kv : sorted_dispatch) {
+            uint32_t t = kv.first;
+            size_t dispatched = kv.second;
+            size_t succeeded = success_counts.count(t) ? success_counts.at(t) : 0;
+            if (dispatched > 100) {
+                fprintf(stderr, "  type=%u dispatched=%zu success=%zu fail=%zu\n",
+                        t, dispatched, succeeded, dispatched - succeeded);
+            }
+        }
+    } else {
+        DxfParser dxf_parser;
+        parse_result = dxf_parser.parse_file(input_path, scene);
+    }
+    if (!parse_result.ok()) {
+        fprintf(stderr, "Parse error: %s\n", parse_result.message.c_str());
         return 1;
     }
 
@@ -64,13 +98,29 @@ int main(int argc, char** argv) {
 
     // Build set of entity indices that belong to block definitions.
     // These should only be rendered through INSERT references, not directly.
+    // However, only filter if INSERT expansion is actually working (at least
+    // one INSERT has a valid block_index). Otherwise, filtering removes most
+    // geometry without replacement.
     std::unordered_set<int32_t> block_entity_indices;
-    for (const auto& block : scene.blocks()) {
-        for (int32_t ei : block.entity_indices) {
-            block_entity_indices.insert(ei);
+    bool insert_expansion_active = false;
+    for (const auto& entity : entities) {
+        if (entity.type() == EntityType::Insert) {
+            auto* ins = std::get_if<InsertEntity>(&entity.data);
+            if (ins && ins->block_index >= 0) {
+                insert_expansion_active = true;
+                break;
+            }
         }
     }
-    printf("Block definition entities: %zu\n", block_entity_indices.size());
+    if (insert_expansion_active) {
+        for (const auto& block : scene.blocks()) {
+            for (int32_t ei : block.entity_indices) {
+                block_entity_indices.insert(ei);
+            }
+        }
+    }
+    printf("Block definition entities: %zu (insert_expansion=%s)\n",
+           block_entity_indices.size(), insert_expansion_active ? "yes" : "no");
 
     // Setup camera to fit the scene
     Camera camera;
@@ -112,7 +162,10 @@ int main(int argc, char** argv) {
             } else {
                 te = std::get_if<7>(&entity.data);
             }
-            if (te && te->height > 0.0f && !te->text.empty()) {
+            if (te && te->height > 0.0f && !te->text.empty() &&
+                std::isfinite(te->insertion_point.x) && std::isfinite(te->insertion_point.y) &&
+                std::isfinite(te->height) && std::isfinite(te->rotation) &&
+                std::isfinite(te->width_factor)) {
                 TextEntry entry;
                 entry.x = te->insertion_point.x;
                 entry.y = te->insertion_point.y;
@@ -150,7 +203,9 @@ int main(int argc, char** argv) {
         } else if (entity.type() == EntityType::Dimension) {
             // Also export dimension text as text entries
             const auto* dim = std::get_if<8>(&entity.data);
-            if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " ") {
+            if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " " &&
+                std::isfinite(dim->text_midpoint.x) && std::isfinite(dim->text_midpoint.y) &&
+                std::isfinite(dim->rotation)) {
                 TextEntry entry;
                 entry.x = dim->text_midpoint.x;
                 entry.y = dim->text_midpoint.y;
@@ -271,9 +326,14 @@ int main(int argc, char** argv) {
         }
         out << "\"vertices\": [";
 
+        int first_valid = 0;
         for (int i = 0; i < vert_count; ++i) {
-            if (i > 0) out << ",";
-            out << "[" << batch.vertex_data[i * 2] << "," << batch.vertex_data[i * 2 + 1] << "]";
+            double vx = batch.vertex_data[i * 2];
+            double vy = batch.vertex_data[i * 2 + 1];
+            if (!std::isfinite(vx) || !std::isfinite(vy)) continue;
+            if (first_valid > 0) out << ",";
+            out << "[" << vx << "," << vy << "]";
+            first_valid++;
         }
         out << "]}";
         if (bi + 1 < batches.size()) out << ",";

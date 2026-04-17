@@ -1,0 +1,236 @@
+#pragma once
+
+#include "cad/cad_errors.h"
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <unordered_map>
+
+namespace cad {
+
+class SceneGraph;
+
+// Forward-declared from dwg_reader.h — provides bit-level read operations,
+// LZ77 decompression, header decryption, CRC utilities.
+class DwgBitReader;
+
+
+// ============================================================
+// R2004+ file header (decrypted 108-byte header at offset 0x80)
+// ============================================================
+struct R2004FileHeader {
+    char file_id_string[13] = {};     // 12 bytes sentinel "AcFssFcAJMB\0"
+    uint32_t header_address = 0;      // @0x0C
+    uint32_t header_size = 0;         // @0x10 (should be 0x6C = 108)
+    uint32_t x04 = 0;                // @0x14 (always 4)
+    int32_t root_tree_node_gap = 0;   // @0x18
+    int32_t lowermost_left_gap = 0;   // @0x1C
+    int32_t lowermost_right_gap = 0;  // @0x20
+    uint32_t unknown_long = 0;        // @0x24 (always 1)
+    uint32_t last_section_id = 0;     // @0x28
+    uint64_t last_section_address = 0;// @0x2C (8 bytes)
+    uint64_t secondheader_address = 0;// @0x34 (8 bytes)
+    uint32_t numgaps = 0;             // @0x3C
+    uint32_t numsections = 0;         // @0x40
+    uint32_t x20 = 0;                // @0x44 (always 0x20)
+    uint32_t x80 = 0;                // @0x48 (always 0x80)
+    uint32_t x40 = 0;                // @0x4C (always 0x40)
+    uint32_t section_map_id = 0;      // @0x50
+    uint64_t section_map_address = 0; // @0x54 (8 bytes, add 0x100 for file offset)
+    int32_t section_info_id = 0;      // @0x5C
+    uint32_t section_array_size = 0;  // @0x60
+    uint32_t gap_array_size = 0;      // @0x64
+    uint32_t crc32 = 0;              // @0x68
+};
+
+// ============================================================
+// R2004+ section page map entry
+// ============================================================
+struct SectionPageMapEntry {
+    int32_t number = 0;   // Section number (negative = gap)
+    uint32_t size = 0;    // Section size
+    uint64_t address = 0; // Computed running address in file
+};
+
+// ============================================================
+// R2004+ section info descriptor
+// ============================================================
+struct SectionInfoDesc {
+    uint64_t size = 0;           // Total decompressed size
+    uint32_t num_sections = 0;   // Number of pages
+    uint32_t max_decomp_size = 0;// Max page decompressed size
+    uint32_t compressed = 0;     // Compression flag (2 = compressed)
+    uint32_t type = 0;          // Section type
+    uint32_t encrypted = 0;     // Encryption type (0=none)
+    char name[64] = {};         // Section name
+    // Page records for this section
+    struct PageInfo {
+        int32_t number = 0;         // Page number (key for page map lookup)
+        uint32_t size = 0;          // Compressed size
+        uint64_t address = 0;       // Decompressed data offset (NOT file offset)
+    };
+    std::vector<PageInfo> pages;
+};
+
+// ============================================================
+// DWG R2004+ section data storage
+// ============================================================
+struct DwgFileSections {
+    std::vector<uint8_t> header_vars;      // Section 0: Header Variables
+    std::vector<uint8_t> classes;          // Section 1: Classes
+    std::vector<uint8_t> object_map;       // Section 2: Object Map
+    std::vector<uint8_t> object_data;      // Section 3+: Object Data (merged)
+
+    // Absolute file offset of the start of the object_data section.
+    // Used to convert absolute file offsets (from handle_map) to relative
+    // offsets within the object_data buffer.
+    size_t object_data_file_offset = 0;
+
+    // handle -> offset within object_data
+    std::unordered_map<uint64_t, size_t> handle_map;
+
+    // class type number -> (dxf_name, is_entity)
+    std::unordered_map<uint32_t, std::pair<std::string, bool>> class_map;
+
+    // block_header handle -> block name (from parsing type=49 objects)
+    std::unordered_map<uint64_t, std::string> block_names;
+
+    // Per-page info for Object Data pages: (offset_in_object_data, valid_byte_count)
+    // Used for page-by-page entity scanning when handle_map offsets are unreliable.
+    std::vector<std::pair<size_t, size_t>> object_pages;
+
+    // Object Map page size (max_decomp_size from section_info).
+    // Used to detect page boundaries during stream-based Object Map parsing.
+    uint32_t objmap_page_size = 0;
+};
+
+// ============================================================
+// DWG version constants
+// ============================================================
+enum class DwgVersion : uint8_t {
+    Unknown = 0,
+    R2000   = 1,    // AC1015
+    R2004   = 2,    // AC1018
+    R2007   = 3,    // AC1021
+    R2010   = 4,    // AC1024
+    R2013   = 5,    // AC1027
+    R2018   = 6,    // AC1032
+};
+
+// Forward-declared from dwg_objects.h — type-specific entity/object parsing.
+struct EntityHeader;
+void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
+                       const EntityHeader& header, SceneGraph& scene,
+                       DwgVersion version);
+
+// ============================================================
+// DWG file parser — reads DWG files and populates a SceneGraph
+//
+// Supports R2004+ format (AC1018, AC1021, AC1024, AC1027, AC1032).
+// Uses DwgBitReader for bitstream decoding, LZ77 decompression,
+// and XOR header decryption.
+// ============================================================
+class DwgParser {
+public:
+    DwgParser();
+    ~DwgParser();
+
+    // Non-copyable
+    DwgParser(const DwgParser&) = delete;
+    DwgParser& operator=(const DwgParser&) = delete;
+
+    // Parse from file path
+    Result parse_file(const std::string& filepath, SceneGraph& scene);
+
+    // Parse from memory buffer
+    Result parse_buffer(const uint8_t* data, size_t size, SceneGraph& scene);
+
+private:
+    // ---- Internal parsing stages ----
+
+    // Read and validate the version string at offset 0
+    Result read_version(const uint8_t* data, size_t size);
+
+    // Decrypt the R2004+ file header at offset 0x80, parse R2004FileHeader fields
+    Result decrypt_r2004_header(const uint8_t* data, size_t size);
+
+    // Read the section page map at section_map_address+0x100, decompress, parse entries
+    Result read_section_page_map(const uint8_t* data, size_t size);
+
+    // Read section info page to get section descriptors and page records
+    Result read_section_info(const uint8_t* data, size_t size);
+
+    // Fallback: discover sections by scanning page headers when section info fails
+    Result build_sections_from_page_headers(const uint8_t* data, size_t size);
+
+    // Decompress and assemble all file sections from page records
+    Result read_sections(const uint8_t* data, size_t size);
+
+    // Parse Section 0: Header Variables (extents, metadata)
+    Result parse_header_variables(SceneGraph& scene);
+
+    // Parse Section 1: Classes (type number -> name + is_entity)
+    Result parse_classes();
+
+    // Parse Section 2: Object Map (handle -> offset in object data)
+    Result parse_object_map(const uint8_t* data, size_t size);
+
+    // Iterate the object map and parse each entity via parse_dwg_entity()
+    Result parse_objects(SceneGraph& scene);
+
+    // Parse section info descriptors from decompressed data
+    Result parse_section_info_data(std::vector<uint8_t> info_data);
+
+    // ---- Helpers ----
+
+    // Look up a section page map entry by page number.
+    // Returns pointer to the entry, or nullptr if not found.
+    const SectionPageMapEntry* find_page_map_entry(int32_t page_number) const;
+
+    // Scan file page headers to find the file offset for a given page number.
+    // Returns file offset, or (uint64_t)-1 if not found.
+    uint64_t find_page_file_offset_(const uint8_t* data, size_t file_size,
+                                     int32_t target_page_number) const;
+
+    // Decode modular char (variable-length encoding, high bit = continuation)
+    static uint32_t read_modular_char(const uint8_t* data, size_t size,
+                                       size_t& offset);
+
+    // Decode signed modular char (MC) — sign-extended from highest data bit
+    static int32_t read_modular_char_signed(const uint8_t* data, size_t size,
+                                             size_t& offset);
+
+    // Read a little-endian 32-bit value from data at offset
+    static uint32_t read_le32(const uint8_t* data, size_t offset);
+
+    // Read a little-endian 16-bit value from data at offset
+    static uint16_t read_le16(const uint8_t* data, size_t offset);
+
+    // Read a 6-byte little-endian address (48 bits) from data at offset
+    static uint64_t read_le48(const uint8_t* data, size_t offset);
+
+    // Decrypt a 32-byte R2004+ section page header at given file address
+    static void decrypt_section_page_header(const uint8_t* encrypted,
+                                             uint8_t* decrypted,
+                                             size_t address);
+
+    // ---- Internal state ----
+
+    DwgVersion m_version = DwgVersion::Unknown;
+    DwgFileSections m_sections;
+    R2004FileHeader m_file_header;
+
+    // Section page map entries (from section page map)
+    std::vector<SectionPageMapEntry> m_page_map_entries;
+
+    // Section info descriptors (from section info page)
+    std::vector<SectionInfoDesc> m_section_infos;
+
+    // ---- DWG block definition tracking ----
+    // In DWG, block definitions are marked by BLOCK (type 4) / ENDBLK (type 5)
+    // entities in the object stream. Entities between them belong to the block.
+    std::string m_current_block_name;
+    size_t m_block_entity_start = 0;
+};
+
+} // namespace cad
