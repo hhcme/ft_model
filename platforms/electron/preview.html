@@ -132,7 +132,7 @@ canvas:active { cursor: grabbing; }
 </head>
 <body>
 <div id="toolbar">
-    <input type="file" id="fileInput" accept=".json,.json.gz,.dxf" />
+    <input type="file" id="fileInput" accept=".json,.json.gz,.dwg,.dxf" />
     <button id="fitBtn">Fit View</button>
     <button id="resetBtn">Reset</button>
     <button id="layerBtn">Layers</button>
@@ -959,15 +959,48 @@ fileInput.addEventListener('change', async (e) => {
     console.log('[load] Reading file:', file.name, 'size:', file.size);
 
     try {
-        const text = file.name.endsWith('.gz')
-            ? await new Response(
-                  file.slice().stream().pipeThrough(new DecompressionStream('gzip'))
-              ).text()
-            : await file.text();
+        let text;
+        if (file.name.endsWith('.dwg') || file.name.endsWith('.dxf')) {
+            // Upload DWG/DXF to local /parse server, get JSON back
+            statusFile.textContent = 'Parsing ' + file.name + '...';
+            console.log('[load] Uploading to /parse...');
+            const res = await fetch('/parse', {
+                method: 'POST',
+                body: file,
+            });
+            if (!res.ok) {
+                const err = await res.text();
+                throw new Error('Parse failed: ' + err);
+            }
+            // Response is always gzipped JSON
+            const ds = new DecompressionStream('gzip');
+            const reader = res.body.getReader();
+            const chunks = [];
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+            }
+            const stream = new ReadableStream({
+                start(controller) {
+                    for (const chunk of chunks) controller.enqueue(chunk);
+                    controller.close();
+                }
+            });
+            text = await new Response(stream.pipeThrough(ds)).text();
+            fileName = file.name;
+        } else {
+            // Local .json or .json.gz file
+            text = file.name.endsWith('.gz')
+                ? await new Response(
+                      file.slice().stream().pipeThrough(new DecompressionStream('gzip'))
+                  ).text()
+                : await file.text();
+            fileName = file.name;
+        }
         console.log('[load] Text length:', text.length);
 
         drawData = JSON.parse(text);
-        fileName = file.name;
 
         console.log('[load] Parsed JSON:', {
             entityCount: drawData.entityCount,
@@ -1006,6 +1039,17 @@ fileInput.addEventListener('change', async (e) => {
 // Detects .gz suffix and uses DecompressionStream API.
 // ============================================================
 async function loadDataUrl(url) {
+    if (url.endsWith('.dwg') || url.endsWith('.dxf')) {
+        // Fetch the DWG/DXF file then upload to /parse
+        statusFile.textContent = 'Parsing ' + url + '...';
+        const fileRes = await fetch(url);
+        if (!fileRes.ok) throw new Error('HTTP ' + fileRes.status + ': ' + url);
+        const fileBlob = await fileRes.blob();
+        const parseRes = await fetch('/parse', { method: 'POST', body: fileBlob });
+        if (!parseRes.ok) throw new Error('Parse failed: ' + await parseRes.text());
+        const ds = new DecompressionStream('gzip');
+        return JSON.parse(await new Response(parseRes.body.pipeThrough(ds)).text());
+    }
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + url);
     const text = url.endsWith('.gz')
