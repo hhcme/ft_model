@@ -19,12 +19,13 @@ Commercial product — no GPL or copyleft dependencies.
 cd build && cmake --build . --target render_export
 cd build && cmake --build . --target cad_core
 
-# Generate preview data from DXF
-./build/core/test/render_export test_data/big.dxf test_data/big.json
+# Generate preview data from DXF/DWG (auto-gzip if output ends with .gz)
+./build/core/test/render_export test_data/big.dxf test_data/big.json.gz
+./build/core/test/render_export test_dwg/big.dwg test_dwg/big.json.gz
 
 # Serve Canvas 2D preview
 python3 -m http.server 8080
-# Open: http://localhost:8080/platforms/electron/preview.html?data=/test_data/big.json
+# Open: http://localhost:8080/platforms/electron/preview.html?data=/test_dwg/big.json.gz
 ```
 
 ## Architecture Rules
@@ -77,11 +78,16 @@ python3 -m http.server 8080
 - Outputs `RenderBatch` with topology (LineList/LineStrip/TriangleList), color, vertex_data.
 - **entity_starts**: For LineStrip batches, records vertex index where each entity starts. Essential for correct Canvas rendering (moveTo breaks between entities).
 - **Transform pipeline**: `submit_entity` → `submit_entity_impl` with Matrix4x4 xform. INSERT block entities get composed transform applied during tessellation.
+- **Block cache**: `m_block_cache` (cleared each `begin_frame`). Tessellate once, reuse for all INSERT instances of that block.
 - Color resolution: entity ACI override (color_override != 256 && != 0) → layer color fallback.
 - TEXT/MTEXT entities: render thin underline in vertex data (actual text rendered by viewer via `fillText()`).
+- Output format: raw JSON or gzip (auto-detected by `.gz` suffix). Coordinates written with `%.4g` precision.
 
 ### Block / INSERT Handling
-- **Block definition entities must be filtered** when iterating — they are rendered ONLY through INSERT references with transforms applied.
+- **Block definition entities must be filtered** when iterating — they are rendered ONLY through INSERT references with transforms applied. Use `EntityHeader.in_block` flag.
+- **Block tessellation cache**: each unique block definition is tessellated once per frame (identity transform), stored in `m_block_cache` as `block_index → (batches, vertex_count)`. Subsequent INSERTs reuse the cached tessellation, applying transforms on-the-fly.
+- **Per-block vertex budget**: blocks whose cached tessellation exceeds 500,000 vertices are skipped — prevents OOM when a complex block is referenced by thousands of INSERTs.
+- **Per-INSERT instance cap**: INSERT arrays (M×N) are sampled uniformly when total instances exceed 100 — preserves visual density while bounding memory. Apply `sqrt(MAX_INSTANCES / total)` scaling per dimension.
 - INSERT transform: `Matrix4x4::affine_2d(scale, rotation, translation)` composed with parent transform.
 - **Row-vector convention:** `insert_xform * translation_2d(offset)` then `block_xform * parent_xform` (child first, then parent).
 - Depth limit of 16 for recursive INSERT nesting.
@@ -133,7 +139,8 @@ python3 -m http.server 8080
 - Touch input: pinch zoom with two-finger gesture.
 - Layer panel: visibility toggles by layer name (frozen layers hidden by default).
 - Batch-level frustum culling using precomputed batch bounds (world coords).
-- `big.json` is committed to git but generated DXF/DWG test data is NOT (in .gitignore).
+- **Gzip support**: preview.html fetches `.json.gz` files using `fetch()` with `Automatic gzip decompression` (`DecompressionStream`) — native browser API, no extra JS library needed.
+- `test_dwg/big.json.gz` is generated from `big.dwg` and NOT committed to git (in .gitignore).
 
 ## Coding Standards
 
@@ -164,9 +171,10 @@ python3 -m http.server 8080
 ## Testing
 
 - Use ezdxf (MIT) to generate test DXF files.
-- Validate with `test_data/big.dxf` as primary real-world test case.
+- Primary test files: `test_data/big.dxf` (DXF) and `test_dwg/big.dwg` (DWG R2010/AC1024).
 - Visual comparison against `test_dwg/big.png` reference image.
-- Never commit test_data JSON files to git (they are in .gitignore).
+- Regression: run `render_export` on both DXF and DWG, verify JSON output and vertex counts.
+- Never commit generated JSON files to git (they are in .gitignore).
 
 ## Agent Team
 

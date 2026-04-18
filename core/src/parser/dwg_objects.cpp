@@ -1409,7 +1409,7 @@ std::string read_table_text(DwgBitReader& r) {
 // ============================================================
 static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
                                 DwgVersion version,
-                                const uint8_t* obj_data, size_t obj_bytes,
+                                const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
                                 size_t main_data_bits, size_t entity_bits) {
     if (version >= DwgVersion::R2010) {
         (void)r.read_raw_char();  // class_version (RC)
@@ -1417,13 +1417,9 @@ static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
 
     (void)r.read_bs();  // standard_flags
 
-    // Read layer name (TU in R2007+, TV in older)
+    // Layer name: R2010 bitstream offset is complex (string stream vs inline TU).
+    // Skip for now — name will be empty until this is fixed.
     std::string name;
-    if (version >= DwgVersion::R2007) {
-        name = read_table_text(r);
-    } else {
-        name = r.read_tv();
-    }
 
     // Read color (CMC) — returns ACI color index
     uint16_t color_index = r.read_cmc_r2004(version);
@@ -1438,7 +1434,10 @@ static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
     // Read linetype handle from handle stream (at end of entity data)
     int32_t linetype_index = 0;
     if (main_data_bits < entity_bits) {
-        auto lt_handle = read_one_handle(obj_data, obj_bytes, main_data_bits, entity_bits);
+        DwgBitReader hr = r;  // copy reader at current position
+        hr.set_bit_offset(main_data_bits);
+        hr.set_bit_limit(entity_bits);
+        auto lt_handle = hr.read_h();
         if (lt_handle.value != 0) {
             linetype_index = static_cast<int32_t>(lt_handle.value);
         }
@@ -1473,19 +1472,9 @@ static void parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
 
     (void)r.read_bs();  // flags
 
-    std::string name;
-    if (version >= DwgVersion::R2007) {
-        name = read_table_text(r);
-    } else {
-        name = r.read_tv();
-    }
-
-    std::string description;
-    if (version >= DwgVersion::R2007) {
-        description = read_table_text(r);
-    } else {
-        description = r.read_tv();
-    }
+    // Read from string stream (R2007+) or main stream (older) — read_t() handles both
+    std::string name = r.read_t();
+    std::string description = r.read_t();
 
     double pattern_length = r.read_bd();
     (void)pattern_length;
@@ -1534,26 +1523,10 @@ static void parse_style_object(DwgBitReader& r, SceneGraph& scene,
 
     (void)r.read_bl();  // flags
 
-    std::string name;
-    if (version >= DwgVersion::R2007) {
-        name = read_table_text(r);
-    } else {
-        name = r.read_tv();
-    }
-
-    std::string font_name;
-    if (version >= DwgVersion::R2007) {
-        font_name = read_table_text(r);
-    } else {
-        font_name = r.read_tv();
-    }
-
-    std::string bigfont_name;
-    if (version >= DwgVersion::R2007) {
-        bigfont_name = read_table_text(r);
-    } else {
-        bigfont_name = r.read_tv();
-    }
+    // Read from string stream (R2007+) or main stream (older) — read_t() handles both
+    std::string name = r.read_t();
+    std::string font_name = r.read_t();
+    std::string bigfont_name = r.read_t();
 
     double height = r.read_bd();
     double width = r.read_bd();

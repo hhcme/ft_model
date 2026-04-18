@@ -1,6 +1,7 @@
 // Export DXF entities to JSON for browser preview.
-// Usage: ./render_export input.dxf output.json
-//        ./render_export input.dwg output.json
+// Usage: ./render_export input.dxf output.json.gz
+//        ./render_export input.dwg output.json.gz  (auto-gzip if .gz suffix)
+//        ./render_export input.dwg output.json     (raw JSON)
 //
 // Output format: { "entities": [ { "type": "line", "points": [[x,y],...], "color": [r,g,b] }, ... ] }
 
@@ -21,8 +22,78 @@
 #include <unordered_set>
 #include <vector>
 #include <map>
+#include <cstring>
+#include <zlib.h>
 
 using namespace cad;
+
+// ============================================================
+// Streaming output: wraps either ofstream or gzip stream.
+// Provides operator<< so existing << chains work unchanged.
+// ============================================================
+class JsonWriter {
+public:
+    explicit JsonWriter(const std::string& path) {
+        if (ends_with_gz(path)) {
+            m_gz = gzopen(path.c_str(), "wb");
+            m_is_gz = !!m_gz;
+        } else {
+            m_file.open(path, std::ios::binary);
+        }
+    }
+    ~JsonWriter() { close(); }
+
+    bool is_open() const { return m_is_gz ? !!m_gz : m_file.is_open(); }
+    bool is_gzip() const { return m_is_gz; }
+
+    void close() {
+        if (m_is_gz && m_gz) {
+            gzclose(m_gz);
+            m_gz = nullptr;
+        }
+        if (m_file.is_open()) {
+            m_file.close();
+        }
+    }
+
+    JsonWriter& write(const char* s, size_t len) {
+        if (m_is_gz) {
+            gzwrite(m_gz, s, static_cast<unsigned>(len));
+        } else {
+            m_file.write(s, static_cast<std::streamsize>(len));
+        }
+        return *this;
+    }
+
+    // operator<< for strings and numeric types
+    JsonWriter& operator<<(const char* s) { write(s, strlen(s)); return *this; }
+    JsonWriter& operator<<(const std::string& s) { write(s.c_str(), s.size()); return *this; }
+    JsonWriter& operator<<(char c) { write(&c, 1); return *this; }
+
+    template<class T>
+    JsonWriter& operator<<(T v) {
+        char buf[64];
+        int n = std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(v));
+        write(buf, n);
+        return *this;
+    }
+    JsonWriter& operator<<(int v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%d", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%ld", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(long long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lld", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(unsigned v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%u", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(unsigned long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lu", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(float v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.4g", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(double v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.4g", v); write(buf, n); return *this; }
+
+private:
+    static bool ends_with_gz(const std::string& path) {
+        return path.size() >= 3 && strcmp(path.c_str() + path.size() - 3, ".gz") == 0;
+    }
+
+    std::ofstream m_file;
+    gzFile m_gz = nullptr;
+    bool m_is_gz = false;
+};
 
 struct DrawCommand {
     std::string type; // "lines" or "linestrip"
@@ -42,6 +113,22 @@ static std::string escape_json(const std::string& s) {
         }
     }
     return out;
+}
+
+// Format a coordinate with limited precision to reduce JSON file size.
+// Uses %.4g (4 significant figures) for compact scientific notation on large values.
+static std::string fmt_coord(double v) {
+    if (!std::isfinite(v)) return "0";
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.4g", v);
+    // Strip unnecessary trailing zeros after decimal point
+    char* dot = strchr(buf, '.');
+    if (dot) {
+        char* end = buf + strlen(buf) - 1;
+        while (end > dot && *end == '0') { *end = '\0'; end--; }
+        if (end == dot) *end = '\0'; // remove lone decimal point
+    }
+    return buf;
 }
 
 int main(int argc, char** argv) {
@@ -249,11 +336,12 @@ int main(int argc, char** argv) {
     auto& batches = batcher.batches();
     printf("Generated %zu batches\n", batches.size());
 
-    std::ofstream out(output_path);
+    JsonWriter out(output_path);
     if (!out.is_open()) {
         fprintf(stderr, "Cannot open output: %s\n", output_path);
         return 1;
     }
+    fprintf(stderr, "[output] %s (%s)\n", output_path, out.is_gzip() ? "gzip" : "raw");
 
     auto& meta = scene.drawing_info();
     auto total_b = scene.total_bounds();

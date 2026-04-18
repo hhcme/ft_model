@@ -2,6 +2,7 @@
 
 #include "cad/cad_types.h"
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace cad {
@@ -77,6 +78,9 @@ public:
     const std::vector<RenderBatch>& batches() const { return m_batches; }
     std::vector<RenderBatch>& batches() { return m_batches; }
 
+    // Cache: tessellate each unique block definition once, reuse for all INSERTs.
+    void clear_block_cache() { m_block_cache.clear(); }
+
 private:
     // Internal submit with optional transform (for INSERT block entities)
     void submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
@@ -94,6 +98,9 @@ private:
     float m_tessellation_quality;
     std::vector<RenderBatch> m_batches;
     const Camera* m_camera = nullptr;
+    // Block tessellation cache: block_index → pre-tessellated batches (identity transform)
+    // Paired with total vertex count to enforce per-block vertex budget.
+    std::unordered_map<int32_t, std::pair<std::vector<RenderBatch>, size_t>> m_block_cache;
 };
 
 } // namespace cad

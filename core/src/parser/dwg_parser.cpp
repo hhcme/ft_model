@@ -1528,6 +1528,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             // Handle table objects (LAYER, LTYPE, STYLE, DIMSTYLE)
             if (obj_type == 51 || obj_type == 53 ||
                 obj_type == 57 || obj_type == 69) {
+                fprintf(stderr, "[DWG TABLE] type=%u bit_pos=%zu has_str=%d\n",
+                        obj_type, reader.bit_offset(), reader.has_string_stream());
                 parse_dwg_table_object(reader, obj_type, scene,
                                        m_version, entity_bits, main_data_bits);
             }
@@ -1703,7 +1705,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     // "*D1077"). Use as a fallback only when the entity map doesn't have the name.
     {
         size_t resolved = 0;
-        bool apply = false;  // Disabled: INSERT expansion causes massive tessellation overhead. Re-enable after adding entity expansion limits.
+        bool apply = true;  // INSERT expansion enabled with block tessellation caching in RenderBatcher
         if (apply) {
             auto& all_entities = scene.entities();
             for (auto& [eidx, handles] : insert_handles) {

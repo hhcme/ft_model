@@ -10,7 +10,7 @@ target_link_libraries(test_parser PRIVATE cad_core)
 add_executable(render_export
     test_render_export.cpp
 )
-target_link_libraries(render_export PRIVATE cad_core)
+target_link_libraries(render_export PRIVATE cad_core -lz)
 
 add_executable(regression_smoke
     test_regression_smoke.cpp
