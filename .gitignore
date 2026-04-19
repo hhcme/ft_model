@@ -19,9 +19,11 @@ Thumbs.db
 
 # Large test data
 test_data/*.json
+test_data/*.json.gz
 test_data/*.dxf
 test_data/*.dwg
 test_dwg/*.json
+test_dwg/*.json.gz
 test_dwg/*.dwg
 test_dwg/*.pdf
 test_dwg/*.png
