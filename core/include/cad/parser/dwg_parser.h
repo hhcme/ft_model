@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cad/cad_errors.h"
+#include "cad/cad_types.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -230,7 +231,13 @@ private:
     // In DWG, block definitions are marked by BLOCK (type 4) / ENDBLK (type 5)
     // entities in the object stream. Entities between them belong to the block.
     std::string m_current_block_name;
+    Vec3 m_current_block_base_point = Vec3::zero();
     size_t m_block_entity_start = 0;
+
+    // ---- DWG layer handle tracking ----
+    // Maps LAYER object handle → layer_index in SceneGraph.
+    // Populated during LAYER (type 51) parsing, used during entity layer resolution.
+    std::unordered_map<uint64_t, int32_t> m_layer_handle_to_index;
 };
 
 } // namespace cad

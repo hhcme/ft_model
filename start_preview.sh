@@ -26,5 +26,5 @@ fi
 # 启动 HTTP 服务器
 echo "[2/2] 启动 HTTP 服务..."
 cd "$PROJECT_ROOT" || exit 1
-open "http://localhost:8080/platforms/electron/preview.html?data=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$OUTPUT_JSON'))")"
-python3 -m http.server 8080
+open "http://localhost:8088/platforms/electron/preview.html?data=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$OUTPUT_JSON'))")"
+python3 -m http.server 8088

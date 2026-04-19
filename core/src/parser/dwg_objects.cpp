@@ -125,6 +125,7 @@ void parse_circle(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     circle.start_angle = 0.0f;
     circle.end_angle   = math::TWO_PI;
     EntityHeader circ_hdr = hdr;
+    circ_hdr.type = EntityType::Circle;
     circ_hdr.bounds = entity_bounds_circle(circle);
     scene.add_entity(make_entity<1>(circ_hdr, std::move(circle)));
 }
@@ -153,6 +154,7 @@ void parse_arc(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     arc.start_angle = static_cast<float>(start_angle);
     arc.end_angle   = static_cast<float>(end_angle);
     EntityHeader arc_hdr = hdr;
+    arc_hdr.type = EntityType::Arc;
     arc_hdr.bounds = entity_bounds_arc(arc);
     scene.add_entity(make_entity<2>(arc_hdr, std::move(arc)));
 }
@@ -822,7 +824,7 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
         if (!reader_ok(r) || num_colors > 1000) { dbg_hatch_fail(1); return; }
         for (uint32_t c = 0; c < num_colors; ++c) {
             (void)r.read_bd();                 // shift_value
-            r.read_cmc_r2004(version);         // color (R2004+ CMC)
+            (void)r.read_cmc_r2004(version);   // color (R2004+ CMC)
         }
         // gradient_name: R2007+ uses string stream via read_t()
         if (version < DwgVersion::R2007) {
@@ -1407,28 +1409,55 @@ std::string read_table_text(DwgBitReader& r) {
 // Fields: [class_version RC] + [standard_flags BS] + [name TU]
 //         + [color CMC] + [linetype handle H] + [more handles]
 // ============================================================
-static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
+static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
                                 DwgVersion version,
                                 const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
                                 size_t main_data_bits, size_t entity_bits) {
-    if (version >= DwgVersion::R2010) {
-        (void)r.read_raw_char();  // class_version (RC)
+    // R2010+ COMMON_TABLE_FLAGS (after R2004):
+    //   T(name) [string stream] → BS(is_xref_resolved) → [H(xref) in handle stream]
+    // Then LAYER-specific:
+    //   BS(flag0: frozen|off|frozen_new|locked|plotflag|linewt) → CMC(color)
+
+    std::string name = r.read_t();
+
+    // BS(is_xref_resolved)
+    (void)r.read_bs();
+
+    // BS(flag0) — bitmask: frozen(1), off(2), frozen_in_new(4), locked(8), plotflag(16), linewt(>>5)
+    uint16_t flag0 = r.read_bs();
+    bool is_frozen = (flag0 & 1) != 0;
+    bool is_locked = (flag0 & 8) != 0;
+
+    auto cmc = r.read_cmc_r2004(version);
+
+    Color color;
+    if (cmc.index > 0) {
+        color = Color::from_aci(static_cast<int>(cmc.index));
+    } else if (cmc.has_rgb) {
+        uint8_t high_byte = static_cast<uint8_t>(cmc.rgb >> 24);
+        if (high_byte >= 0xC0) {
+            color = Color::from_aci(static_cast<uint8_t>(cmc.rgb & 0xFF));
+        } else {
+            uint32_t rgb24 = cmc.rgb & 0xFFFFFF;
+            if (rgb24 != 0) {
+                color = Color(static_cast<uint8_t>(rgb24 & 0xFF),
+                              static_cast<uint8_t>((rgb24 >> 8) & 0xFF),
+                              static_cast<uint8_t>((rgb24 >> 16) & 0xFF));
+            } else {
+                color = Color::white();
+            }
+        }
+    } else {
+        color = Color::white();
     }
 
-    (void)r.read_bs();  // standard_flags
-
-    // Layer name: R2010 bitstream offset is complex (string stream vs inline TU).
-    // Skip for now — name will be empty until this is fixed.
-    std::string name;
-
-    // Read color (CMC) — returns ACI color index
-    uint16_t color_index = r.read_cmc_r2004(version);
-    Color color = Color::from_aci(static_cast<int>(color_index));
-
-    // Skip remaining handles before the handle stream
-    while (!r.has_error() && r.bit_offset() < main_data_bits) {
-        auto h = r.read_h();
-        if (h.value == 0 && h.code == 0) break;
+    // For R2010+, handles are in a separate handle stream (after main_data_bits).
+    // Skip remaining main-data fields only for pre-R2010 formats.
+    if (version < DwgVersion::R2010) {
+        while (!r.has_error() && r.bit_offset() < main_data_bits) {
+            auto h = r.read_h();
+            if (h.value == 0 && h.code == 0) break;
+        }
     }
 
     // Read linetype handle from handle stream (at end of entity data)
@@ -1443,17 +1472,20 @@ static void parse_layer_object(DwgBitReader& r, SceneGraph& scene,
         }
     }
 
-    if (!reader_ok(r)) return;
+    if (!reader_ok(r)) return -1;
 
     // Add/update layer in SceneGraph
     int32_t layer_idx = scene.find_or_add_layer(name);
     Layer layer;
     layer.name = name;
     layer.color = color;
+    layer.is_frozen = is_frozen;
+    layer.is_locked = is_locked;
     if (linetype_index != 0) {
         layer.linetype_index = linetype_index;
     }
     scene.update_layer(layer_idx, layer);
+    return layer_idx;
 }
 
 // ============================================================
@@ -1583,14 +1615,21 @@ static void parse_dimstyle_object(DwgBitReader& r, SceneGraph& scene,
 // ============================================================
 void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               SceneGraph& scene, DwgVersion version,
-                              size_t entity_bits, size_t main_data_bits) {
+                              size_t entity_bits, size_t main_data_bits,
+                              uint64_t handle,
+                              std::unordered_map<uint64_t, int32_t>* layer_handle_to_index) {
     const uint8_t* obj_data = reader.data();
     size_t obj_bytes = reader.data_size();
 
     switch (obj_type) {
         case 51:  // LAYER
-            parse_layer_object(reader, scene, version, obj_data, obj_bytes,
-                               main_data_bits, entity_bits);
+            {
+                int32_t layer_idx = parse_layer_object(reader, scene, version, obj_data, obj_bytes,
+                                   main_data_bits, entity_bits);
+                if (layer_handle_to_index && layer_idx >= 0) {
+                    (*layer_handle_to_index)[handle] = layer_idx;
+                }
+            }
             break;
         case 57:  // LTYPE
             parse_ltype_object(reader, scene, version, obj_data, obj_bytes,

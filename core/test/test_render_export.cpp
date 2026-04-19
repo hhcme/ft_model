@@ -7,7 +7,6 @@
 
 #include "cad/parser/dxf_parser.h"
 #include "cad/parser/dwg_parser.h"
-#include "cad/parser/dwg_objects.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/entity.h"
 #include "cad/renderer/render_batcher.h"
@@ -21,7 +20,6 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
-#include <map>
 #include <cstring>
 #include <zlib.h>
 
@@ -82,8 +80,8 @@ public:
     JsonWriter& operator<<(long long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lld", v); write(buf, n); return *this; }
     JsonWriter& operator<<(unsigned v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%u", v); write(buf, n); return *this; }
     JsonWriter& operator<<(unsigned long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lu", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(float v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.4g", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(double v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.4g", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(float v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this; }
+    JsonWriter& operator<<(double v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this; }
 
 private:
     static bool ends_with_gz(const std::string& path) {
@@ -154,23 +152,8 @@ int main(int argc, char** argv) {
 
     Result parse_result;
     if (is_dwg) {
-        fprintf(stderr, "[test] Using DwgParser for %s\n", input_path);
         DwgParser dwg_parser;
         parse_result = dwg_parser.parse_file(input_path, scene);
-
-        auto dispatch_counts = get_dwg_entity_dispatch_counts();
-        auto success_counts  = get_dwg_entity_success_counts();
-        fprintf(stderr, "[DWG] dispatch vs success by type:\n");
-        std::map<uint32_t, size_t> sorted_dispatch(dispatch_counts.begin(), dispatch_counts.end());
-        for (const auto& kv : sorted_dispatch) {
-            uint32_t t = kv.first;
-            size_t dispatched = kv.second;
-            size_t succeeded = success_counts.count(t) ? success_counts.at(t) : 0;
-            if (dispatched > 100) {
-                fprintf(stderr, "  type=%u dispatched=%zu success=%zu fail=%zu\n",
-                        t, dispatched, succeeded, dispatched - succeeded);
-            }
-        }
     } else {
         DxfParser dxf_parser;
         parse_result = dxf_parser.parse_file(input_path, scene);
@@ -179,30 +162,39 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Parse error: %s\n", parse_result.message.c_str());
         return 1;
     }
+    scene.shrink_to_fit();
 
     auto& entities = scene.entities();
+    auto& layers = scene.layers();
     printf("Parsed %zu entities\n", entities.size());
 
     // Build set of entity indices that belong to block definitions.
-    // These should only be rendered through INSERT references, not directly.
-    // However, only filter if INSERT expansion is actually working (at least
-    // one INSERT has a valid block_index). Otherwise, filtering removes most
-    // geometry without replacement.
+    // For DXF: filter block entities, expand via INSERT (local-space blocks).
+    // For DWG: render all entities directly (world-space blocks), skip INSERTs.
     std::unordered_set<int32_t> block_entity_indices;
     bool insert_expansion_active = false;
-    for (const auto& entity : entities) {
-        if (entity.type() == EntityType::Insert) {
-            auto* ins = std::get_if<InsertEntity>(&entity.data);
-            if (ins && ins->block_index >= 0) {
-                insert_expansion_active = true;
-                break;
+
+    if (is_dwg) {
+        // DWG block entities are at world-space coordinates.
+        // Render all directly, skip INSERT entities.
+        for (auto& e : entities) {
+            e.header.in_block = false;
+        }
+    } else {
+        for (const auto& entity : entities) {
+            if (entity.type() == EntityType::Insert) {
+                auto* ins = std::get_if<InsertEntity>(&entity.data);
+                if (ins && ins->block_index >= 0) {
+                    insert_expansion_active = true;
+                    break;
+                }
             }
         }
-    }
-    if (insert_expansion_active) {
-        for (const auto& block : scene.blocks()) {
-            for (int32_t ei : block.entity_indices) {
-                block_entity_indices.insert(ei);
+        if (insert_expansion_active) {
+            for (const auto& block : scene.blocks()) {
+                for (int32_t ei : block.entity_indices) {
+                    block_entity_indices.insert(ei);
+                }
             }
         }
     }
@@ -241,6 +233,9 @@ int main(int argc, char** argv) {
 
         const auto& entity = entities[i];
 
+        // DWG: skip INSERT entities (block geometry rendered directly)
+        if (is_dwg && entity.type() == EntityType::Insert) continue;
+
         // Extract text entities for separate rendering
         if (entity.type() == EntityType::Text || entity.type() == EntityType::MText) {
             const TextEntity* te = nullptr;
@@ -264,7 +259,9 @@ int main(int argc, char** argv) {
 
                 // Resolve color
                 Color text_color;
-                if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+                if (entity.header.has_true_color) {
+                    text_color = entity.header.true_color;
+                } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
                     text_color = Color::from_aci(entity.header.color_override);
                 } else {
                     int32_t li = entity.header.layer_index;
@@ -287,8 +284,10 @@ int main(int argc, char** argv) {
 
                 text_entries.push_back(std::move(entry));
             }
-        } else if (entity.type() == EntityType::Dimension) {
-            // Also export dimension text as text entries
+        }
+
+        // Also export dimension text as text entries
+        if (entity.type() == EntityType::Dimension) {
             const auto* dim = std::get_if<8>(&entity.data);
             if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " " &&
                 std::isfinite(dim->text_midpoint.x) && std::isfinite(dim->text_midpoint.y) &&
@@ -303,11 +302,12 @@ int main(int argc, char** argv) {
                 entry.layer_index = entity.header.layer_index;
 
                 Color text_color;
-                if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+                if (entity.header.has_true_color) {
+                    text_color = entity.header.true_color;
+                } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
                     text_color = Color::from_aci(entity.header.color_override);
                 } else {
                     int32_t li = entity.header.layer_index;
-                    const auto& layers = scene.layers();
                     if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
                         text_color = layers[static_cast<size_t>(li)].color;
                     } else {
@@ -318,7 +318,6 @@ int main(int argc, char** argv) {
                 entry.g = text_color.g;
                 entry.b = text_color.b;
 
-                const auto& layers = scene.layers();
                 if (entry.layer_index >= 0 && static_cast<size_t>(entry.layer_index) < layers.size()) {
                     entry.layer_name = layers[static_cast<size_t>(entry.layer_index)].name;
                 }
@@ -363,7 +362,6 @@ int main(int argc, char** argv) {
     out << "  },\n";
 
     // Export layers
-    auto& layers = scene.layers();
     out << "  \"layers\": [\n";
     for (size_t i = 0; i < layers.size(); ++i) {
         auto& l = layers[i];

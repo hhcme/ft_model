@@ -1004,7 +1004,8 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
         size_t section_data_end = section_start + section_size;
         if (section_data_end > data_size) break;
 
-        // CRITICAL: Reset BOTH accumulators at section start
+        // Per DWG R2004+ spec: handle and offset accumulators reset per section.
+        // The first delta in each section jumps to the correct global handle.
         uint64_t handle_acc = 0;
         int64_t offset_acc = 0;
 
@@ -1146,26 +1147,78 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     size_t graphic_count = 0;
     size_t non_graphic_count = 0;
     size_t error_count = 0;
-    size_t err_offset = 0, err_size = 0, err_bounds = 0, err_umc = 0, err_type = 0;
-    size_t err_eed = 0, err_preview = 0, err_header = 0;
-    std::unordered_map<uint32_t, size_t> header_error_by_type;
+    size_t g_layer_resolved = 0;
 
-    // Debug: show first few handle map entries
-    {
-        int dbg = 0;
-        for (const auto& [handle, offset] : m_sections.handle_map) {
-            if (dbg < 10) {
-                fprintf(stderr, "[DWG] handle_map[%d]: handle=%llu offset=%zu\n",
-                        dbg, (unsigned long long)handle, offset);
-            }
-            dbg++;
-        }
-    }
-
-    size_t dbg_errors = 0;
     size_t processed = 0;
     auto t_start = std::chrono::steady_clock::now();
-    FILE* prog_fp = fopen("/tmp/dwg_progress.txt", "w");
+
+    // ============================================================
+    // Pre-scan: parse LAYER objects (type 51) first to populate
+    // m_layer_handle_to_index before any entities need it.
+    // This is necessary because the object map is NOT sorted by
+    // handle value — entities may appear before their layer objects.
+    // ============================================================
+    for (const auto& [handle, offset] : m_sections.handle_map) {
+        if (offset >= obj_data_size) continue;
+
+        DwgBitReader ms_r(obj_data + offset, obj_data_size - offset);
+        uint32_t esz = ms_r.read_modular_short();
+        if (ms_r.has_error() || esz == 0 || esz > obj_data_size - offset) continue;
+        ms_r.align_to_byte();
+        size_t msb = ms_r.bit_offset() / 8;
+
+        size_t umcb = 0;
+        uint32_t hss = 0;
+        if (is_r2010_plus) {
+            uint32_t res = 0;
+            const uint8_t* up = obj_data + offset + msb;
+            size_t uavail = obj_data_size - offset - msb;
+            for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail; ++i) {
+                uint8_t bv = up[i];
+                res = (res << 7) | (bv & 0x7F);
+                umcb = static_cast<size_t>(i) + 1;
+                if ((bv & 0x80) == 0) break;
+            }
+            hss = res;
+        }
+
+        size_t edb = static_cast<size_t>(esz);
+        if (offset + msb + umcb + edb > obj_data_size) continue;
+
+        DwgBitReader r(obj_data + offset + msb + umcb, edb);
+        size_t mdb = edb * 8;
+        if (is_r2010_plus && hss <= edb * 8) mdb = edb * 8 - hss;
+        r.set_bit_limit(mdb);
+        if (is_r2007_plus && mdb > 0) r.setup_string_stream(static_cast<uint32_t>(mdb));
+
+        uint32_t ot = is_r2010_plus ? r.read_bot() : r.read_bs();
+        if (r.has_error()) continue;
+
+        if (ot == 51) {  // LAYER
+            // Skip common object header: handle (H) + EED loop + reactors + flags
+            (void)r.read_h();  // object handle
+            uint16_t eed_sz = 0;
+            while (!r.has_error()) {
+                eed_sz = r.read_bs();
+                if (eed_sz == 0) break;
+                (void)r.read_h();  // EED application handle
+                size_t skip = static_cast<size_t>(eed_sz) * 8;
+                if (r.bit_offset() + skip <= r.bit_limit()) {
+                    r.set_bit_offset(r.bit_offset() + skip);
+                } else {
+                    break;
+                }
+            }
+            (void)r.read_bl();  // num_reactors (BL)
+            (void)r.read_b();   // is_xdic_missing (B, R2004+)
+            if (!r.has_error()) {
+                parse_dwg_table_object(r, ot, scene, m_version,
+                                       edb * 8, mdb, handle, &m_layer_handle_to_index);
+            }
+        }
+    }
+    fprintf(stderr, "[DWG] Pre-scan: %zu layer handles loaded\n",
+            m_layer_handle_to_index.size());
 
     // Collect INSERT handle stream data for post-processing resolution.
     // Maps entity_index → vector of handles from INSERT handle stream.
@@ -1177,21 +1230,12 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     std::unordered_map<uint64_t, std::string> block_names_from_entities;
     for (const auto& [handle, offset] : m_sections.handle_map) {
         processed++;
-        if ((processed % 100) == 0 && prog_fp) {
-            fprintf(prog_fp, "%zu\n", processed);
-            fflush(prog_fp);
-        }
-        if (processed >= 1500 && processed <= 1700 && prog_fp) {
-            fprintf(prog_fp, "start %zu: h=%llu off=%zu\n",
-                    processed, (unsigned long long)handle, offset);
-            fflush(prog_fp);
-        }
         if ((processed % 10000) == 0) {
             fprintf(stderr, "[DWG] parse_objects progress: %zu / %zu\n",
                     processed, m_sections.handle_map.size());
         }
         if (offset >= obj_data_size) {
-            error_count++; err_offset++;
+            error_count++;
             continue;
         }
 
@@ -1199,7 +1243,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         DwgBitReader ms_reader(obj_data + offset, obj_data_size - offset);
         uint32_t entity_size = ms_reader.read_modular_short();
         if (ms_reader.has_error() || entity_size == 0 || entity_size > obj_data_size - offset) {
-            error_count++; err_size++;
+            error_count++;
             continue;
         }
 
@@ -1210,7 +1254,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         size_t entity_bits = entity_data_bytes * 8;
 
         if (offset + ms_bytes + entity_data_bytes > obj_data_size) {
-            error_count++; err_bounds++;
+            error_count++;
             continue;
         }
 
@@ -1236,7 +1280,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
 
         if (offset + ms_bytes + umc_bytes + entity_data_bytes > obj_data_size) {
-            error_count++; err_bounds++;
+            error_count++;
             continue;
         }
 
@@ -1262,7 +1306,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
 
         if (reader.has_error()) {
-            error_count++; err_type++;
+            error_count++;
             continue;
         }
 
@@ -1276,38 +1320,13 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             }
         }
 
-        // Detailed bit tracing for LINE failures
-        static int g_line_trace = 0;
-        bool do_line_trace = (obj_type == 19 && g_line_trace < 200);
-        size_t trace_base = reader.bit_offset();
-        size_t trace_bot = trace_base;
-        size_t trace_owner = trace_base;
-        size_t trace_eed = trace_base;
-        size_t trace_preview = trace_base;
-        size_t trace_ced_start = trace_base;
-        size_t trace_mode = trace_base;
-        size_t trace_reactors = trace_base;
-        size_t trace_xdic = trace_base;
-        size_t trace_color = trace_base;
-        size_t trace_lts = trace_base;
-        size_t trace_ltflag = trace_base;
-        size_t trace_psflag = trace_base;
-        size_t trace_matflag = trace_base;
-        size_t trace_shadow = trace_base;
-        size_t trace_vis = trace_base;
-        size_t trace_inv = trace_base;
-        size_t trace_lw = trace_base;
-
         (void)reader.read_h();  // object handle
-        trace_owner = reader.bit_offset();
 
         // EED (Extended Entity Data) loop
         uint16_t eed_size = 0;
-        int eed_iterations = 0;
         while (!reader.has_error()) {
             eed_size = reader.read_bs();
             if (eed_size == 0) break;
-            eed_iterations++;
 
             (void)reader.read_h();  // EED application handle
 
@@ -1319,10 +1338,9 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 break;  // Cannot skip past entity boundary
             }
         }
-        trace_eed = reader.bit_offset();
 
         if (reader.has_error()) {
-            error_count++; err_eed++;
+            error_count++;
             continue;
         }
 
@@ -1339,16 +1357,15 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                     if (reader.bit_offset() + skip_bits <= reader.bit_limit()) {
                         reader.set_bit_offset(reader.bit_offset() + skip_bits);
                     } else {
-                        error_count++; err_preview++;
+                        error_count++;
                         continue;
                     }
                 }
             }
         }
-        trace_preview = reader.bit_offset();
 
         if (reader.has_error()) {
-            error_count++; err_preview++;
+            error_count++;
             continue;
         }
 
@@ -1359,17 +1376,16 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
         uint16_t color_raw = 0;
         uint8_t color_flag = 0;
+        uint32_t saved_num_reactors = 0;
+        bool saved_is_xdic_missing = false;
         if (is_graphic) {
             // Graphic entity CED (Common Entity Data)
             if (is_r2010_plus) {
                 (void)reader.read_bits(2);  // entity_mode (BB)
             }
-            trace_mode = reader.bit_offset();
 
-            uint32_t num_reactors = reader.read_bl();
-            trace_reactors = reader.bit_offset();
-            (void)reader.read_b();  // is_xdic_missing
-            trace_xdic = reader.bit_offset();
+            saved_num_reactors = reader.read_bl();
+            saved_is_xdic_missing = reader.read_b();
 
             if (m_version >= DwgVersion::R2013) {
                 (void)reader.read_b();  // is_has_ds_data (R2013+)
@@ -1388,7 +1404,17 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 if (color_flag & 0x40) {
                     (void)reader.read_h();   // handle
                 } else if (color_flag & 0x80) {
-                    (void)reader.read_bl();  // rgb
+                    uint32_t rgb = reader.read_bl();  // True Color: BL (32-bit), 0x00BBGGRR
+                    if (rgb != 0) {
+                        uint32_t rgb24 = rgb & 0xFFFFFF;
+                        if (rgb24 != 0) {
+                            entity_hdr.true_color = Color(
+                                static_cast<uint8_t>(rgb24 & 0xFF),
+                                static_cast<uint8_t>((rgb24 >> 8) & 0xFF),
+                                static_cast<uint8_t>((rgb24 >> 16) & 0xFF));
+                            entity_hdr.has_true_color = true;
+                        }
+                    }
                 }
                 if (m_version < DwgVersion::R2007) {
                     if ((color_flag & 0x41) == 0x41) {
@@ -1401,37 +1427,31 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             } else {
                 color_index = reader.read_bs();
             }
-            trace_color = reader.bit_offset();
             entity_hdr.color_override = (color_index != 256 && color_index != 0)
                                         ? static_cast<int32_t>(color_index) : 256;
 
             // linetype_scale (BD)
             double lts = reader.read_bd();
-            trace_lts = reader.bit_offset();
             (void)lts;
 
             // linetype flags (BB)
             uint8_t ltype_flags = reader.read_bits(2);
-            trace_ltflag = reader.bit_offset();
             if (ltype_flags == 3) {
                 entity_hdr.linetype_index = -2;  // BYBLOCK
             }
 
             // plotstyle flags (BB)
             (void)reader.read_bits(2);
-            trace_psflag = reader.bit_offset();
 
             // R2004+: material flags (BB)
             if (m_version >= DwgVersion::R2004) {
                 (void)reader.read_bits(2);
             }
-            trace_matflag = reader.bit_offset();
 
             // R2007+: shadow flags (RC = 8 bits per libredwg FIELD_RC0)
             if (m_version >= DwgVersion::R2007) {
                 (void)reader.read_raw_char();
             }
-            trace_shadow = reader.bit_offset();
 
             // R2010+: visualstyle flags
             if (is_r2010_plus) {
@@ -1439,18 +1459,15 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 (void)reader.read_b();  // has_face_visualstyle
                 (void)reader.read_b();  // has_edge_visualstyle
             }
-            trace_vis = reader.bit_offset();
 
             // invisible (BS)
             uint16_t invisible = reader.read_bs();
-            trace_inv = reader.bit_offset();
             entity_hdr.is_visible = (invisible == 0);
 
             // lineweight (RC)
             (void)reader.read_raw_char();
-            trace_lw = reader.bit_offset();
 
-            (void)num_reactors;
+            (void)saved_num_reactors;
         } else {
             // Non-graphic object common header
             uint32_t num_reactors = reader.read_bl();
@@ -1462,29 +1479,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
 
         if (reader.has_error()) {
-            error_count++; err_header++;
-            header_error_by_type[obj_type]++;
+            error_count++;
             continue;
-        }
-
-        size_t used = reader.bit_offset();
-        bool is_abnormal_line = (obj_type == 19 && used > 250);
-        if (do_line_trace || is_abnormal_line) {
-            size_t avail = main_data_bits > used ? main_data_bits - used : 0;
-            fprintf(stderr,
-                "[DWG TRACE] LINE19 t=%d off=%zu esize=%u hss=%u main=%zu used=%zu avail=%zu base=%zu\n"
-                "            bot=%zu own=%zu eed=%zu(it=%d,es=%u) prv=%zu(h=%d,ps=%llu)\n"
-                "            mode=%zu reactors=%zu xdic=%zu color=%zu(raw=0x%04x,f=0x%02x)\n"
-                "            lts=%zu ltflag=%zu psflag=%zu mat=%zu shadow=%zu vis=%zu inv=%zu lw=%zu\n",
-                g_line_trace, offset, entity_size, handle_stream_size, main_data_bits, used, avail, trace_base,
-                trace_bot - trace_base, trace_owner - trace_base, trace_eed - trace_base, eed_iterations, eed_size,
-                trace_preview - trace_base, has_preview ? 1 : 0, (unsigned long long)preview_size,
-                trace_mode - trace_base, trace_reactors - trace_base, trace_xdic - trace_base,
-                trace_color - trace_base, color_raw, color_flag,
-                trace_lts - trace_base, trace_ltflag - trace_base, trace_psflag - trace_base,
-                trace_matflag - trace_base, trace_shadow - trace_base, trace_vis - trace_base,
-                trace_inv - trace_base, trace_lw - trace_base);
-            if (!is_abnormal_line) g_line_trace++;
         }
 
         // Capture string stream state for later restore
@@ -1531,7 +1527,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 fprintf(stderr, "[DWG TABLE] type=%u bit_pos=%zu has_str=%d\n",
                         obj_type, reader.bit_offset(), reader.has_string_stream());
                 parse_dwg_table_object(reader, obj_type, scene,
-                                       m_version, entity_bits, main_data_bits);
+                                       m_version, entity_bits, main_data_bits,
+                                       handle, &m_layer_handle_to_index);
             }
             non_graphic_count++;
             continue;
@@ -1550,12 +1547,16 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             } else {
                 block_name = reader.read_tv();
             }
-            // Skip 3BD(base_pt) + BS(flag) + B(xref)
-            (void)reader.read_bd(); (void)reader.read_bd(); (void)reader.read_bd();
+            // Read 3BD(base_pt) + BS(flag) + B(xref)
+            double bpx = reader.read_bd();
+            double bpy = reader.read_bd();
+            double bpz = reader.read_bd();
             (void)reader.read_bs();
             (void)reader.read_b();
 
             m_current_block_name = block_name;
+            m_current_block_base_point = Vec3{
+                static_cast<float>(bpx), static_cast<float>(bpy), static_cast<float>(bpz)};
             m_block_entity_start = scene.entities().size();
 
             // Store mapping from BLOCK entity handle → block name.
@@ -1583,13 +1584,20 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                         if (hreader.has_error()) break;
                         if (href.value == 0 && href.code == 0) break;
 
-                        uint64_t abs_handle = href.value;
-                        if (href.code == 6) {
-                            abs_handle = href.value;
-                        } else if (href.code == 0x0C) {
-                            abs_handle = handle + href.value;
-                        } else {
-                            abs_handle = handle - href.value - 1;
+                        uint64_t abs_handle = 0;
+                        switch (href.code) {
+                            case 2: case 3: case 4: case 5:
+                                abs_handle = href.value; break;
+                            case 6:
+                                abs_handle = handle + 1; break;
+                            case 8:
+                                abs_handle = (handle > 1) ? handle - 1 : 0; break;
+                            case 0xA:
+                                abs_handle = handle + href.value; break;
+                            case 0xC:
+                                abs_handle = (handle > href.value) ? handle - href.value : 0; break;
+                            default:
+                                abs_handle = href.value; break;
                         }
                         if (abs_handle != 0 && abs_handle != handle) {
                             block_names_from_entities[abs_handle] = block_name;
@@ -1605,6 +1613,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             if (!m_current_block_name.empty()) {
                 Block block;
                 block.name = m_current_block_name;
+                block.base_point = m_current_block_base_point;
                 for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                     block.entity_indices.push_back(static_cast<int32_t>(i));
                     // Mark as block child so top-level iteration skips them
@@ -1612,6 +1621,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 }
                 scene.add_block(block);
                 m_current_block_name.clear();
+                m_current_block_base_point = Vec3::zero();
             }
             non_graphic_count++;
             continue;
@@ -1639,14 +1649,6 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             DwgBitReader entity_reader = make_reader();
             parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version);
         }
-        if (obj_type == 19 && scene.entities().size() == entities_before) {
-            static int g_line19_fail = 0;
-            if (g_line19_fail < 10) {
-                fprintf(stderr, "[DWG DBG] LINE19 FAIL esize=%u hss=%u main_data=%zu off=%zu\n",
-                        entity_size, handle_stream_size, main_data_bits, offset);
-                g_line19_fail++;
-            }
-        }
 
         // ---- Handle stream for INSERT block_header resolution ----
         // Collect handles for post-processing (block_names may not be populated yet)
@@ -1664,33 +1666,96 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 for (int h_idx = 0; h_idx < 20 && !hreader.has_error(); ++h_idx) {
                     auto href = hreader.read_h();
                     if (hreader.has_error()) break;
-                    if (href.value != 0) {
-                        handles.push_back(href.value);
+                    if (href.value == 0 && href.code == 0) break;
+
+                    // Resolve absolute handle using same encoding as layer resolution
+                    uint64_t abs_handle = 0;
+                    switch (href.code) {
+                        case 2: case 3: case 4: case 5:
+                            abs_handle = href.value; break;
+                        case 6:
+                            abs_handle = handle + 1; break;
+                        case 8:
+                            abs_handle = (handle > 1) ? handle - 1 : 0; break;
+                        case 0xA:
+                            abs_handle = handle + href.value; break;
+                        case 0xC:
+                            abs_handle = (handle > href.value) ? handle - href.value : 0; break;
+                        default:
+                            abs_handle = href.value; break;
+                    }
+                    if (abs_handle != 0) {
+                        handles.push_back(abs_handle);
                     }
                 }
                 if (!handles.empty() && !scene.entities().empty()) {
-                    insert_handles[scene.entities().size() - 1] = std::move(handles);
+                    size_t eidx = scene.entities().size() - 1;
+                    insert_handles[eidx] = std::move(handles);
+                }
+            }
+        }
+
+        // ---- Handle stream: resolve layer handle for all graphic entities ----
+        // Handle stream layout (ODA spec 2.13):
+        //   owner_handle(1) + reactor_handles(N) + xdicobjhandle(optional, 1) + layer_handle(1) + ...
+        // Handle reference codes determine absolute value:
+        //   code 2-5: TYPEDOBJHANDLE — href.value is absolute handle
+        //   code 6:   OFFSETOBJHANDLE — abs = entity_handle + 1
+        //   code 8:   OFFSETOBJHANDLE — abs = entity_handle - 1
+        //   code 0xA: OFFSETOBJHANDLE — abs = entity_handle + href.value
+        //   code 0xC: OFFSETOBJHANDLE — abs = entity_handle - href.value
+        if (!m_layer_handle_to_index.empty() && !scene.entities().empty()) {
+            size_t hs_bit_start = main_data_bits;
+            size_t hs_bit_end   = entity_bits;
+            size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
+
+            if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
+                // Helper: resolve handle reference to absolute handle
+                auto resolve_abs = [handle](const DwgBitReader::HandleRef& ref) -> uint64_t {
+                    switch (ref.code) {
+                        case 2: case 3: case 4: case 5:
+                            return ref.value;  // TYPEDOBJHANDLE: absolute
+                        case 6:
+                            return handle + 1;
+                        case 8:
+                            return (handle > 1) ? handle - 1 : 0;
+                        case 0xA:
+                            return handle + ref.value;
+                        case 0xC:
+                            return (handle > ref.value) ? handle - ref.value : 0;
+                        default:
+                            return ref.value;  // code 0,1: soft pointer, treat as absolute
+                    }
+                };
+
+                // Scan all handles in the handle stream for a layer match.
+                // This approach is more robust than positional skip because
+                // different entity types have varying handle layouts (some have
+                // no owner handle, some have extra type-specific handles).
+                DwgBitReader scan(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
+                scan.set_bit_offset(hs_bit_start);
+                scan.set_bit_limit(hs_bit_end);
+                for (int h_idx = 0; h_idx < 30 && !scan.has_error(); ++h_idx) {
+                    auto href = scan.read_h();
+                    if (scan.has_error()) break;
+                    if (href.value == 0 && href.code == 0) break;
+
+                    uint64_t abs_h = resolve_abs(href);
+                    auto it = m_layer_handle_to_index.find(abs_h);
+                    if (it != m_layer_handle_to_index.end()) {
+                        scene.entities().back().header.layer_index = it->second;
+                        g_layer_resolved++;
+                        break;
+                    }
                 }
             }
         }
 
         graphic_count++;
     }
-    if (prog_fp) fclose(prog_fp);
 
     fprintf(stderr, "[DWG] parse_objects: %zu graphic, %zu non-graphic, %zu errors\n",
             graphic_count, non_graphic_count, error_count);
-    fprintf(stderr, "[DWG] error breakdown: offset=%zu size=%zu bounds=%zu umc=%zu type=%zu eed=%zu preview=%zu header=%zu\n",
-            err_offset, err_size, err_bounds, err_umc, err_type, err_eed, err_preview, err_header);
-    // Top header error types
-    std::vector<std::pair<uint32_t, size_t>> header_err_vec(header_error_by_type.begin(), header_error_by_type.end());
-    std::sort(header_err_vec.begin(), header_err_vec.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-    fprintf(stderr, "[DWG] top header error types:");
-    for (size_t i = 0; i < header_err_vec.size() && i < 10; ++i) {
-        fprintf(stderr, " %u=%zu", header_err_vec[i].first, header_err_vec[i].second);
-    }
-    fprintf(stderr, "\n");
-
     // ---- Post-processing: resolve INSERT block_index ----
     // After all objects are parsed, BLOCK_HEADER names (type 49) and
     // BLOCK/ENDBLK definitions are fully populated. Now resolve any INSERTs
@@ -1705,7 +1770,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     // "*D1077"). Use as a fallback only when the entity map doesn't have the name.
     {
         size_t resolved = 0;
-        bool apply = true;  // INSERT expansion enabled with block tessellation caching in RenderBatcher
+        bool apply = true;
         if (apply) {
             auto& all_entities = scene.entities();
             for (auto& [eidx, handles] : insert_handles) {
@@ -1715,12 +1780,10 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
                 for (uint64_t h : handles) {
                     std::string name;
-                    // Primary: look up in BLOCK entity map (full unique names)
                     auto it1 = block_names_from_entities.find(h);
                     if (it1 != block_names_from_entities.end()) {
                         name = it1->second;
                     }
-                    // Fallback: look up in BLOCK_HEADER map (may be truncated)
                     if (name.empty()) {
                         auto it2 = m_sections.block_names.find(h);
                         if (it2 != m_sections.block_names.end()) {
@@ -1745,6 +1808,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 block_names_from_entities.size(), m_sections.block_names.size(),
                 scene.blocks().size(), apply ? "yes" : "no");
     }
+    fprintf(stderr, "[DWG] Layer resolution: resolved=%zu map_size=%zu\n",
+            g_layer_resolved, m_layer_handle_to_index.size());
 
     return Result::success();
 }

@@ -117,6 +117,13 @@ public:
     // CMC (Color): BS color index for now (simplified)
     uint16_t read_cmc();
 
+    // Decoded CMC/ENC color with optional RGB True Color
+    struct CmcColor {
+        uint16_t index = 0;      // ACI color index
+        uint32_t rgb = 0;        // 0x00BBGGRR, 0 if no RGB True Color
+        bool has_rgb = false;
+    };
+
     // R2004+ Encoded Color (CMC) per libredwg spec:
     //   BS(raw), where flag = raw >> 8, index = raw & 0x1ff
     //   if flag & 0x20: BL(alpha_raw)
@@ -125,8 +132,7 @@ public:
     //   if (flag & 0x41) == 0x41: T(name)
     //   if (flag & 0x42) == 0x42: T(book_name)
     // For R2007+, name/book_name are in the string stream and skipped here.
-    // Returns the decoded color index.
-    uint16_t read_cmc_r2004(DwgVersion version);
+    CmcColor read_cmc_r2004(DwgVersion version);
 
     // BE (BitExtrusion): 3 BD values, but if first bit is 1, it's (0,0,1)
     void read_be(double& x, double& y, double& z);

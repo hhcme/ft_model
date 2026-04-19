@@ -45,7 +45,7 @@ target_link_libraries(cad_core PUBLIC)
 target_compile_definitions(cad_core
     PUBLIC
         CAD_VERSION_MAJOR=0
-        CAD_VERSION_MINOR=1
+        CAD_VERSION_MINOR=2
         CAD_VERSION_PATCH=0
 )
 

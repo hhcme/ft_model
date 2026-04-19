@@ -3,7 +3,7 @@
 DWG/DXF 预览服务器
 
 启动后：
-  http://localhost:8080/  → preview.html（加载 ?data=... 参数指定的文件）
+  http://localhost:2415/  → preview.html（加载 ?data=... 参数指定的文件）
   POST /parse             → 接收 DWG/DXF 文件，调用 C++ render_export，返回 JSON
 
 前端预览页选择本地 DWG/DXF 文件 → 自动上传到 /parse → 返回 JSON 并渲染。
@@ -18,7 +18,7 @@ import tempfile
 import urllib.parse
 from pathlib import Path
 
-PORT = 8080
+PORT = 2415
 PROJECT_ROOT = Path(__file__).parent.resolve()
 RENDER_EXPORT = PROJECT_ROOT / "build/core/test/render_export"
 STATIC_DIR = PROJECT_ROOT / "platforms/electron"
@@ -32,11 +32,16 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         print(f"[HTTP] {fmt % args}")
 
     def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
-            self.redirect("/preview.html")
+        # Strip query string for routing
+        raw_path = self.path.split("?")[0]
+
+        if raw_path == "/" or raw_path == "/index.html":
+            self.send_response(302)
+            self.send_header("Location", "/preview.html")
+            self.end_headers()
             return
 
-        if self.path == "/preview.html":
+        if raw_path == "/preview.html":
             html_path = STATIC_DIR / "preview.html"
             if not html_path.exists():
                 self.send_error(404, "preview.html not found")
@@ -52,22 +57,25 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
 
         # 静态文件（.json.gz 等）
         # /test_dwg/big.json.gz → PROJECT_ROOT/test_dwg/big.json.gz
-        safe_path = self.path.lstrip("/")
-        file_path = PROJECT_ROOT / safe_path
+        safe_path = raw_path.lstrip("/")
+        # If path is absolute (starts with Users/ on macOS), use it directly.
+        # Otherwise join with PROJECT_ROOT.
+        if safe_path.startswith("Users/") or safe_path.startswith("home/"):
+            real_path = Path("/") / safe_path
+        else:
+            real_path = PROJECT_ROOT / safe_path
         try:
-            file_path = file_path.resolve().relative_to(PROJECT_ROOT)
+            real_path = real_path.resolve()
+            real_path.relative_to(PROJECT_ROOT)
         except ValueError:
             self.send_error(403, "Forbidden")
             return
-
-        real_path = PROJECT_ROOT / file_path
         if real_path.is_file():
             with open(real_path, "rb") as f:
                 content = f.read()
             self.send_response(200)
             if str(real_path).endswith(".gz"):
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Type", "application/octet-stream")
             else:
                 self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", len(content))
@@ -158,16 +166,17 @@ def main():
             capture_output=True,
         )
 
-    default_url = f"http://localhost:{PORT}/preview.html?data={urllib.parse.quote(str(DEFAULT_DATA))}"
+    # Use relative path from PROJECT_ROOT so the URL is clean: /test_dwg/big.json.gz
+    rel_path = DEFAULT_DATA.relative_to(PROJECT_ROOT)
+    default_url = f"http://localhost:{PORT}/preview.html?data=/{urllib.parse.quote(str(rel_path))}"
     print(f"=" * 60)
     print(f"  启动预览服务器: http://localhost:{PORT}/preview.html")
     print(f"  自动打开: {default_url}")
     print(f"=" * 60)
+    print("  (用浏览器打开上面那个 URL)")
+    print()
 
-    import webbrowser
-    webbrowser.open(default_url)
-
-    server = http.server.HTTPServer(("localhost", PORT), PreviewHandler)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), PreviewHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

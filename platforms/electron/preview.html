@@ -21,6 +21,7 @@ canvas:active { cursor: grabbing; }
     transition: background 0.15s;
 }
 #toolbar button:hover { background: rgba(255,255,255,0.2); }
+#toolbar button.active { background: rgba(0,255,136,0.25); border-color: #00ff88; color: #00ff88; }
 #toolbar input[type="file"] { color: #fff; font-size: 13px; }
 
 /* Layer panel */
@@ -133,23 +134,27 @@ canvas:active { cursor: grabbing; }
 <body>
 <div id="toolbar">
     <input type="file" id="fileInput" accept=".json,.json.gz,.dwg,.dxf" />
-    <button id="fitBtn">Fit View</button>
-    <button id="resetBtn">Reset</button>
-    <button id="layerBtn">Layers</button>
+    <button id="fitBtn">适应窗口</button>
+    <button id="resetBtn">重置</button>
+    <button id="layerBtn">图层</button>
+    <span class="sep" style="color:rgba(255,255,255,0.15)">|</span>
+    <button id="measureDistBtn" title="点击两点测量距离">测距</button>
+    <button id="measureAreaBtn" title="点击多点，双击闭合测量面积">测面</button>
+    <button id="measureClearBtn" title="清除所有测量">清除</button>
 </div>
 <div id="viewInfo"></div>
 
 <!-- Layer panel -->
 <div id="layerPanel" class="collapsed">
     <div id="layerHeader">
-        <span class="title">Layers (<span id="layerCount">0</span>)</span>
+        <span class="title">图层 (<span id="layerCount">0</span>)</span>
         <span class="toggle">&#9660;</span>
     </div>
     <div id="layerBody">
         <div id="layerActions">
-            <button id="showAllBtn">Show All</button>
-            <button id="hideAllBtn">Hide All</button>
-            <button id="invertBtn">Invert</button>
+            <button id="showAllBtn">全部显示</button>
+            <button id="hideAllBtn">全部隐藏</button>
+            <button id="invertBtn">反转</button>
         </div>
         <input type="text" id="layerSearch" placeholder="Filter layers..." />
         <div id="layerList"></div>
@@ -161,7 +166,9 @@ canvas:active { cursor: grabbing; }
 
 <!-- Status bar -->
 <div id="statusBar">
-    <span id="statusFile">Open a JSON file exported by render_export</span>
+    <span id="statusFile">请打开 DWG/DXF 文件或导出的 JSON 文件</span>
+    <span class="sep">|</span>
+    <span id="statusCoord" style="font-variant-numeric:tabular-nums; min-width:200px; color:rgba(255,255,255,0.7)">X: —  Y: —</span>
 </div>
 
 <canvas id="canvas"></canvas>
@@ -259,6 +266,7 @@ function screenToWorld(sx, sy) {
 
 // ============================================================
 // Fit view - find the densest cluster using vertex sampling
+// Uses percentile clipping (2%-98%) to ignore outlier coordinates common in CAD.
 // ============================================================
 function fitView() {
     if (!drawData || batchBounds.length === 0) return;
@@ -274,12 +282,11 @@ function fitView() {
     }
     if (validEntries.length === 0) return;
 
-    // Sample vertex positions to find the densest region
-    // Take up to 5000 samples uniformly from all batches
+    // Sample vertex positions uniformly from all batches
     let totalVerts = 0;
     for (const e of validEntries) totalVerts += e.verts;
 
-    const sampleSize = Math.min(totalVerts, 5000);
+    const sampleSize = Math.min(totalVerts, 10000);
     const sampleInterval = Math.max(1, Math.floor(totalVerts / sampleSize));
 
     const samplesX = [];
@@ -299,58 +306,36 @@ function fitView() {
 
     if (samplesX.length === 0) return;
 
-    // Sort samples and use median to find the main cluster center
+    const n = samplesX.length;
     const sortedX = [...samplesX].sort((a, b) => a - b);
     const sortedY = [...samplesY].sort((a, b) => a - b);
-    const n = sortedX.length;
 
-    // Use median as cluster center
-    const medianX = sortedX[Math.floor(n / 2)];
-    const medianY = sortedY[Math.floor(n / 2)];
+    // IQR-based fitView: use interquartile range to exclude outliers.
+    // CAD data often has bimodal Y distributions (e.g. 5% near Y=0, 95% near Y=2.78M).
+    // Use Q1-Q3 directly as the viewport bounds — this captures the core cluster
+    // and excludes outlier coordinates. Small 10% margin added for breathing room.
+    const q1x = sortedX[Math.floor(n * 0.25)], q3x = sortedX[Math.floor(n * 0.75)];
+    const q1y = sortedY[Math.floor(n * 0.25)], q3y = sortedY[Math.floor(n * 0.75)];
+    const iqrX = q3x - q1x, iqrY = q3y - q1y;
+    const medianX = sortedX[Math.floor(n * 0.5)], medianY = sortedY[Math.floor(n * 0.5)];
 
-    // Compute MAD (median absolute deviation) for scale estimation
-    const devX = samplesX.map(x => Math.abs(x - medianX)).sort((a, b) => a - b);
-    const devY = samplesY.map(y => Math.abs(y - medianY)).sort((a, b) => a - b);
-    const madX = devX[Math.floor(n / 2)];
-    const madY = devY[Math.floor(n / 2)];
+    // Use IQR with 10% margin on each side
+    const padX = iqrX * 0.1, padY = iqrY * 0.1;
+    let minX = q1x - padX, maxX = q3x + padX;
+    let minY = q1y - padY, maxY = q3y + padY;
 
-    // Use 10 * MAD as threshold (captures ~99% of data if normal-ish)
-    const threshX = Math.max(madX * 10, 1);
-    const threshY = Math.max(madY * 10, 1);
-
-    // Compute bounds from samples within threshold
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    let clusterCount = 0;
-    for (let i = 0; i < n; i++) {
-        if (Math.abs(samplesX[i] - medianX) > threshX) continue;
-        if (Math.abs(samplesY[i] - medianY) > threshY) continue;
-        if (samplesX[i] < minX) minX = samplesX[i];
-        if (samplesY[i] < minY) minY = samplesY[i];
-        if (samplesX[i] > maxX) maxX = samplesX[i];
-        if (samplesY[i] > maxY) maxY = samplesY[i];
-        clusterCount++;
-    }
-
-    if (!isFinite(minX) || clusterCount < 10) {
-        // Fallback: use IQR bounds
-        const lo = Math.floor(n * 0.05);
-        const hi = Math.floor(n * 0.95);
-        minX = sortedX[lo]; maxX = sortedX[hi];
-        minY = sortedY[lo]; maxY = sortedY[hi];
-    }
-
-    const w = (maxX - minX) || 1;
-    const h = (maxY - minY) || 1;
-    viewCenterX = minX + w / 2;
-    viewCenterY = minY + h / 2;
+    // Center on median (robust to skew)
+    viewCenterX = medianX;
+    viewCenterY = medianY;
+    let w = (maxX - minX) || 1, h = (maxY - minY) || 1;
     const margin = 0.9;
     viewZoom = Math.min((canvas.width * margin) / w, (canvas.height * margin) / h);
 
-    console.log('[fitView] Median:', medianX.toFixed(0), medianY.toFixed(0),
-        'MAD:', madX.toFixed(0), madY.toFixed(0),
+    console.log('[fitView] Samples:', n,
+        'IQR:', iqrX.toFixed(0), 'x', iqrY.toFixed(0),
         'Bounds:', minX.toFixed(0), minY.toFixed(0), 'to', maxX.toFixed(0), maxY.toFixed(0),
-        'Size:', w.toFixed(0), 'x', h.toFixed(0),
-        'Zoom:', viewZoom.toFixed(6), 'Cluster samples:', clusterCount);
+        'Center:', viewCenterX.toFixed(0), viewCenterY.toFixed(0),
+        'Zoom:', viewZoom.toFixed(6));
     markDirty();
 }
 
@@ -552,7 +537,7 @@ function renderFrame() {
             const breaks = batch.breaks;
             if (breaks && breaks.length > 0) {
                 // Batch entities into a single path with moveTo breaks for efficiency
-                const margin = (vp.maxX - vp.minX) * 0.5;
+                const margin = 100 / viewZoom; // 100px world-space margin
                 ctx.beginPath();
                 let hasPath = false;
                 for (let ei = 0; ei < breaks.length; ei++) {
@@ -625,7 +610,7 @@ function renderFrame() {
             }
 
             ctx.fillStyle = `rgb(${drawR},${drawG},${drawB})`;
-            ctx.font = `${screenHeight}px sans-serif`;
+            ctx.font = `${screenHeight}px -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif`;
             ctx.textBaseline = 'bottom';
 
             if (txt.rotation !== 0) {
@@ -673,6 +658,9 @@ function renderFrame() {
             break;
         }
     }
+
+    // Draw measurements
+    drawMeasurements(ctx, vp);
 
     // Update status bar
     updateStatusBar(visibleBatches, totalBatches, drawnVertices);
@@ -730,6 +718,27 @@ function updateStatusBar(visibleBatches, totalBatches, drawnVertices) {
 // Mouse input
 // ============================================================
 canvas.addEventListener('mousedown', (e) => {
+    if (measureMode) {
+        const mx = e.clientX * devicePixelRatio;
+        const my = e.clientY * devicePixelRatio;
+        const [wx, wy] = screenToWorld(mx, my);
+        measurePoints.push([wx, wy]);
+
+        if (measureMode === 'dist' && measurePoints.length >= 2) {
+            // Distance: compute and store result, reset for next measurement
+            const dx = measurePoints[1][0] - measurePoints[0][0];
+            const dy = measurePoints[1][1] - measurePoints[0][1];
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            measurements.push({ type: 'dist', points: [...measurePoints], value: dist });
+            measurePoints = [];
+            measureMode = null;
+            canvas.style.cursor = 'default';
+            measureDistBtn.classList.remove('active');
+        }
+        measurePreview = null;
+        markDirty();
+        return;
+    }
     isDragging = true;
     dragStartX = e.clientX * devicePixelRatio;
     dragStartY = e.clientY * devicePixelRatio;
@@ -738,9 +747,20 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
+    const mx = e.clientX * devicePixelRatio;
+    const my = e.clientY * devicePixelRatio;
+    const [wx, wy] = screenToWorld(mx, my);
+    statusCoord.textContent = `X: ${wx.toFixed(2)}  Y: ${wy.toFixed(2)}`;
+
+    if (measureMode && measurePoints.length > 0) {
+        measurePreview = [wx, wy];
+        markDirty();
+        return;
+    }
+
     if (!isDragging) return;
-    const dx = e.clientX * devicePixelRatio - dragStartX;
-    const dy = e.clientY * devicePixelRatio - dragStartY;
+    const dx = mx - dragStartX;
+    const dy = my - dragStartY;
     viewCenterX = dragStartCenterX - dx / viewZoom;
     viewCenterY = dragStartCenterY + dy / viewZoom;
     markDirty();
@@ -748,6 +768,27 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('mouseup', () => { isDragging = false; });
 canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+canvas.addEventListener('dblclick', (e) => {
+    if (measureMode === 'area' && measurePoints.length >= 3) {
+        // Close polygon and compute area (Shoelace formula)
+        let area = 0;
+        const pts = measurePoints;
+        for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            area += pts[i][0] * pts[j][1];
+            area -= pts[j][0] * pts[i][1];
+        }
+        area = Math.abs(area) / 2;
+        measurements.push({ type: 'area', points: [...measurePoints], value: area });
+        measurePoints = [];
+        measureMode = null;
+        measurePreview = null;
+        canvas.style.cursor = 'default';
+        measureAreaBtn.classList.remove('active');
+        markDirty();
+    }
+});
 
 canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1106,6 +1147,154 @@ if (dataUrl) {
 
 // Initial render
 markDirty();
+
+// ============================================================
+// Measurement tools
+// ============================================================
+let measureMode = null;     // 'dist' | 'area' | null
+let measurePoints = [];     // Current in-progress measurement points [wx, wy]
+let measurePreview = null;  // Mouse position preview [wx, wy]
+let measurements = [];      // Completed measurements [{type, points, value}]
+
+const measureDistBtn = document.getElementById('measureDistBtn');
+const measureAreaBtn = document.getElementById('measureAreaBtn');
+const measureClearBtn = document.getElementById('measureClearBtn');
+
+measureDistBtn.addEventListener('click', () => {
+    measureMode = 'dist';
+    measurePoints = [];
+    measurePreview = null;
+    canvas.style.cursor = 'crosshair';
+    measureDistBtn.classList.add('active');
+    measureAreaBtn.classList.remove('active');
+});
+measureAreaBtn.addEventListener('click', () => {
+    measureMode = 'area';
+    measurePoints = [];
+    measurePreview = null;
+    canvas.style.cursor = 'crosshair';
+    measureAreaBtn.classList.add('active');
+    measureDistBtn.classList.remove('active');
+});
+measureClearBtn.addEventListener('click', () => {
+    measurements = [];
+    measurePoints = [];
+    measureMode = null;
+    measurePreview = null;
+    canvas.style.cursor = 'default';
+    markDirty();
+});
+
+function drawMeasurements(ctx, vp) {
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00ff88';
+    ctx.fillStyle = '#00ff88';
+    ctx.font = '13px monospace';
+    ctx.setLineDash([6, 4]);
+
+    // Draw completed measurements
+    for (const m of measurements) {
+        if (m.type === 'dist') {
+            const [sx0, sy0] = worldToScreen(m.points[0][0], m.points[0][1]);
+            const [sx1, sy1] = worldToScreen(m.points[1][0], m.points[1][1]);
+            ctx.beginPath();
+            ctx.moveTo(sx0, sy0);
+            ctx.lineTo(sx1, sy1);
+            ctx.stroke();
+            // Endpoints
+            drawCrosshair(ctx, sx0, sy0);
+            drawCrosshair(ctx, sx1, sy1);
+            // Label
+            const mx = (sx0 + sx1) / 2, my = (sy0 + sy1) / 2;
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            const label = m.value.toFixed(2);
+            const tw = ctx.measureText(label).width;
+            ctx.fillRect(mx - tw/2 - 4, my - 20, tw + 8, 18);
+            ctx.fillStyle = '#00ff88';
+            ctx.fillText(label, mx - tw/2, my - 7);
+            ctx.setLineDash([6, 4]);
+        } else if (m.type === 'area') {
+            ctx.beginPath();
+            for (let i = 0; i < m.points.length; i++) {
+                const [sx, sy] = worldToScreen(m.points[i][0], m.points[i][1]);
+                if (i === 0) ctx.moveTo(sx, sy);
+                else ctx.lineTo(sx, sy);
+            }
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(0, 255, 136, 0.1)';
+            ctx.fill();
+            ctx.fillStyle = '#00ff88';
+            ctx.stroke();
+            // Vertices
+            for (const p of m.points) drawCrosshair(ctx, ...worldToScreen(p[0], p[1]));
+            // Label at centroid
+            let cx = 0, cy = 0;
+            for (const p of m.points) { cx += p[0]; cy += p[1]; }
+            cx /= m.points.length; cy /= m.points.length;
+            const [scx, scy] = worldToScreen(cx, cy);
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            const label = 'Area: ' + m.value.toFixed(2);
+            const tw = ctx.measureText(label).width;
+            ctx.fillRect(scx - tw/2 - 4, scy - 10, tw + 8, 18);
+            ctx.fillStyle = '#00ff88';
+            ctx.fillText(label, scx - tw/2, scy + 3);
+            ctx.setLineDash([6, 4]);
+        }
+    }
+
+    // Draw in-progress measurement points
+    if (measureMode && measurePoints.length > 0) {
+        ctx.strokeStyle = '#ffaa00';
+        ctx.fillStyle = '#ffaa00';
+        for (let i = 0; i < measurePoints.length; i++) {
+            drawCrosshair(ctx, ...worldToScreen(measurePoints[i][0], measurePoints[i][1]));
+            if (i > 0) {
+                const [sx0, sy0] = worldToScreen(measurePoints[i-1][0], measurePoints[i-1][1]);
+                const [sx1, sy1] = worldToScreen(measurePoints[i][0], measurePoints[i][1]);
+                ctx.beginPath();
+                ctx.moveTo(sx0, sy0);
+                ctx.lineTo(sx1, sy1);
+                ctx.stroke();
+            }
+        }
+        // Preview line to cursor
+        if (measurePreview) {
+            const last = measurePoints[measurePoints.length - 1];
+            const [sx0, sy0] = worldToScreen(last[0], last[1]);
+            const [sx1, sy1] = worldToScreen(measurePreview[0], measurePreview[1]);
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(sx0, sy0);
+            ctx.lineTo(sx1, sy1);
+            ctx.stroke();
+            // Live distance label
+            const dx = measurePreview[0] - last[0];
+            const dy = measurePreview[1] - last[1];
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            ctx.setLineDash([]);
+            const mx = (sx0+sx1)/2, my2 = (sy0+sy1)/2;
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            const label = dist.toFixed(2);
+            const tw = ctx.measureText(label).width;
+            ctx.fillRect(mx - tw/2 - 3, my2 - 18, tw + 6, 16);
+            ctx.fillStyle = '#ffaa00';
+            ctx.fillText(label, mx - tw/2, my2 - 6);
+        }
+    }
+
+    ctx.restore();
+}
+
+function drawCrosshair(ctx, sx, sy) {
+    const s = 6;
+    ctx.beginPath();
+    ctx.moveTo(sx - s, sy); ctx.lineTo(sx + s, sy);
+    ctx.moveTo(sx, sy - s); ctx.lineTo(sx, sy + s);
+    ctx.stroke();
+}
 </script>
 </body>
 </html>

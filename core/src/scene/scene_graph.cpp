@@ -290,4 +290,19 @@ void SceneGraph::clear() {
     m_impl->spatial_index.reset();
 }
 
+void SceneGraph::reserve(size_t entity_count, size_t vertex_count) {
+    m_impl->entities.reserve(entity_count);
+    m_impl->vertex_buffer.reserve(vertex_count);
+}
+
+void SceneGraph::shrink_to_fit() {
+    m_impl->entities.shrink_to_fit();
+    m_impl->vertex_buffer.shrink_to_fit();
+    m_impl->layers.shrink_to_fit();
+    m_impl->linetypes.shrink_to_fit();
+    m_impl->text_styles.shrink_to_fit();
+    m_impl->blocks.shrink_to_fit();
+    m_impl->viewports.shrink_to_fit();
+}
+
 } // namespace cad

@@ -503,16 +503,19 @@ uint16_t DwgBitReader::read_cmc()
     return read_bs();
 }
 
-uint16_t DwgBitReader::read_cmc_r2004(DwgVersion version)
+DwgBitReader::CmcColor DwgBitReader::read_cmc_r2004(DwgVersion version)
 {
     // R2004+ CMC (Color Method Code) per libredwg bit_read_CMC:
     //   BS(index), BL(rgb), RC(flag)
     //   if flag & 1: read T (name) from string stream (R2007+) or TV
     //   if flag & 2: read T (book_name) from string stream or TV
-    uint16_t color_index = read_bs();
+    CmcColor result;
+    result.index = read_bs();
     if (version >= DwgVersion::R2004) {
-        (void)read_bl();                 // rgb (includes method in upper byte)
+        uint32_t rgb_raw = read_bl();    // 0x00BBGGRR
         uint8_t flag = read_raw_char();  // flag (RC)
+        result.rgb = rgb_raw;
+        result.has_rgb = (rgb_raw != 0);
         if (flag < 4) {
             // name/book_name text fields are in the string stream for R2007+
             if (version < DwgVersion::R2007) {
@@ -521,7 +524,7 @@ uint16_t DwgBitReader::read_cmc_r2004(DwgVersion version)
             }
         }
     }
-    return color_index;
+    return result;
 }
 
 void DwgBitReader::read_be(double& x, double& y, double& z)

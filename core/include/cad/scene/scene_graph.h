@@ -132,6 +132,12 @@ public:
     // ---- Utility ----
     void clear();
 
+    // Pre-allocate vectors for known entity/vertex counts (call before parsing).
+    void reserve(size_t entity_count, size_t vertex_count = 0);
+
+    // Release excess vector capacity after parsing completes.
+    void shrink_to_fit();
+
 private:
     class Impl;
     std::unique_ptr<Impl> m_impl;

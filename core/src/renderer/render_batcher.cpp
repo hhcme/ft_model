@@ -41,6 +41,8 @@ void RenderBatcher::begin_frame(const Camera& camera) {
     m_camera = &camera;
     m_batches.clear();
     m_block_cache.clear();  // Tessellate each block definition once per frame
+    m_tessellating_blocks.clear();
+    m_insert_vertex_count = 0;
 }
 
 void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph& scene) {
@@ -54,10 +56,11 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     if (!entity.is_visible()) return;
     if (depth > 16) return; // prevent infinite recursion
 
-    // Resolve color: if color_override != 256 and != 0, use ACI color;
-    // otherwise use the layer color.
+    // Resolve color: true_color (RGB) > entity ACI override > layer color
     Color draw_color;
-    if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+    if (entity.header.has_true_color) {
+        draw_color = entity.header.true_color;
+    } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
         draw_color = Color::from_aci(entity.header.color_override);
     } else {
         int32_t li = entity.header.layer_index;
@@ -242,18 +245,21 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         const auto& block = blocks[static_cast<size_t>(ins->block_index)];
         const auto& all_entities = scene.entities();
 
+        // Skip INSERTs of special blocks (*MODEL_SPACE, *PAPER_SPACE)
+        // but allow *D (dimension) and other anonymous blocks.
+        if (block.name == "*MODEL_SPACE" || block.name == "*PAPER_SPACE") break;
+
         int32_t bk_idx = ins->block_index;
 
-        // Per-block vertex budget: skip blocks whose tessellation exceeds this many vertices.
-        // This prevents OOM when a block definition has many entities and is referenced
-        // by hundreds or thousands of INSERT instances.
         constexpr size_t MAX_BLOCK_VERTICES = 500000;
 
         // Check block tessellation cache
         auto cache_it = m_block_cache.find(bk_idx);
         if (cache_it == m_block_cache.end()) {
-            // Tessellate block entities once into a temporary vector.
-            // Swap m_batches with local vector so submit_entity_impl writes to it.
+            // Cycle detection: skip blocks already in the tessellation stack.
+            if (m_tessellating_blocks.count(bk_idx)) break;
+            m_tessellating_blocks.insert(bk_idx);
+
             std::vector<RenderBatch> local_batches;
             m_batches.swap(local_batches);
             for (int32_t ei : block.entity_indices) {
@@ -262,80 +268,87 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                 if (!child.is_visible()) continue;
                 submit_entity_impl(child, scene, Matrix4x4::identity(), depth + 1);
             }
-            // Count total vertices across all tessellated batches
             size_t total_verts = 0;
-            for (const auto& b : m_batches) total_verts += b.vertex_data.size() / 2;
+            double cx = 0.0, cy = 0.0;
+            for (const auto& b : m_batches) {
+                total_verts += b.vertex_data.size() / 2;
+                for (size_t i = 0; i + 1 < b.vertex_data.size(); i += 2) {
+                    cx += b.vertex_data[i];
+                    cy += b.vertex_data[i + 1];
+                }
+            }
+            if (total_verts > 0) { cx /= total_verts; cy /= total_verts; }
+            double cdist = std::sqrt(cx * cx + cy * cy);
 
-            // Move tessellated batches + vertex count into cache, restore m_batches
-            m_block_cache[bk_idx] = {std::move(m_batches), total_verts};
+            m_block_cache[bk_idx] = {std::move(m_batches), total_verts, cdist, cx, cy};
+            m_tessellating_blocks.erase(bk_idx);
             m_batches.swap(local_batches);
             cache_it = m_block_cache.find(bk_idx);
         }
 
-        // Skip blocks that exceed the per-block vertex budget
-        if (cache_it->second.second > MAX_BLOCK_VERTICES) break;
+        if (cache_it->second.vertex_count > MAX_BLOCK_VERTICES) break;
+        if (m_insert_vertex_count >= m_insert_vertex_budget) break;
 
-        // Build the INSERT transform
+        const auto& cached_batches = cache_it->second.batches;
+        double cx = cache_it->second.centroid_x;
+        double cy = cache_it->second.centroid_y;
+        double centroid_dist = cache_it->second.centroid_dist;
+
+        // World-space blocks (centroid far from origin) in DWG have entities
+        // at absolute coordinates. For large blocks (many entities), expansion
+        // is expensive and typically represents dimension/*D blocks that aren't
+        // needed for the main geometry. Skip them to control vertex count.
+        if (centroid_dist > 5000.0 && block.entity_indices.size() > 50) break;
+
+        // Base offset: move block geometry so its reference point aligns with
+        // the INSERT's insertion_point. For blocks with valid base_point, use it.
+        // For blocks where base_point is NaN or 0 and geometry centroid is far
+        // from origin (world-space blocks common in DWG), use the centroid as
+        // the effective base_point. This prevents double-offsetting.
+        float bpx = std::isfinite(block.base_point.x) ? block.base_point.x : 0.0f;
+        float bpy = std::isfinite(block.base_point.y) ? block.base_point.y : 0.0f;
+        if (bpx == 0.0f && bpy == 0.0f && centroid_dist > 5000.0) {
+            bpx = static_cast<float>(cx);
+            bpy = static_cast<float>(cy);
+        }
+        Matrix4x4 base_offset = Matrix4x4::translation_2d(-bpx, -bpy);
         Matrix4x4 insert_xform = Matrix4x4::affine_2d(
             ins->x_scale, ins->y_scale, ins->rotation,
             ins->insertion_point.x, ins->insertion_point.y);
 
-        // Cap total instances per INSERT to prevent memory explosion.
-        // Large M×N arrays (e.g., 50×50) would generate billions of vertices.
         const int32_t total_instances = ins->column_count * ins->row_count;
         constexpr int32_t MAX_INSTANCES = 100;
         int32_t col_limit = ins->column_count;
         int32_t row_limit = ins->row_count;
         if (total_instances > MAX_INSTANCES) {
-            // Sample grid uniformly: take sqrt(MAX_INSTANCES) in each dimension
-            float scale = std::sqrt(static_cast<float>(MAX_INSTANCES) /
-                                    static_cast<float>(total_instances));
-            col_limit = std::max(1, static_cast<int32_t>(ins->column_count * scale));
-            row_limit = std::max(1, static_cast<int32_t>(ins->row_count * scale));
+            float sc = std::sqrt(static_cast<float>(MAX_INSTANCES) /
+                                 static_cast<float>(total_instances));
+            col_limit = std::max(1, static_cast<int32_t>(ins->column_count * sc));
+            row_limit = std::max(1, static_cast<int32_t>(ins->row_count * sc));
         }
 
-        const auto& cached_batches = cache_it->second.first;
-
-        // For each INSERT instance (col/row array), apply transform to cached batches
         for (int32_t col = 0; col < col_limit; ++col) {
             for (int32_t row = 0; row < row_limit; ++row) {
-                Vec3 offset(
+                Vec3 arr_off(
                     static_cast<float>(col) * ins->column_spacing,
                     static_cast<float>(row) * ins->row_spacing, 0.0f);
-                // Row-vector convention: insert_xform first, then array offset
-                Matrix4x4 block_xform = insert_xform * Matrix4x4::translation_2d(offset.x, offset.y);
-                // Row-vector convention: child first, then parent
-                Matrix4x4 final_xform = block_xform * xform;
+                Matrix4x4 final_xform = base_offset * insert_xform *
+                    Matrix4x4::translation_2d(arr_off.x, arr_off.y) * xform;
 
-                // Apply final_xform to each cached batch and merge into m_batches
                 for (const RenderBatch& src : cached_batches) {
-                    auto* dst = [this, &src](PrimitiveTopology topo, const Color& col) -> RenderBatch* {
-                        for (auto& b : m_batches) {
-                            if (b.topology == topo && b.color == col) return &b;
-                        }
-                        m_batches.push_back(src);
-                        auto& b = m_batches.back();
-                        b = src;  // copy sort_key, topology, color, etc.
-                        b.vertex_data.clear();
-                        b.entity_starts.clear();
-                        return &b;
-                    }(src.topology, src.color);
+                    RenderBatch* dst = find_batch(src.topology, src.color);
+                    uint32_t dst_voff = static_cast<uint32_t>(dst->vertex_data.size() / 2);
 
-                    // Current vertex count in dst (before adding this INSERT's vertices)
-                    uint32_t dst_vertex_offset = static_cast<uint32_t>(dst->vertex_data.size() / 2);
-
-                    // Transform all vertices and append
                     for (size_t i = 0; i < src.vertex_data.size(); i += 2) {
-                        float vx = src.vertex_data[i];
-                        float vy = src.vertex_data[i + 1];
-                        Vec3 p = final_xform.transform_point({vx, vy, 0.0f});
+                        Vec3 p = final_xform.transform_point(
+                            {src.vertex_data[i], src.vertex_data[i + 1], 0.0f});
                         dst->vertex_data.push_back(p.x);
                         dst->vertex_data.push_back(p.y);
                     }
+                    m_insert_vertex_count += src.vertex_data.size() / 2;
 
-                    // entity_starts: offset cached starts by current vertex count
                     for (uint32_t es : src.entity_starts) {
-                        dst->entity_starts.push_back(dst_vertex_offset + es);
+                        dst->entity_starts.push_back(dst_voff + es);
                     }
                 }
             }

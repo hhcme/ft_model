@@ -34,9 +34,13 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
 // For R2010+, a handle stream at the end of the object data
 // contains linetype/plotstyle/material handles.
 // This function reads those handles after the main fields.
+// handle: the object's handle value (for building handle→index mappings).
+// layer_handle_to_index: optional map to store LAYER handle→index for later entity resolution.
 void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               SceneGraph& scene, DwgVersion version,
-                              size_t entity_bits, size_t main_data_bits);
+                              size_t entity_bits, size_t main_data_bits,
+                              uint64_t handle,
+                              std::unordered_map<uint64_t, int32_t>* layer_handle_to_index = nullptr);
 
 // Diagnostic helper: returns a map of successfully parsed DWG type -> count.
 std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts();

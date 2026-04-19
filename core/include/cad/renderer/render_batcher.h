@@ -3,6 +3,7 @@
 #include "cad/cad_types.h"
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace cad {
@@ -81,6 +82,10 @@ public:
     // Cache: tessellate each unique block definition once, reuse for all INSERTs.
     void clear_block_cache() { m_block_cache.clear(); }
 
+    // Global INSERT vertex budget: stop expanding INSERTs once total exceeds this.
+    void set_insert_vertex_budget(size_t budget) { m_insert_vertex_budget = budget; }
+    size_t insert_vertex_count() const { return m_insert_vertex_count; }
+
 private:
     // Internal submit with optional transform (for INSERT block entities)
     void submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
@@ -99,8 +104,19 @@ private:
     std::vector<RenderBatch> m_batches;
     const Camera* m_camera = nullptr;
     // Block tessellation cache: block_index → pre-tessellated batches (identity transform)
-    // Paired with total vertex count to enforce per-block vertex budget.
-    std::unordered_map<int32_t, std::pair<std::vector<RenderBatch>, size_t>> m_block_cache;
+    struct BlockCacheEntry {
+        std::vector<RenderBatch> batches;
+        size_t vertex_count = 0;
+        double centroid_dist = 0; // distance of geometry centroid from origin
+        double centroid_x = 0;   // centroid X (for world-space block base_point)
+        double centroid_y = 0;   // centroid Y
+    };
+    std::unordered_map<int32_t, BlockCacheEntry> m_block_cache;
+    // Cycle detection: blocks currently being tessellated (nested INSERT chain)
+    std::unordered_set<int32_t> m_tessellating_blocks;
+    // Global INSERT vertex budget and running counter
+    size_t m_insert_vertex_budget = 200000000; // 200M vertices default
+    size_t m_insert_vertex_count = 0;
 };
 
 } // namespace cad
