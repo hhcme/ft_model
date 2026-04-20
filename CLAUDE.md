@@ -15,7 +15,7 @@ Commercial product — no GPL or copyleft dependencies.
 ## Build & Run
 
 ```bash
-# Build (from project root)
+# Build C++ engine (from project root)
 cd build && cmake --build . --target render_export
 cd build && cmake --build . --target cad_core
 
@@ -23,7 +23,18 @@ cd build && cmake --build . --target cad_core
 ./build/core/test/render_export test_data/big.dxf test_data/big.json.gz
 ./build/core/test/render_export test_dwg/big.dwg test_dwg/big.json.gz
 
-# Serve Canvas 2D preview
+# === React Preview (v0.6+, recommended) ===
+# One-command launch (from project root)
+npm run dev                       # starts backend + frontend concurrently
+
+# Or launch separately:
+# Terminal 1: Python backend (/parse endpoint)
+python3 start_preview.py          # port 2415
+# Terminal 2: Vite dev server
+cd platforms/electron && npm run dev
+# Open: http://localhost:5173
+
+# === Legacy Canvas Preview (backup) ===
 python3 -m http.server 8080
 # Open: http://localhost:8080/platforms/electron/preview.html?data=/test_dwg/big.json.gz
 ```
@@ -141,6 +152,52 @@ python3 -m http.server 8080
 - Batch-level frustum culling using precomputed batch bounds (world coords).
 - **Gzip support**: preview.html fetches `.json.gz` files using `fetch()` with `Automatic gzip decompression` (`DecompressionStream`) — native browser API, no extra JS library needed.
 - `test_dwg/big.json.gz` is generated from `big.dwg` and NOT committed to git (in .gitignore).
+- **此文件为旧版备用**，新版预览器使用 React + Ant Design（见下方）。
+
+## React Preview (v0.6+) Notes
+
+**技术栈**：Vite + React 18 + TypeScript + Ant Design 5（暗色主题，`colorPrimary: '#00ff88'`）
+
+**一键启动**（WebStorm）：
+- `.idea/runConfigurations/` 包含 3 个配置：Preview_All（前后端同时启动）、Preview_Backend、Preview_Frontend
+- 或命令行：`npm run dev`（项目根目录，通过 concurrently 同时启动后端+前端）
+
+**单独启动**：
+```bash
+# 终端 1：Python 后端（/parse 端点）
+python3 start_preview.py          # 端口 2415
+
+# 终端 2：Vite 开发服务器（代理 /parse → 2415）
+cd platforms/electron && npm run dev
+# 打开 http://localhost:5173
+```
+
+**目录结构**（`platforms/electron/src/`）：
+- `app/` — 根组件（App.tsx）、主题配置（theme.ts）、全局类型定义（types.ts）
+- `components/landing/` — 着陆页：文件上传 + 最近文件列表
+- `components/viewer/` — 预览器：Canvas 渲染 + 工具栏 + 图层面板 + 状态栏
+- `components/parsing/` — 解析进度遮罩
+- `hooks/` — `useFileLoader`（文件加载+缓存）、`useMeasurement`（距离/面积测量）
+- `utils/` — `renderer`（Canvas 渲染）、`geometry`（包围盒+fitView）、`transforms`（坐标变换）、`cache`（IndexedDB+localStorage）、`textUtils`（MTEXT 格式处理）
+
+**缓存机制**：
+- IndexedDB（`cad-preview-cache`）存储解析后的 DrawData + 原始文件 Blob
+- localStorage 存储最近文件元数据（名称、大小、实体数、cacheKey），最多 10 条
+- CacheKey 格式：`${file.name}:${file.size}:${file.lastModified}`
+- 页面刷新自动恢复上次打开的文件
+- 重新解析：从 IndexedDB 取出原始 Blob 重新发给 /parse，无需重新选文件
+
+**核心设计原则**：
+1. 单一职责：组件只做一件事，逻辑提取到 hooks，计算提取到 utils
+2. Props 驱动：不直接访问全局状态
+3. Ant Design 优先：Button/Tooltip/Upload/Spin/List/Drawer 等
+4. 纯函数渲染：`renderBatches()`, `worldToScreen()` 等在 `utils/` 中
+5. 文件大小限制：组件 ≤150 行，hooks/utils ≤200 行，app/ ≤100 行
+
+**/parse 端点**（start_preview.py）：
+- 接受 raw binary body + `X-Filename` header
+- 返回 `Content-Encoding: gzip` 的 JSON
+- 支持 CORS（开发环境 Vite 代理需要）
 
 ## Coding Standards
 

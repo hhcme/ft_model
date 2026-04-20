@@ -84,6 +84,13 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, f"File not found: {self.path}")
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
+        self.end_headers()
+
     def do_POST(self):
         if self.path != "/parse":
             self.send_error(404, "Unknown endpoint")
@@ -95,14 +102,11 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(400, "Empty body")
             return
 
-        content_type = self.headers.get("Content-Type", "")
-        if "multipart" not in content_type:
-            self.send_error(400, "Expected multipart/form-data")
-            return
-
-        # 将请求体写入临时文件
+        # 将请求体写入临时文件（使用 X-Filename header 确定后缀）
         body = self.rfile.read(length)
-        with tempfile.NamedTemporaryFile(suffix=".dwg", delete=False) as tmp:
+        orig_name = self.headers.get("X-Filename", "upload.dwg")
+        suffix = os.path.splitext(orig_name)[1] or ".dwg"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(body)
             tmp_path = tmp.name
 
@@ -135,6 +139,7 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", len(out_data))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(out_data)
             print(f"[parse] Done: {len(out_data)/1024:.1f} KB gzipped")
@@ -166,14 +171,12 @@ def main():
             capture_output=True,
         )
 
-    # Use relative path from PROJECT_ROOT so the URL is clean: /test_dwg/big.json.gz
-    rel_path = DEFAULT_DATA.relative_to(PROJECT_ROOT)
-    default_url = f"http://localhost:{PORT}/preview.html?data=/{urllib.parse.quote(str(rel_path))}"
     print(f"=" * 60)
-    print(f"  启动预览服务器: http://localhost:{PORT}/preview.html")
-    print(f"  自动打开: {default_url}")
+    print(f"  后端服务器启动: http://localhost:{PORT}")
+    print(f"  /parse 端点就绪，供 Vite dev server 代理")
     print(f"=" * 60)
-    print("  (用浏览器打开上面那个 URL)")
+    print(f"  启动前端: cd platforms/electron && npm run dev")
+    print()
     print()
 
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), PreviewHandler)

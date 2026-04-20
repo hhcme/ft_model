@@ -29,6 +29,8 @@ type: agent
 
 ## Key Rules
 
+### Canvas Rendering
+
 1. **Y 轴翻转**：`sy = -(wy - viewCenterY) * viewZoom + canvas.height / 2`
 2. **鼠标缩放**：缩放后重算中心点，使光标位置保持不变
 3. **Linestrip 渲染**：用 `batch.breaks` 数组拆分为逐实体子路径
@@ -38,6 +40,59 @@ type: agent
 7. **MTEXT 格式码**：`\P` → 换行，去除 `{\...}` 样式码，去除多余花括号
 8. **视锥裁剪**：批次级别用预计算的 world coords bounds
 9. **big.json 可提交**，但 DXF/DWG 测试数据不提交（在 .gitignore 中）
+
+### React + Ant Design Frontend (v0.6+)
+
+**技术栈**：Vite + React 18 + TypeScript + Ant Design 5（暗色主题，`colorPrimary: '#00ff88'`）
+
+**启动方式**：
+- WebStorm：`.idea/runConfigurations/Preview_All.xml` 一键启动
+- 命令行：项目根目录 `npm run dev`（concurrently 同时启动后端+前端）
+
+**目录分层**（`platforms/electron/src/`）：
+
+| 层 | 目录 | 职责 | 文件上限 |
+|----|------|------|---------|
+| 应用层 | `app/` | 根组件、主题、全局类型 | ≤100 行 |
+| 组件层 | `components/` | UI 组件（landing/viewer/parsing） | ≤150 行 |
+| Hook 层 | `hooks/` | 有状态逻辑复用（use 前缀） | ≤200 行 |
+| 工具层 | `utils/` | 纯函数（渲染/几何/缓存/文本） | ≤200 行 |
+| WASM 层 | `js/` | 现有 WASM 桥接代码 — 禁止修改 | — |
+
+**缓存机制**（`utils/cache.ts`）：
+- IndexedDB（`cad-preview-cache`）存储 DrawData + 原始文件 Blob（key 后缀 `:file`）
+- localStorage 存最近文件元数据，最多 10 条
+- 页面刷新自动恢复上次文件，重新解析直接从 IndexedDB 取 Blob
+
+**组件设计原则**：
+1. **单一职责**：CadCanvas 只管 Canvas 渲染，不管数据加载；Toolbar 只管按钮
+2. **Props 驱动**：组件通过 props 接收数据，回调通知外部事件，不直接访问全局状态
+3. **Hook 提取逻辑**：有状态逻辑必须提取为自定义 hook，组件文件只做 JSX + hook 调用
+4. **纯函数优先**：渲染计算放 `utils/`（renderer.ts, transforms.ts），不依赖 React
+5. **Ant Design 优先**：用 Button/Tooltip/Upload/Spin/List/Drawer 等现成组件
+
+**复用规范**：
+- 渲染函数（`renderBatches`, `renderGrid`, `renderTexts`）是 `utils/` 纯函数，参数 (ctx, data, viewport)
+- 坐标变换（`worldToScreen`, `screenToWorld`）在 `utils/transforms.ts`
+- 类型定义统一在 `app/types.ts`，全项目共用
+
+**命名规范**：
+- 组件 PascalCase（`CadCanvas.tsx`），default export
+- Hook camelCase + use 前缀（`useViewControls.ts`），named export
+- 工具 camelCase（`transforms.ts`），named export
+- CSS: BEM 或 kebab-case，CSS Modules（`*.module.css`）
+
+**性能规范**：
+- Canvas 渲染用 `requestAnimationFrame` + dirty flag
+- 图层列表 > 100 项用 Ant Design 虚拟滚动
+- `useMemo` 缓存 batch bounds，`useCallback` 包装事件处理函数
+- 避免 `useEffect` 中做重计算
+
+**禁止事项**：
+- 禁止修改 `src/js/` 下的 WASM 桥接代码
+- 禁止单个组件文件超过 150 行（超出则拆分子组件或提取 hook）
+- 禁止在组件中直接写渲染计算逻辑（必须提取到 utils）
+- 禁止自己写 Ant Design 已有的 UI 组件
 
 ## Common Tasks
 

@@ -4,7 +4,8 @@ cmake-build-*/
 
 # IDE
 .vscode/
-.idea/
+.idea/*
+!.idea/runConfigurations/
 *.swp
 *.swo
 *~
