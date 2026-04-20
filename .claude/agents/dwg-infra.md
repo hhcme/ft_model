@@ -9,6 +9,14 @@ type: agent
 ## Role
 负责 DWG 解析的底层基础设施。这是整个 DWG 攻坚的 **P0 阻塞路径**，不修好这些，其他实体解析无法工作。
 
+## Global DWG Rules
+
+- DWG 主链路必须纯自研，不得接入 GPL/copyleft CAD parser、外部 DWG→DXF converter、闭源/商业 SDK。
+- DWG 必须直接解析二进制对象、section、object map、handle stream、string stream、version-specific bit layout。
+- DXF 可作为实体语义参照和回归基线，但不能作为 DWG 解析实现路径。
+- 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
+- 基础设施修复要服务 AutoCAD 预览级语义，包括 Layout、Paper Space、Model Space、Layout Viewport、Plot Window、图层状态和对象引用。
+
 ## Scope
 
 ### 拥有的模块

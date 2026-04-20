@@ -42,6 +42,9 @@ void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index = nullptr);
 
+// Reset per-file DWG entity assembly state.
+void reset_dwg_entity_parser_state();
+
 // Diagnostic helper: returns a map of successfully parsed DWG type -> count.
 std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts();
 

@@ -12,6 +12,22 @@ Commercial product — no GPL or copyleft dependencies.
 - Desktop: Electron (Vue + React) — C++ compiled to WASM, WebGL rendering in renderer process
 - Mobile: Flutter — C++ via FFI, Flutter Canvas/Impeller native rendering
 
+## Self-Developed Core Policy
+
+- The DWG/DXF parser, SceneGraph, RenderBatcher, export pipeline, and platform renderers are product core code and must remain self-developed.
+- Do not use GPL/copyleft CAD parsers, external DWG→DXF converters, or closed/commercial SDKs in the product rendering path.
+- MIT/BSD tools may be used for tests, diagnostics, and fixture generation only, such as generating synthetic DXF fixtures.
+- DWG support must parse DWG binary semantics directly. Do not implement DWG support by converting DWG to DXF first.
+- DXF support is not an external dependency. It is a first-class product input format, a DWG semantic reference, and a regression baseline.
+
+## DXF Role
+
+- DXF remains a supported product format alongside DWG.
+- Synthetic DXF fixtures are the exact regression baseline for shared SceneGraph and Renderer behavior.
+- Real DWG files are sentinel fixtures for binary parser progress, layout/view fidelity, and large-file behavior.
+- DWG entity semantics may be compared against DXF group-code behavior, but the DWG parser must preserve DWG-specific binary layout, handle streams, object maps, and version differences.
+- Any DWG change that touches shared entities, rendering, colors, text, blocks, bounds, or export shape must verify DXF regression coverage is still intact.
+
 ## Build & Run
 
 ```bash
@@ -113,9 +129,52 @@ python3 -m http.server 8080
 - Per-entity frustum culling: check first/last vertex against viewport with 50% margin.
 - Dark color boost: brightness < 30 → boost to minimum 60 for dark background visibility.
 - LOD: arc/circle segment count varies with zoom level via LodSelector.
-- MAD-based fitView: samples 5000 vertices, uses median+MAD to find densest cluster, handles outlier coordinates.
+- Robust fitView must use finite exported/viewable geometry with outlier-resistant sampling. Layout/Paper Space priority rules below override raw model-space bounds.
 - Text rendering: Canvas `fillText()` with proper world-to-screen transform, Y-flip, rotation, width scaling.
 - MTEXT formatting codes: strip `\P` → newline, remove `{\...}` style codes, remove stray braces.
+
+## DWG Viewer Fidelity Standard
+
+Target quality is **AutoCAD preview level**, not merely "some geometry is visible".
+
+- Default open view must prioritize the active Layout/Paper Space when available. If the drawing has a border, title block, plot window, or layout viewport, initial fitView should use the paper/layout view.
+- Model Space, Paper Space, and Layout Viewport content must not be collapsed into one raw scene bounds for primary preview fitting.
+- Layout Viewports must eventually support viewport clipping, viewport scale, model-space content displayed through the viewport, and per-viewport layer frozen/hidden state.
+- fitView priority: Layout/Plot Window → drawing border/title block → layout viewport content → model-space main entity bounds → raw scene bounds fallback.
+- Mechanical drawing acceptance requires checking that the drawing border is complete and level, main/detail views sit inside the sheet, and dimensions/leaders/balloons/text are readable and located correctly.
+- Rendering fidelity includes CAD visual semantics: layer/color resolution, ByLayer/ByBlock inheritance, linetype, lineweight, draw order, wipeout/masking, hatch appearance, text style, dimension style, annotation scale, and plot-style behavior.
+- Watermarks from reference screenshots are not a DWG fidelity target and should not drive parser or renderer behavior.
+
+## CAD / DWG Glossary
+
+Use these terms consistently in issues, plans, comments, tests, and agent handoffs:
+
+- **Model Space (模型空间)**: full-scale model geometry workspace.
+- **Paper Space (图纸空间)**: sheet/layout workspace used for plotting and drawing composition.
+- **Layout (布局)**: named paper-space sheet containing title blocks, borders, and layout viewports.
+- **Layout Viewport (布局视口)**: paper-space window showing clipped/scaled model-space content.
+- **Plot Window / Plot Area (打印窗口/打印范围)**: plotted region used to decide sheet preview extents.
+- **Drawing Border / Title Block (图框/标题栏)**: paper-space border and metadata block defining the sheet presentation.
+- **Layer (图层)**: object grouping carrying default color, linetype, lineweight, frozen/locked/plot state.
+- **ACI / True Color**: AutoCAD Color Index and explicit RGB color.
+- **ByLayer / ByBlock (随层/随块)**: property inheritance from layer or block reference.
+- **Linetype / Lineweight (线型/线宽)**: dash pattern and plotted/displayed stroke width.
+- **Plot Style / CTB / STB (打印样式)**: color-dependent or named plot-style rules affecting plotted appearance.
+- **Block / INSERT / Block Reference (块/块参照)**: reusable block definition and placed instance transform.
+- **Anonymous Block (匿名块)**: generated block such as `*D...` often used by dimensions and complex annotations.
+- **Attribute / ATTRIB (属性)**: text-like data attached to block references.
+- **Xref (外部参照)**: externally referenced drawing content.
+- **TEXT / MTEXT**: single-line and multiline text entities.
+- **Dimension (标注)**: associative/non-associative dimension entity and its generated graphics.
+- **Leader / MLeader (引线/多重引线)**: annotation leader lines, arrows, callouts, and attached text/block content.
+- **Balloon / Callout (气泡/序号标注)**: numbered or labeled annotation marker commonly used in mechanical drawings.
+- **Detail View (详图)**: enlarged or referenced drawing view.
+- **Annotative Scale (注释比例)**: scale-dependent annotation display behavior.
+- **Hatch (填充)**: solid, patterned, or gradient area fill.
+- **Wipeout / Mask (遮罩)**: object masking underlying geometry.
+- **Draw Order (绘制顺序)**: front/back display order for overlapping objects.
+- **WCS / UCS / OCS**: world, user, and object coordinate systems.
+- **Extents / Limits / Clip Boundary (范围/界限/裁剪边界)**: geometric, drawing, or viewport clipping bounds.
 
 ## Canvas Preview (preview.html) Notes
 
@@ -130,6 +189,7 @@ python3 -m http.server 8080
 
 - C++20 with std::variant. No virtual dispatch for entities.
 - MIT/BSD third-party dependencies only.
+- Product parsing/rendering must not depend on GPL/copyleft CAD libraries, external file converters, or closed SDKs.
 - All math types in `cad_types.h` — extend there first.
 - Header files use `#pragma once`.
 - Namespace: `cad::`.
@@ -141,9 +201,20 @@ python3 -m http.server 8080
 
 - **DWG support is a general parser effort, not a `big.dwg` tuning exercise.**
 - `test_dwg/big.dwg` is a **sentinel regression fixture**, not a golden file whose exact object count or vertex layout should drive parser logic.
+- `test_dwg/Drawing2.dwg` is a **Layout/Paper Space mechanical drawing visual sentinel** for sheet fitting, drawing border fidelity, layout viewport semantics, dimensions, leaders, balloons, and text placement.
 - Prioritize fixes in this order: container/section decoding → object framing → handle/reference resolution → entity semantics → rendering/export validation.
-- Do not add filename checks, handle whitelists, coordinate heuristics, or object-type exceptions that only make one DWG pass.
+- Do not add filename checks, handle whitelists, coordinate heuristics, or object-type exceptions that only make one DWG pass. This applies to both `big.dwg` and `Drawing2.dwg`.
 - When DWG behavior changes, verify it against both synthetic DXF fixtures and real-world sentinel files before considering the change valid.
+
+### DWG Gap Taxonomy
+
+Use these labels when describing DWG regressions or planning parser/render work:
+
+- **Parse gap**: an object is missing from SceneGraph.
+- **Semantic gap**: an object exists, but space, block reference, coordinate system, viewport, scale, or style semantics are wrong.
+- **Render gap**: an object exists with correct data, but linetype, lineweight, fill, text, dimension, mask, draw order, or color output is wrong.
+- **View gap**: default bounds/fitView does not follow Layout/Paper Space/Viewport rules.
+- **Plot appearance gap**: CTB/STB, plot style, lineweight, paper/background, screening, or plotted color behavior is not represented.
 
 ## Git Workflow
 
@@ -158,13 +229,15 @@ python3 -m http.server 8080
 - **核心结构变更**（EntityVariant, RenderBatch, SceneGraph 接口）需说明影响范围并通知相关 Agent
 - **C++ 性能敏感代码**审查要点：避免不必要的拷贝、关注内存布局和 cache 友好性
 - **不得针对特定测试文件特殊处理**，所有修复必须是通用改进
-- 变更后须通过 `big.dxf` 回归验证
+- 变更后须通过 synthetic DXF exact regression and real DWG sentinel visual/data regression
 
 ## Testing
 
 - Use ezdxf (MIT) to generate test DXF files.
-- Validate with `test_data/big.dxf` as primary real-world test case.
+- Validate shared parser/renderer behavior with synthetic DXF exact regression fixtures.
 - Visual comparison against `test_dwg/big.png` reference image.
+- Use `test_dwg/big.dwg` for abnormal-entity filtering, large-file behavior, and main drawing sentinel checks.
+- Use `test_dwg/Drawing2.dwg` for Layout/Paper Space, drawing border, viewport, mechanical annotation, leader, balloon, and title-block visual checks.
 - Never commit test_data JSON files to git (they are in .gitignore).
 - `core/test/test_regression_smoke.cpp` is the lightweight parser/render gate for ongoing development.
 - `regression_smoke` must cover synthetic DXF fixtures exactly, and treat `test_dwg/big.dwg` as a lower-bound sentinel only.

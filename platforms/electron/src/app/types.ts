@@ -41,6 +41,7 @@ export interface DrawData {
   texts: TextEntity[];
   layers: Layer[];
   bounds: Bounds;
+  rawBounds?: Bounds;
   entityCount: number;
   totalVertices: number;
 }

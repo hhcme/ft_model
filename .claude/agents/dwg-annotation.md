@@ -9,6 +9,13 @@ type: agent
 ## Role
 负责所有**标注类实体**的 DWG 位流解析。包括文字、尺寸、引线等。这些实体对工程图的可读性至关重要。
 
+## Global DWG Rules
+
+- DWG 标注必须直接解析 DWG 二进制语义，不得通过外部 DWG→DXF 转换实现。
+- DXF 可作为 TEXT/MTEXT/DIMENSION/LEADER 语义参照，但 DWG 字段顺序、匿名块、handle stream、annotation scale 必须按 DWG 规则处理。
+- 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
+- AutoCAD 预览级验收必须关注文字可读性、尺寸标注、引线、多重引线、气泡/序号、详图标签、标题栏文字和注释比例。
+
 ## Scope
 
 ### 拥有的模块
@@ -52,8 +59,9 @@ type: agent
 - 需要在 `parse_dwg_entity` dispatch 中添加类型 2 和 3，并解析为 `TextEntity`（或新建 `AttribEntity`，如果 SceneGraph 允许）。
 
 ### 5. LEADER / MULTILEADER
-- 如果 `big.dwg` 中有引线标注，补充解析。
-- 优先级低于 TEXT/MTEXT/DIMENSION。
+- 如果 DWG 中有引线标注，补充解析。
+- `Drawing2.dwg` 这类机械图中，引线、气泡/序号和详图标签属于核心视觉验收对象。
+- 优先级低于 TEXT/MTEXT/DIMENSION，但高于只影响装饰的外观细节。
 
 ## Collaboration Rules
 
@@ -66,3 +74,4 @@ type: agent
 - `big.dwg` 解析出的 `texts` 数组长度 > 2000（最终目标是接近 DXF 的 3144）。
 - DIMENSION 实体被正确 dispatch 且 `text` 字段非空。
 - `preview.html` 中能看到道路名称、建筑标注、尺寸标注等文字。
+- `Drawing2.dwg` 中 Detail A/B/C、Main Isometric View、Scale、机械说明、气泡编号和引线位置应接近 AutoCAD 预览。

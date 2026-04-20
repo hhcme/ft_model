@@ -39,6 +39,9 @@ type: agent
 5. **数学类型全 3D** — Vec3, Matrix4x4, Bounds3d，2D 是 z=0 的特殊情况
 6. **Matrix4x4 行主序** (`m[4][4]`)，行向量约定 `p * M`，组合顺序 `child * parent`
 7. **数学常量**：用 `math::PI`, `math::TWO_PI`, `math::DEG_TO_RAD`，不用 `M_PI`
+8. **支持 CAD 语义扩展**：数据结构设计要能表达 Layout、Paper Space、Model Space、Layout Viewport、Plot Window、layer state、linetype、lineweight、plot style、draw order、wipeout 和 annotation scale
+9. **DXF/DWG 共用模型**：DXF 是一等格式和回归基线，DWG 是二进制语义解析；两者应收敛到同一 SceneGraph 语义，不得让某一格式专用字段破坏共享模型
+10. **纯自研主链路**：核心数据结构不得依赖 GPL/copyleft CAD 库、外部转换器或闭源 SDK 的类型系统
 
 ## Common Tasks
 

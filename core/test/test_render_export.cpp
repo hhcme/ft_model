@@ -17,10 +17,13 @@
 #include <cstdio>
 #include <cmath>
 #include <fstream>
+#include <algorithm>
 #include <string>
 #include <unordered_set>
 #include <vector>
 #include <cstring>
+#include <cctype>
+#include <cstdlib>
 #include <zlib.h>
 
 using namespace cad;
@@ -99,6 +102,174 @@ struct DrawCommand {
     uint8_t r, g, b;
 };
 
+struct RenderBounds {
+    float min_x = 0.0f;
+    float min_y = 0.0f;
+    float max_x = 0.0f;
+    float max_y = 0.0f;
+    bool empty = true;
+
+    void expand(float x, float y) {
+        if (!std::isfinite(x) || !std::isfinite(y)) return;
+        if (std::abs(x) > 1.0e8f || std::abs(y) > 1.0e8f) return;
+        if (empty) {
+            min_x = max_x = x;
+            min_y = max_y = y;
+            empty = false;
+            return;
+        }
+        min_x = std::min(min_x, x);
+        min_y = std::min(min_y, y);
+        max_x = std::max(max_x, x);
+        max_y = std::max(max_y, y);
+    }
+};
+
+struct BoundsPoint {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+static bool is_export_coord(float x, float y) {
+    return std::isfinite(x) && std::isfinite(y) &&
+           std::abs(x) <= 1.0e8f && std::abs(y) <= 1.0e8f;
+}
+
+static std::string uppercase_ascii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+static bool is_model_or_paper_space_block(const std::string& name) {
+    std::string upper = uppercase_ascii(name);
+    return upper == "*MODEL_SPACE" || upper == "*PAPER_SPACE";
+}
+
+static RenderBounds adaptive_visible_bounds(const std::vector<BoundsPoint>& points,
+                                            const RenderBounds& fallback) {
+    if (points.size() < 4) return fallback;
+
+    constexpr size_t kMaxSamples = 10000;
+    const size_t stride = std::max<size_t>(1, points.size() / kMaxSamples);
+
+    std::vector<float> xs;
+    std::vector<float> ys;
+    xs.reserve(std::min(points.size(), kMaxSamples));
+    ys.reserve(std::min(points.size(), kMaxSamples));
+    for (size_t i = 0; i < points.size(); i += stride) {
+        const auto& p = points[i];
+        if (!is_export_coord(p.x, p.y)) continue;
+        xs.push_back(p.x);
+        ys.push_back(p.y);
+    }
+    if (xs.size() < 4) return fallback;
+
+    std::sort(xs.begin(), xs.end());
+    std::sort(ys.begin(), ys.end());
+
+    auto quantile = [](const std::vector<float>& values, float q) {
+        const size_t idx = std::min(values.size() - 1,
+                                    static_cast<size_t>(std::floor(values.size() * q)));
+        return values[idx];
+    };
+
+    const float q01x = quantile(xs, 0.01f);
+    const float q05x = quantile(xs, 0.05f);
+    const float q1x = quantile(xs, 0.25f);
+    const float q3x = quantile(xs, 0.75f);
+    const float q95x = quantile(xs, 0.95f);
+    const float q99x = quantile(xs, 0.99f);
+    const float q01y = quantile(ys, 0.01f);
+    const float q05y = quantile(ys, 0.05f);
+    const float q1y = quantile(ys, 0.25f);
+    const float q3y = quantile(ys, 0.75f);
+    const float q95y = quantile(ys, 0.95f);
+    const float q99y = quantile(ys, 0.99f);
+    const float median_x = quantile(xs, 0.50f);
+    const float median_y = quantile(ys, 0.50f);
+    const float iqr_x = q3x - q1x;
+    const float iqr_y = q3y - q1y;
+
+    auto split_axis = [](float q05, float q1, float q3, float q95) {
+        const float iqr = q3 - q1;
+        if (!std::isfinite(iqr) || iqr <= 0.0f) return false;
+        const float threshold = std::max(iqr * 2.5f, 1.0f);
+        return (q1 - q05) > threshold || (q95 - q3) > threshold;
+    };
+
+    RenderBounds iqr_bounds;
+    if (std::isfinite(iqr_x) && iqr_x > 0.0f) {
+        iqr_bounds.expand(q1x - iqr_x * 0.1f, median_y);
+        iqr_bounds.expand(q3x + iqr_x * 0.1f, median_y);
+    } else {
+        iqr_bounds.expand(median_x - 0.5f, median_y);
+        iqr_bounds.expand(median_x + 0.5f, median_y);
+    }
+    if (std::isfinite(iqr_y) && iqr_y > 0.0f) {
+        iqr_bounds.expand(median_x, q1y - iqr_y * 0.1f);
+        iqr_bounds.expand(median_x, q3y + iqr_y * 0.1f);
+    } else {
+        iqr_bounds.expand(median_x, median_y - 0.5f);
+        iqr_bounds.expand(median_x, median_y + 0.5f);
+    }
+
+    if (split_axis(q05x, q1x, q3x, q95x) ||
+        split_axis(q05y, q1y, q3y, q95y)) {
+        return iqr_bounds.empty ? fallback : iqr_bounds;
+    }
+
+    RenderBounds broad_bounds;
+    const float broad_w = q99x - q01x;
+    const float broad_h = q99y - q01y;
+    if (std::isfinite(broad_w) && broad_w > 0.0f &&
+        std::isfinite(broad_h) && broad_h > 0.0f) {
+        broad_bounds.expand(q01x - broad_w * 0.02f, q01y - broad_h * 0.02f);
+        broad_bounds.expand(q99x + broad_w * 0.02f, q99y + broad_h * 0.02f);
+    }
+    if (broad_bounds.empty) return fallback;
+
+    if (!fallback.empty) {
+        const float full_w = fallback.max_x - fallback.min_x;
+        const float full_h = fallback.max_y - fallback.min_y;
+        const float bw = broad_bounds.max_x - broad_bounds.min_x;
+        const float bh = broad_bounds.max_y - broad_bounds.min_y;
+        if (full_w <= bw * 1.5f && full_h <= bh * 1.5f) {
+            return fallback;
+        }
+    }
+    return broad_bounds;
+}
+
+static RenderBounds bounds_for_entity_indices(
+    const std::vector<EntityVariant>& entities,
+    const std::vector<int32_t>& indices) {
+    RenderBounds bounds;
+    for (int32_t idx : indices) {
+        if (idx < 0 || static_cast<size_t>(idx) >= entities.size()) continue;
+        const auto& b = entities[static_cast<size_t>(idx)].bounds();
+        if (b.is_empty()) continue;
+        bounds.expand(b.min.x, b.min.y);
+        bounds.expand(b.max.x, b.max.y);
+    }
+    return bounds;
+}
+
+static bool should_render_dwg_block_direct(
+    const Block& block,
+    const std::vector<EntityVariant>& entities) {
+    if (is_model_or_paper_space_block(block.name)) return true;
+
+    RenderBounds bounds = bounds_for_entity_indices(entities, block.entity_indices);
+    if (bounds.empty || block.entity_indices.empty()) return false;
+
+    const float cx = (bounds.min_x + bounds.max_x) * 0.5f;
+    const float cy = (bounds.min_y + bounds.max_y) * 0.5f;
+    const float centroid_dist = std::sqrt(cx * cx + cy * cy);
+    return block.entity_indices.size() > 50 && centroid_dist > 5000.0f;
+}
+
 static std::string escape_json(const std::string& s) {
     std::string out;
     for (char c : s) {
@@ -169,16 +340,33 @@ int main(int argc, char** argv) {
     printf("Parsed %zu entities\n", entities.size());
 
     // Build set of entity indices that belong to block definitions.
-    // For DXF: filter block entities, expand via INSERT (local-space blocks).
-    // For DWG: render all entities directly (world-space blocks), skip INSERTs.
+    // DXF uses local-space block definitions expanded through INSERT. For DWG,
+    // some parsed block children are already world-space geometry while others
+    // are local definitions. Classify per block so local DWGs still expand
+    // through INSERT, while large world-space blocks render directly.
     std::unordered_set<int32_t> block_entity_indices;
+    std::unordered_set<int32_t> direct_block_indices;
     bool insert_expansion_active = false;
 
     if (is_dwg) {
-        // DWG block entities are at world-space coordinates.
-        // Render all directly, skip INSERT entities.
-        for (auto& e : entities) {
-            e.header.in_block = false;
+        const auto& blocks = scene.blocks();
+        for (size_t bi = 0; bi < blocks.size(); ++bi) {
+            const auto& block = blocks[bi];
+            if (should_render_dwg_block_direct(block, entities)) {
+                direct_block_indices.insert(static_cast<int32_t>(bi));
+                for (int32_t ei : block.entity_indices) {
+                    if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
+                        entities[static_cast<size_t>(ei)].header.in_block = false;
+                    }
+                }
+            } else {
+                for (int32_t ei : block.entity_indices) {
+                    block_entity_indices.insert(ei);
+                    if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
+                        entities[static_cast<size_t>(ei)].header.in_block = true;
+                    }
+                }
+            }
         }
     } else {
         for (const auto& entity : entities) {
@@ -198,8 +386,17 @@ int main(int argc, char** argv) {
             }
         }
     }
-    printf("Block definition entities: %zu (insert_expansion=%s)\n",
-           block_entity_indices.size(), insert_expansion_active ? "yes" : "no");
+    // Count entities with in_block still true
+    size_t in_block_count = 0;
+    for (const auto& e : entities) {
+        if (e.header.in_block) in_block_count++;
+    }
+    printf("Block definition entities: %zu, still in_block: %zu (insert_expansion=%s)\n",
+           block_entity_indices.size(), in_block_count, insert_expansion_active ? "yes" : "no");
+    if (is_dwg) {
+        printf("DWG direct blocks: %zu, local block entities: %zu\n",
+               direct_block_indices.size(), block_entity_indices.size());
+    }
 
     // Setup camera to fit the scene
     Camera camera;
@@ -225,6 +422,10 @@ int main(int argc, char** argv) {
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
     batcher.begin_frame(camera);
+    const char* outlier_env = std::getenv("FT_DWG_OUTLIER_FILTER");
+    const bool outlier_filter_enabled = is_dwg &&
+        !(outlier_env && std::strcmp(outlier_env, "0") == 0);
+    batcher.set_outlier_filter_enabled(outlier_filter_enabled);
 
     for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
         // Skip entities that belong to block definitions — they are rendered
@@ -233,8 +434,11 @@ int main(int argc, char** argv) {
 
         const auto& entity = entities[i];
 
-        // DWG: skip INSERT entities (block geometry rendered directly)
-        if (is_dwg && entity.type() == EntityType::Insert) continue;
+        // DWG: skip INSERT only when its block is already rendered directly.
+        if (is_dwg && entity.type() == EntityType::Insert) {
+            auto* ins = std::get_if<InsertEntity>(&entity.data);
+            if (ins && direct_block_indices.count(ins->block_index)) continue;
+        }
 
         // Extract text entities for separate rendering
         if (entity.type() == EntityType::Text || entity.type() == EntityType::MText) {
@@ -245,7 +449,7 @@ int main(int argc, char** argv) {
                 te = std::get_if<7>(&entity.data);
             }
             if (te && te->height > 0.0f && !te->text.empty() &&
-                std::isfinite(te->insertion_point.x) && std::isfinite(te->insertion_point.y) &&
+                is_export_coord(te->insertion_point.x, te->insertion_point.y) &&
                 std::isfinite(te->height) && std::isfinite(te->rotation) &&
                 std::isfinite(te->width_factor)) {
                 TextEntry entry;
@@ -290,7 +494,7 @@ int main(int argc, char** argv) {
         if (entity.type() == EntityType::Dimension) {
             const auto* dim = std::get_if<8>(&entity.data);
             if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " " &&
-                std::isfinite(dim->text_midpoint.x) && std::isfinite(dim->text_midpoint.y) &&
+                is_export_coord(dim->text_midpoint.x, dim->text_midpoint.y) &&
                 std::isfinite(dim->rotation)) {
                 TextEntry entry;
                 entry.x = dim->text_midpoint.x;
@@ -343,18 +547,50 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[output] %s (%s)\n", output_path, out.is_gzip() ? "gzip" : "raw");
 
     auto& meta = scene.drawing_info();
-    auto total_b = scene.total_bounds();
+    auto raw_b = scene.total_bounds();
+    RenderBounds render_bounds;
+    std::vector<BoundsPoint> visible_points;
+    for (const auto& batch : batches) {
+        for (size_t i = 0; i + 1 < batch.vertex_data.size(); i += 2) {
+            const float x = batch.vertex_data[i];
+            const float y = batch.vertex_data[i + 1];
+            render_bounds.expand(x, y);
+            if (is_export_coord(x, y)) {
+                visible_points.push_back({x, y});
+            }
+        }
+    }
+    for (const auto& te : text_entries) {
+        render_bounds.expand(te.x, te.y);
+        if (is_export_coord(te.x, te.y)) {
+            visible_points.push_back({te.x, te.y});
+        }
+    }
+    const RenderBounds output_bounds = is_dwg
+        ? adaptive_visible_bounds(visible_points, render_bounds)
+        : render_bounds;
 
     out << "{\n";
     out << "  \"filename\": \"" << escape_json(meta.filename) << "\",\n";
     out << "  \"acadVersion\": \"" << escape_json(meta.acad_version) << "\",\n";
     out << "  \"entityCount\": " << entities.size() << ",\n";
     out << "  \"bounds\": {\n";
-    if (!total_b.is_empty()) {
-        out << "    \"minX\": " << total_b.min.x << ",\n";
-        out << "    \"minY\": " << total_b.min.y << ",\n";
-        out << "    \"maxX\": " << total_b.max.x << ",\n";
-        out << "    \"maxY\": " << total_b.max.y << ",\n";
+    if (!output_bounds.empty) {
+        out << "    \"minX\": " << output_bounds.min_x << ",\n";
+        out << "    \"minY\": " << output_bounds.min_y << ",\n";
+        out << "    \"maxX\": " << output_bounds.max_x << ",\n";
+        out << "    \"maxY\": " << output_bounds.max_y << ",\n";
+        out << "    \"isEmpty\": false\n";
+    } else {
+        out << "    \"isEmpty\": true\n";
+    }
+    out << "  },\n";
+    out << "  \"rawBounds\": {\n";
+    if (!raw_b.is_empty()) {
+        out << "    \"minX\": " << raw_b.min.x << ",\n";
+        out << "    \"minY\": " << raw_b.min.y << ",\n";
+        out << "    \"maxX\": " << raw_b.max.x << ",\n";
+        out << "    \"maxY\": " << raw_b.max.y << ",\n";
         out << "    \"isEmpty\": false\n";
     } else {
         out << "    \"isEmpty\": true\n";
@@ -376,6 +612,7 @@ int main(int argc, char** argv) {
 
     out << "  \"batches\": [\n";
     size_t total_vertices = 0;
+    bool first_batch = true;
     for (size_t bi = 0; bi < batches.size(); ++bi) {
         auto& batch = batches[bi];
         if (batch.vertex_data.empty()) continue;
@@ -388,7 +625,17 @@ int main(int argc, char** argv) {
             default:                              topo = "unknown"; break;
         }
         int vert_count = static_cast<int>(batch.vertex_data.size() / 2);
-        total_vertices += vert_count;
+        int valid_vert_count = 0;
+        for (int i = 0; i < vert_count; ++i) {
+            double vx = batch.vertex_data[i * 2];
+            double vy = batch.vertex_data[i * 2 + 1];
+            if (std::isfinite(vx) && std::isfinite(vy) &&
+                std::abs(vx) <= 1.0e8 && std::abs(vy) <= 1.0e8) {
+                valid_vert_count++;
+            }
+        }
+        if (valid_vert_count == 0) continue;
+        total_vertices += static_cast<size_t>(valid_vert_count);
 
         // Extract layer index from RenderKey
         uint16_t layer_idx = static_cast<uint16_t>((batch.sort_key.key >> 48) & 0xFFFF);
@@ -397,6 +644,8 @@ int main(int argc, char** argv) {
             layer_name_out = layers[layer_idx].name;
         }
 
+        if (!first_batch) out << ",\n";
+        first_batch = false;
         out << "    {\"topology\": \"" << topo << "\", ";
         out << "\"color\": [" << (int)batch.color.r << "," << (int)batch.color.g << "," << (int)batch.color.b << "], ";
         out << "\"layerIndex\": " << layer_idx << ", ";
@@ -416,15 +665,15 @@ int main(int argc, char** argv) {
         for (int i = 0; i < vert_count; ++i) {
             double vx = batch.vertex_data[i * 2];
             double vy = batch.vertex_data[i * 2 + 1];
-            if (!std::isfinite(vx) || !std::isfinite(vy)) continue;
+            if (!std::isfinite(vx) || !std::isfinite(vy) ||
+                std::abs(vx) > 1.0e8 || std::abs(vy) > 1.0e8) continue;
             if (first_valid > 0) out << ",";
             out << "[" << vx << "," << vy << "]";
             first_valid++;
         }
         out << "]}";
-        if (bi + 1 < batches.size()) out << ",";
-        out << "\n";
     }
+    out << "\n";
     out << "  ],\n";
 
     // Export text entities

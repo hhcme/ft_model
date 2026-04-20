@@ -22,6 +22,16 @@ constexpr double kVeryLargeDistance = 1e10;
 std::unordered_map<uint32_t, size_t> g_success_counts;
 std::unordered_map<uint32_t, size_t> g_dispatch_counts;
 
+struct PendingPolyline2d {
+    bool active = false;
+    bool closed = false;
+    EntityHeader header;
+    std::vector<Vec3> vertices;
+    std::vector<float> bulges;
+};
+
+PendingPolyline2d g_pending_polyline2d;
+
 // ============================================================
 // Helper: construct EntityVariant with header and in_place_index data.
 // Must use std::in_place_index<N> because EntityData contains
@@ -45,54 +55,23 @@ inline bool reader_ok(const DwgBitReader& reader) {
 //   DD(end.y,start.y), conditional [RD(start.z), DD(end.z,start.z)],
 //   BT(thickness), BE(extrusion).
 // ============================================================
-static int g_line_dbg = 0;
 void parse_line(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
                 DwgVersion version) {
-    size_t start_pos = r.bit_offset();
-    size_t bit_lim = r.bit_limit();
     bool z_is_zero = r.read_b();
-    size_t p1 = r.bit_offset();
     double sx = r.read_rd();
-    size_t p2 = r.bit_offset();
     double ex = r.read_dd(sx);
-    size_t p3 = r.bit_offset();
     double sy = r.read_rd();
-    size_t p4 = r.bit_offset();
     double ey = r.read_dd(sy);
-    size_t p5 = r.bit_offset();
     double sz = 0.0, ez = 0.0;
     if (!z_is_zero) {
         sz = r.read_rd();
         ez = r.read_dd(sz);
     }
-    size_t p6 = r.bit_offset();
     (void)r.read_bt();  // thickness
-    size_t p7 = r.bit_offset();
     double nx = 0, ny = 0, nz = 0;
     r.read_be(nx, ny, nz);  // extrusion
-    size_t p8 = r.bit_offset();
 
-    bool ok = reader_ok(r);
-    if (!ok) {
-        static int g_line_fail = 0;
-        if (g_line_fail < 20) {
-            fprintf(stderr, "[DWG DBG] LINE FAIL start=%zu limit=%zu end=%zu z=%d\n"
-                            "            p1=%zu p2=%zu p3=%zu p4=%zu p5=%zu p6=%zu p7=%zu p8=%zu\n",
-                    start_pos, bit_lim, r.bit_offset(), (int)z_is_zero,
-                    p1, p2, p3, p4, p5, p6, p7, p8);
-            g_line_fail++;
-        }
-    } else {
-        static int g_line_ok = 0;
-        if (g_line_ok < 5) {
-            fprintf(stderr, "[DWG DBG] LINE OK start=%zu limit=%zu end=%zu z=%d\n",
-                    start_pos, bit_lim, r.bit_offset(), (int)z_is_zero);
-            g_line_ok++;
-        }
-    }
-    if (!ok) {
-        return;
-    }
+    if (!reader_ok(r)) return;
 
     LineEntity line;
     line.start = {static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz)};
@@ -499,8 +478,9 @@ void parse_point(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 }
 
 // ============================================================
-// ELLIPSE (DWG type 36) -> EntityVariant index 12
-// NOTE: DWG ELLIPSE stores minor_to_major_ratio, not minor_radius.
+// ELLIPSE (DWG type 35) -> EntityVariant index 12
+// NOTE: DWG ELLIPSE stores the major-axis endpoint vector, followed by
+// minor_to_major_ratio. Angles are parametric and already in RADIANS.
 // Angles are parametric and already in RADIANS — do NOT convert.
 // ============================================================
 void parse_ellipse(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
@@ -514,12 +494,17 @@ void parse_ellipse(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     double enx = r.read_bd();  // extrusion x
     double eny = r.read_bd();  // extrusion y
     double enz = r.read_bd();  // extrusion z
-    double major_radius = r.read_bd();
     double ratio        = r.read_bd();
     double start_angle  = r.read_bd();
     double end_angle    = r.read_bd();
 
     if (!reader_ok(r)) return;
+
+    double major_radius = std::sqrt(smx * smx + smy * smy + smz * smz);
+    if (!std::isfinite(major_radius) || major_radius <= 0.0 ||
+        !std::isfinite(ratio) || ratio <= 0.0) {
+        return;
+    }
 
     // Compute the rotation angle of the major axis in the XY plane
     float rotation = std::atan2(static_cast<float>(smy), static_cast<float>(smx));
@@ -540,18 +525,40 @@ void parse_ellipse(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 }
 
 // ============================================================
-// SPLINE (DWG type 37) -> EntityVariant index 5
+// SPLINE (DWG type 36) -> EntityVariant index 5
 // ============================================================
 void parse_spline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
-                  DwgVersion /*version*/) {
-    // Per libredwg dwg.spec: BL scenario, BL degree
+                  DwgVersion version) {
+    // SPLINE always stores scenario first. R2013+ adds splineflags/knotparam
+    // after it and may derive the effective scenario from those fields.
     uint32_t scenario = r.read_bl();
-    uint32_t degree   = r.read_bl();
+    uint32_t knotparam = 0;
+    if (version >= DwgVersion::R2013) {
+        uint32_t splineflags = r.read_bl();
+        knotparam = r.read_bl();
+        if (splineflags & 1U) {
+            scenario = 2;
+        }
+        if (knotparam == 15U) {
+            scenario = 1;
+        }
+    }
+
+    uint32_t degree = r.read_bl();
+    if (!reader_ok(r) || (scenario != 1U && scenario != 2U) || degree > 32U) {
+        return;
+    }
 
     SplineEntity spline;
     spline.degree = static_cast<int32_t>(degree);
 
-    if (scenario == 1 || (scenario & 1)) {
+    auto add_point = [](std::vector<Vec3>& points, double x, double y, double z) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return;
+        if (std::abs(x) > 1.0e8 || std::abs(y) > 1.0e8 || std::abs(z) > 1.0e8) return;
+        points.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+    };
+
+    if (scenario == 1U) {
         // Scenario 1: control point spline
         (void)r.read_b();   // rational
         (void)r.read_b();   // closed
@@ -574,8 +581,7 @@ void parse_spline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
             double x = r.read_bd();
             double y = r.read_bd();
             double z = r.read_bd();
-            spline.control_points.push_back(
-                {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+            add_point(spline.control_points, x, y, z);
             if (weighted) (void)r.read_bd();  // weight
         }
     } else {
@@ -592,12 +598,15 @@ void parse_spline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
             double x = r.read_bd();
             double y = r.read_bd();
             double z = r.read_bd();
-            spline.fit_points.push_back(
-                {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+            add_point(spline.fit_points, x, y, z);
         }
     }
 
     if (!reader_ok(r)) return;
+
+    if (spline.control_points.size() < 2 && spline.fit_points.size() < 2) {
+        return;
+    }
 
     EntityHeader spl_hdr = hdr;
     spl_hdr.type = EntityType::Spline;
@@ -1201,8 +1210,31 @@ void parse_polyline_mesh(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& s
 // SEQEND (DWG type 6) -> no entity output
 // Terminates POLYLINE entity sequences. No geometry to store.
 // ============================================================
-void parse_seqend(DwgBitReader& /*r*/, const EntityHeader& /*hdr*/, SceneGraph& /*scene*/) {
-    // SEQEND has no geometry — it only marks the end of a polyline's vertex list.
+void parse_seqend(DwgBitReader& /*r*/, const EntityHeader& /*hdr*/, SceneGraph& scene) {
+    // SEQEND terminates POLYLINE + VERTEX sequences.
+    if (!g_pending_polyline2d.active) return;
+
+    if (g_pending_polyline2d.vertices.size() >= 2) {
+        int32_t offset = scene.add_polyline_vertices(
+            g_pending_polyline2d.vertices.data(),
+            g_pending_polyline2d.vertices.size());
+
+        PolylineEntity poly;
+        poly.vertex_offset = offset;
+        poly.vertex_count = static_cast<int32_t>(g_pending_polyline2d.vertices.size());
+        poly.is_closed = g_pending_polyline2d.closed;
+        poly.bulges = std::move(g_pending_polyline2d.bulges);
+
+        EntityHeader poly_hdr = g_pending_polyline2d.header;
+        poly_hdr.type = EntityType::Polyline;
+        poly_hdr.bounds = Bounds3d::empty();
+        for (const auto& v : g_pending_polyline2d.vertices) {
+            poly_hdr.bounds.expand(v);
+        }
+        scene.add_entity(make_entity<3>(poly_hdr, std::move(poly)));
+    }
+
+    g_pending_polyline2d = PendingPolyline2d{};
 }
 
 // ============================================================
@@ -1235,6 +1267,12 @@ void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene
     if (!reader_ok(r)) return;
 
     Vec3 pt{static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)};
+    if (g_pending_polyline2d.active) {
+        g_pending_polyline2d.vertices.push_back(pt);
+        g_pending_polyline2d.bulges.push_back(static_cast<float>(bulge));
+        return;
+    }
+
     EntityHeader phdr = hdr;
     phdr.type = EntityType::Point;
     phdr.bounds = Bounds3d::from_point(pt);
@@ -1246,9 +1284,9 @@ void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene
 // R2000+: BS0(flag), BS0(curve_type), BD(start_width), BD(end_width),
 //         BT(thickness), BD(elevation), BE(extrusion), [R2004+: BL(num_owned)]
 // ============================================================
-void parse_polyline_2d(DwgBitReader& r, const EntityHeader& /*hdr*/,
+void parse_polyline_2d(DwgBitReader& r, const EntityHeader& hdr,
                        SceneGraph& /*scene*/, DwgVersion version) {
-    (void)r.read_bs();  // flag
+    uint16_t flag = r.read_bs();
     (void)r.read_bs();  // curve_type
     (void)r.read_bd();  // start_width
     (void)r.read_bd();  // end_width
@@ -1259,7 +1297,13 @@ void parse_polyline_2d(DwgBitReader& r, const EntityHeader& /*hdr*/,
     if (version >= DwgVersion::R2004) {
         (void)r.read_bl();  // num_owned
     }
-    // No geometry output — vertices are separate VERTEX_2D entities
+    if (!reader_ok(r)) return;
+
+    g_pending_polyline2d.active = true;
+    g_pending_polyline2d.closed = (flag & 0x01) != 0;
+    g_pending_polyline2d.header = hdr;
+    g_pending_polyline2d.vertices.clear();
+    g_pending_polyline2d.bulges.clear();
 }
 
 // ============================================================
@@ -1708,6 +1752,12 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
     if (success) {
         g_success_counts[obj_type]++;
     }
+}
+
+void reset_dwg_entity_parser_state() {
+    g_success_counts.clear();
+    g_dispatch_counts.clear();
+    g_pending_polyline2d = PendingPolyline2d{};
 }
 
 std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts() {

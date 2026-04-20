@@ -76,6 +76,8 @@ public:
     void submit_entity(const EntityVariant& entity, const SceneGraph& scene);
     void end_frame();
 
+    void set_outlier_filter_enabled(bool enabled) { m_outlier_filter_enabled = enabled; }
+
     const std::vector<RenderBatch>& batches() const { return m_batches; }
     std::vector<RenderBatch>& batches() { return m_batches; }
 
@@ -117,6 +119,7 @@ private:
     // Global INSERT vertex budget and running counter
     size_t m_insert_vertex_budget = 200000000; // 200M vertices default
     size_t m_insert_vertex_count = 0;
+    bool m_outlier_filter_enabled = false;
 };
 
 } // namespace cad

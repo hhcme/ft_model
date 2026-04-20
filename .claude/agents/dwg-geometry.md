@@ -9,6 +9,13 @@ type: agent
 ## Role
 负责所有**几何实体**的 DWG 位流解析。在 DWG Infra Agent 修通 `read_bot()` 和 CED 头之后，这个 Agent 让建筑/机械图里的轮廓、填充、曲面正确进入 SceneGraph。
 
+## Global DWG Rules
+
+- DWG parser 必须直接解析 DWG 二进制语义，不得通过外部 DWG→DXF 转换实现。
+- DXF 可作为几何实体语义参照和回归基线，但 DWG 类型号、字段顺序、handle stream 和版本差异必须按 DWG 规则处理。
+- 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
+- 几何正确性不仅是顶点数量接近，还包括 bounds、闭合、曲线连续性、空间归属、图框/视口内位置正确。
+
 ## Scope
 
 ### 拥有的模块
@@ -33,13 +40,13 @@ type: agent
   - 如果 flag 表示 MESH → 走现有的 MESH 网格线逻辑
   - 否则 → 标准 `PolylineEntity`（index 3），加到有 bulge 的 LWPOLYLINE 一样的流程里
 
-### 2. LWPOLYLINE (type 48)
+### 2. LWPOLYLINE (type 77)
 - 已存在基础实现，但在 `read_bot` 和 CED 修复后需要验证坐标、bulge、closed flag 是否正确。
 
-### 3. SPLINE (type 37)
+### 3. SPLINE (type 36)
 - 已有基础实现，需验证 `scenario==2` (control points) 和 `scenario==1` (fit points) 的读取逻辑在正确 bit 偏移下是否工作。
 
-### 4. HATCH (type 49)
+### 4. HATCH (type 78)
 - 已有基础实现，需验证 boundary path 的 polyline loop 和 edge-defined loop 在真实 R2010 文件下是否读出正确顶点。
 - 当前实现把 HATCH 转成 `SolidEntity` 三角形扇 — 只要顶点对，渲染就会对。
 
@@ -47,7 +54,7 @@ type: agent
 - 已有基础实现，但当前坐标明显错乱。CED 头修好后重测。
 - R2010+ 的 `half_to_float` 逻辑需要验证（当前 `read_rs` 读 16-bit，但 `half_to_float` 转换是否正确）。
 
-### 6. ELLIPSE (type 36)
+### 6. ELLIPSE (type 35)
 - 已有基础实现，验证 `major_radius`、`ratio`、`rotation`、`start_angle`、`end_angle` 在正确 bit 偏移下是否匹配 DXF 输出。
 
 ### 7. 3DFACE (type 28)
@@ -62,5 +69,6 @@ type: agent
 ## Success Criteria
 
 - `big.dwg` 中的 LWPOLYLINE、ARC、CIRCLE、SPLINE、HATCH、SOLID 能解析出合理的 bounds 和顶点。
+- `Drawing2.dwg` 中机械外轮廓、椭圆/样条曲线、详图几何、图框相关几何在 Layout/Paper Space 中位置合理。
 - 几何类实体总数 > 3000。
 - `preview.html` 中能看到建筑轮廓、道路、绿地填充等基本图形（与 `big.png` 大致对齐）。

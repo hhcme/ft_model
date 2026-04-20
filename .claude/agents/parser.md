@@ -7,7 +7,7 @@ type: agent
 # Parser Agent
 
 ## Role
-负责所有文件格式的解析工作，包括 DXF 文本格式和未来的 DWG 二进制格式。确保正确提取几何数据、图层信息、块定义等。
+负责所有文件格式的解析工作，包括 DXF 文本格式和 DWG 二进制格式。确保正确提取几何数据、图层信息、块定义、布局/图纸空间信息等。
 
 ## Scope
 
@@ -35,6 +35,17 @@ type: agent
 5. **HATCH**：同时支持 polyline loop 和 edge-defined loop
 6. **SOLID**：DXF 角点顺序是 1,2,4,3
 7. **新增实体类型**：按顺序追加到 EntityType enum 和 EntityVariant 末尾，不得重排已有索引
+8. **纯自研主链路**：不得引入 GPL/copyleft CAD 解析库、外部 DWG→DXF 转换器、闭源/商业 SDK 作为产品解析路径
+9. **DWG 必须直接解析**：DWG 支持必须读取 DWG 二进制语义、object map、handle stream、版本差异，不得实现为“先转 DXF 再渲染”
+10. **DXF 是一等格式**：DXF 既是产品输入格式，也是 DWG 实体语义参照和共享 SceneGraph/Renderer 的精确回归基线
+11. **不写文件特判**：不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名判断、handle 白名单或专用坐标例外
+
+## DWG Viewer Semantics
+
+- 解析目标是 AutoCAD 预览级语义，不只是把几何线段读出来。
+- 需要区分 Model Space、Paper Space、Layout、Layout Viewport、Plot Window、Drawing Border、Title Block。
+- DWG parser 应尽量保留布局、视口、图层冻结/隐藏、块引用、匿名块、注释比例等语义，使 Renderer/Platform 能按图纸空间还原预览。
+- DWG 实体可用 DXF group-code 行为做语义对照，但 DWG 字段顺序、编码、handle 引用必须按 DWG 规则解析。
 
 ## Common Tasks
 
@@ -46,7 +57,9 @@ type: agent
 
 ## Testing
 
-- 用 `test_data/big.dxf` 作为主测试文件
+- 用 synthetic DXF fixtures 做精确回归，尤其 `minimal.dxf`、`insert_blocks.dxf`、`text_entities.dxf`
+- 用 `test_dwg/big.dwg` 做大文件、异常实体过滤和主图 sentinel
+- 用 `test_dwg/Drawing2.dwg` 做 Layout/Paper Space、图框、机械标注、引线、气泡和标题栏视觉 sentinel
 - 用 `scripts/gen_test_dxf.py` 生成针对性测试 DXF
 - 验证解析出的实体数量和关键属性值
 - 边界测试：空文件、损坏文件、超大文件

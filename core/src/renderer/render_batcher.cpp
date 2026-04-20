@@ -9,9 +9,29 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 
 namespace cad {
+
+namespace {
+
+constexpr float kMaxRenderableCoord = 1.0e8f;
+
+bool is_renderable_coord(float x, float y) {
+    return std::isfinite(x) && std::isfinite(y) &&
+           std::abs(x) <= kMaxRenderableCoord &&
+           std::abs(y) <= kMaxRenderableCoord;
+}
+
+bool append_vertex(std::vector<float>& vertex_data, float x, float y) {
+    if (!is_renderable_coord(x, y)) return false;
+    vertex_data.push_back(x);
+    vertex_data.push_back(y);
+    return true;
+}
+
+} // namespace
 
 RenderKey RenderKey::make(uint16_t layer, uint8_t primitive, uint8_t linetype,
                           uint8_t entity_type, uint32_t depth_order) {
@@ -91,6 +111,9 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     // Helper: transform a world point through the current xform
     auto tx = [&xform](float x, float y) -> std::pair<float, float> {
         Vec3 p = xform.transform_point({x, y, 0.0f});
+        if (!is_renderable_coord(p.x, p.y))
+            return {std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::quiet_NaN()};
         return {p.x, p.y};
     };
 
@@ -164,8 +187,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
             if (std::abs(bulge) < 1e-6f) {
                 // Straight segment — transform the point
                 auto [tx0, ty0] = tx(p0.x, p0.y);
-                batch->vertex_data.push_back(tx0);
-                batch->vertex_data.push_back(ty0);
+                append_vertex(batch->vertex_data, tx0, ty0);
             } else {
                 // Bulge arc: compute center/radius in local space, then transform
                 float theta = 4.0f * std::atan(std::abs(bulge));
@@ -204,8 +226,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                     float ax = cx + radius * std::cos(a);
                     float ay = cy + radius * std::sin(a);
                     auto [tax, tay] = tx(ax, ay);
-                    batch->vertex_data.push_back(tax);
-                    batch->vertex_data.push_back(tay);
+                    append_vertex(batch->vertex_data, tax, tay);
                 }
             }
         }
@@ -218,9 +239,17 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                                        ? poly->bulges[static_cast<size_t>(count - 2)] : 0.0f;
                 if (std::abs(last_bulge) < 1e-6f) {
                     auto [tlx, tly] = tx(last_pt.x, last_pt.y);
-                    batch->vertex_data.push_back(tlx);
-                    batch->vertex_data.push_back(tly);
+                    append_vertex(batch->vertex_data, tlx, tly);
                 }
+            }
+        }
+        // Close polyline if flagged
+        if (poly->is_closed && count > 1) {
+            int32_t first_idx = offset;
+            if (first_idx >= 0 && static_cast<size_t>(first_idx) < vb.size()) {
+                Vec3 first_pt = vb[static_cast<size_t>(first_idx)];
+                auto [fx, fy] = tx(first_pt.x, first_pt.y);
+                append_vertex(batch->vertex_data, fx, fy);
             }
         }
         break;
@@ -245,9 +274,13 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         const auto& block = blocks[static_cast<size_t>(ins->block_index)];
         const auto& all_entities = scene.entities();
 
-        // Skip INSERTs of special blocks (*MODEL_SPACE, *PAPER_SPACE)
+        // Skip INSERTs of model/paper space (case-insensitive)
         // but allow *D (dimension) and other anonymous blocks.
-        if (block.name == "*MODEL_SPACE" || block.name == "*PAPER_SPACE") break;
+        {
+            std::string uname = block.name;
+            std::transform(uname.begin(), uname.end(), uname.begin(), ::toupper);
+            if (uname == "*MODEL_SPACE" || uname == "*PAPER_SPACE") break;
+        }
 
         int32_t bk_idx = ins->block_index;
 
@@ -294,17 +327,10 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         double cy = cache_it->second.centroid_y;
         double centroid_dist = cache_it->second.centroid_dist;
 
-        // World-space blocks (centroid far from origin) in DWG have entities
-        // at absolute coordinates. For large blocks (many entities), expansion
-        // is expensive and typically represents dimension/*D blocks that aren't
-        // needed for the main geometry. Skip them to control vertex count.
+        // World-space DWG blocks with many entities are usually already emitted
+        // directly; expanding them through INSERT creates duplicate/huge geometry.
         if (centroid_dist > 5000.0 && block.entity_indices.size() > 50) break;
 
-        // Base offset: move block geometry so its reference point aligns with
-        // the INSERT's insertion_point. For blocks with valid base_point, use it.
-        // For blocks where base_point is NaN or 0 and geometry centroid is far
-        // from origin (world-space blocks common in DWG), use the centroid as
-        // the effective base_point. This prevents double-offsetting.
         float bpx = std::isfinite(block.base_point.x) ? block.base_point.x : 0.0f;
         float bpy = std::isfinite(block.base_point.y) ? block.base_point.y : 0.0f;
         if (bpx == 0.0f && bpy == 0.0f && centroid_dist > 5000.0) {
@@ -339,12 +365,23 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                     RenderBatch* dst = find_batch(src.topology, src.color);
                     uint32_t dst_voff = static_cast<uint32_t>(dst->vertex_data.size() / 2);
 
+                    std::vector<float> transformed;
+                    transformed.reserve(src.vertex_data.size());
+                    bool all_valid = true;
                     for (size_t i = 0; i < src.vertex_data.size(); i += 2) {
                         Vec3 p = final_xform.transform_point(
                             {src.vertex_data[i], src.vertex_data[i + 1], 0.0f});
-                        dst->vertex_data.push_back(p.x);
-                        dst->vertex_data.push_back(p.y);
+                        if (!is_renderable_coord(p.x, p.y)) {
+                            all_valid = false;
+                            break;
+                        }
+                        transformed.push_back(p.x);
+                        transformed.push_back(p.y);
                     }
+                    if (!all_valid) continue;
+
+                    dst->vertex_data.insert(dst->vertex_data.end(),
+                                            transformed.begin(), transformed.end());
                     m_insert_vertex_count += src.vertex_data.size() / 2;
 
                     for (uint32_t es : src.entity_starts) {
@@ -374,8 +411,16 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
             if (idx < 0 || static_cast<size_t>(idx) >= vb.size()) continue;
             Vec3 pt = vb[static_cast<size_t>(idx)];
             auto [tpx, tpy] = tx(pt.x, pt.y);
-            batch->vertex_data.push_back(tpx);
-            batch->vertex_data.push_back(tpy);
+            append_vertex(batch->vertex_data, tpx, tpy);
+        }
+        // Close polyline if flagged
+        if (poly->is_closed && count > 1) {
+            int32_t first_idx = offset;
+            if (first_idx >= 0 && static_cast<size_t>(first_idx) < vb.size()) {
+                Vec3 first_pt = vb[static_cast<size_t>(first_idx)];
+                auto [fx, fy] = tx(first_pt.x, first_pt.y);
+                append_vertex(batch->vertex_data, fx, fy);
+            }
         }
         break;
     }
@@ -396,12 +441,14 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                 auto [x0, y0] = tx(loop.vertices[0].x, loop.vertices[0].y);
                 auto [xi, yi] = tx(loop.vertices[i].x, loop.vertices[i].y);
                 auto [xip, yip] = tx(loop.vertices[i + 1].x, loop.vertices[i + 1].y);
-                batch->vertex_data.push_back(x0);
-                batch->vertex_data.push_back(y0);
-                batch->vertex_data.push_back(xi);
-                batch->vertex_data.push_back(yi);
-                batch->vertex_data.push_back(xip);
-                batch->vertex_data.push_back(yip);
+                if (!is_renderable_coord(x0, y0) ||
+                    !is_renderable_coord(xi, yi) ||
+                    !is_renderable_coord(xip, yip)) {
+                    continue;
+                }
+                append_vertex(batch->vertex_data, x0, y0);
+                append_vertex(batch->vertex_data, xi, yi);
+                append_vertex(batch->vertex_data, xip, yip);
             }
         }
         break;
@@ -422,19 +469,30 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto [x2, y2] = tx(solid->corners[2].x, solid->corners[2].y);
 
         if (solid->corner_count == 3) {
-            batch->vertex_data.push_back(x0); batch->vertex_data.push_back(y0);
-            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
-            batch->vertex_data.push_back(x2); batch->vertex_data.push_back(y2);
+            if (!is_renderable_coord(x0, y0) ||
+                !is_renderable_coord(x1, y1) ||
+                !is_renderable_coord(x2, y2)) {
+                break;
+            }
+            append_vertex(batch->vertex_data, x0, y0);
+            append_vertex(batch->vertex_data, x1, y1);
+            append_vertex(batch->vertex_data, x2, y2);
         } else {
             auto [x3, y3] = tx(solid->corners[3].x, solid->corners[3].y);
+            if (!is_renderable_coord(x0, y0) ||
+                !is_renderable_coord(x1, y1) ||
+                !is_renderable_coord(x2, y2) ||
+                !is_renderable_coord(x3, y3)) {
+                break;
+            }
             // DXF order: 1,2,4,3 → triangles v0-v1-v3 and v1-v2-v3
-            batch->vertex_data.push_back(x0); batch->vertex_data.push_back(y0);
-            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
-            batch->vertex_data.push_back(x3); batch->vertex_data.push_back(y3);
+            append_vertex(batch->vertex_data, x0, y0);
+            append_vertex(batch->vertex_data, x1, y1);
+            append_vertex(batch->vertex_data, x3, y3);
 
-            batch->vertex_data.push_back(x1); batch->vertex_data.push_back(y1);
-            batch->vertex_data.push_back(x2); batch->vertex_data.push_back(y2);
-            batch->vertex_data.push_back(x3); batch->vertex_data.push_back(y3);
+            append_vertex(batch->vertex_data, x1, y1);
+            append_vertex(batch->vertex_data, x2, y2);
+            append_vertex(batch->vertex_data, x3, y3);
         }
         break;
     }
@@ -483,8 +541,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
             float y = px * sin_r + py * cos_r + cy;
             // Apply entity transform (INSERT etc.)
             auto [tx_x, tx_y] = tx(x, y);
-            batch->vertex_data.push_back(tx_x);
-            batch->vertex_data.push_back(tx_y);
+            append_vertex(batch->vertex_data, tx_x, tx_y);
         }
         break;
     }
@@ -503,55 +560,40 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         const auto& pts = spline->fit_points.empty() ? spline->control_points : spline->fit_points;
         for (const auto& pt : pts) {
             auto [tpx, tpy] = tx(pt.x, pt.y);
-            batch->vertex_data.push_back(tpx);
-            batch->vertex_data.push_back(tpy);
+            append_vertex(batch->vertex_data, tpx, tpy);
         }
         break;
     }
 
-    // Text — render as a thin underline indicator (actual text rendered by viewer)
+    // Text — render a thin underline indicator; actual text is emitted separately.
     case EntityType::Text:
     case EntityType::MText: {
         auto* text = std::get_if<6>(&entity.data);
         if (!text) text = std::get_if<7>(&entity.data);
         if (!text || text->height <= 0.0f) break;
 
-        // Draw a small underline at the text insertion point to show its position
         float x = text->insertion_point.x;
         float y = text->insertion_point.y;
-        float hw = std::min(text->height * 4.0f, text->height * text->text.size() * text->width_factor * 0.3f);
+        float hw = std::min(text->height * 4.0f,
+                            text->height * static_cast<float>(text->text.size()) *
+                                text->width_factor * 0.3f);
 
         auto [rx0, ry0] = tx(x, y);
         auto [rx1, ry1] = tx(x + hw, y);
+        if (!is_renderable_coord(rx0, ry0) || !is_renderable_coord(rx1, ry1)) break;
 
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
             static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        batch->vertex_data.push_back(rx0);
-        batch->vertex_data.push_back(ry0);
-        batch->vertex_data.push_back(rx1);
-        batch->vertex_data.push_back(ry1);
+        append_vertex(batch->vertex_data, rx0, ry0);
+        append_vertex(batch->vertex_data, rx1, ry1);
         break;
     }
 
-    // Point — render as small cross
-    case EntityType::Point: {
-        auto* pt = std::get_if<11>(&entity.data);
-        if (!pt) break;
-
-        auto [px, py] = tx(pt->x, pt->y);
-        auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
-        batch->sort_key = RenderKey::make(layer_u16,
-            static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
-        float s = 2.0f;
-        batch->vertex_data.push_back(px - s); batch->vertex_data.push_back(py);
-        batch->vertex_data.push_back(px + s); batch->vertex_data.push_back(py);
-        batch->vertex_data.push_back(px); batch->vertex_data.push_back(py - s);
-        batch->vertex_data.push_back(px); batch->vertex_data.push_back(py + s);
+    // Point — skip, no useful geometry
+    case EntityType::Point:
         break;
-    }
 
     // Dimension — render as dimension lines (extension lines + dimension line)
     case EntityType::Dimension: {
@@ -575,10 +617,10 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
 
         // Draw a simple dimension line from midpoint to definition point
         // (In a full implementation, we'd use ext1/ext2 start points for extension lines)
-        batch->vertex_data.push_back(mx);
-        batch->vertex_data.push_back(my);
-        batch->vertex_data.push_back(dx);
-        batch->vertex_data.push_back(dy);
+        if (!is_renderable_coord(dx, dy) || !is_renderable_coord(mx, my)) break;
+
+        append_vertex(batch->vertex_data, mx, my);
+        append_vertex(batch->vertex_data, dx, dy);
 
         // Draw tick marks at the definition point end
         float tick_size = 3.0f;
@@ -587,16 +629,12 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         float perp_y = std::cos(angle) * tick_size;
 
         // Tick at definition point
-        batch->vertex_data.push_back(dx - perp_x);
-        batch->vertex_data.push_back(dy - perp_y);
-        batch->vertex_data.push_back(dx + perp_x);
-        batch->vertex_data.push_back(dy + perp_y);
+        append_vertex(batch->vertex_data, dx - perp_x, dy - perp_y);
+        append_vertex(batch->vertex_data, dx + perp_x, dy + perp_y);
 
         // Tick at midpoint side (mirrored direction)
-        batch->vertex_data.push_back(mx - perp_x);
-        batch->vertex_data.push_back(my - perp_y);
-        batch->vertex_data.push_back(mx + perp_x);
-        batch->vertex_data.push_back(my + perp_y);
+        append_vertex(batch->vertex_data, mx - perp_x, my - perp_y);
+        append_vertex(batch->vertex_data, mx + perp_x, my + perp_y);
         break;
     }
 
@@ -613,16 +651,108 @@ void RenderBatcher::end_frame() {
               [](const RenderBatch& a, const RenderBatch& b) {
                   return a.sort_key < b.sort_key;
               });
+
+    if (!m_outlier_filter_enabled) return;
+
+    // Filter outlier primitives — remove lines/triangles/strips whose extent
+    // far exceeds the batch's median primitive extent. Handles DWG blocks with
+    // mixed local/world coordinates producing giant geometry.
+    for (auto& batch : m_batches) {
+        auto& vd = batch.vertex_data;
+        if (vd.size() < 4) continue;
+
+        auto entity_extent = [&vd](size_t start, size_t end) -> float {
+            if (end <= start + 1) return 0.0f;
+            float minx = vd[start], maxx = vd[start];
+            float miny = vd[start+1], maxy = vd[start+1];
+            for (size_t i = start+2; i < end; i += 2) {
+                if (vd[i] < minx) minx = vd[i];
+                if (vd[i] > maxx) maxx = vd[i];
+                if (vd[i+1] < miny) miny = vd[i+1];
+                if (vd[i+1] > maxy) maxy = vd[i+1];
+            }
+            float dx = maxx - minx, dy = maxy - miny;
+            return std::sqrt(dx*dx + dy*dy);
+        };
+
+        if (batch.topology == PrimitiveTopology::LineList) {
+            std::vector<float> lengths;
+            for (size_t i = 0; i + 3 < vd.size(); i += 4) {
+                float dx = vd[i+2] - vd[i];
+                float dy = vd[i+3] - vd[i+1];
+                lengths.push_back(std::sqrt(dx*dx + dy*dy));
+            }
+            if (lengths.empty()) continue;
+            std::sort(lengths.begin(), lengths.end());
+            float threshold = std::max(lengths[lengths.size() / 2] * 20.0f, 1.0f);
+
+            std::vector<float> filtered;
+            for (size_t i = 0; i + 3 < vd.size(); i += 4) {
+                float dx = vd[i+2] - vd[i], dy = vd[i+3] - vd[i+1];
+                if (std::sqrt(dx*dx + dy*dy) <= threshold) {
+                    for (int j = 0; j < 4; ++j) filtered.push_back(vd[i+j]);
+                }
+            }
+            vd = std::move(filtered);
+        } else if (batch.topology == PrimitiveTopology::TriangleList) {
+            std::vector<float> extents;
+            for (size_t i = 0; i + 5 < vd.size(); i += 6) {
+                extents.push_back(entity_extent(i, i + 6));
+            }
+            if (extents.empty()) continue;
+            std::sort(extents.begin(), extents.end());
+            float threshold = std::max(extents[extents.size() / 2] * 20.0f, 1.0f);
+
+            std::vector<float> filtered;
+            for (size_t i = 0; i + 5 < vd.size(); i += 6) {
+                if (entity_extent(i, i + 6) <= threshold) {
+                    for (int j = 0; j < 6; ++j) filtered.push_back(vd[i+j]);
+                }
+            }
+            vd = std::move(filtered);
+        } else if (batch.topology == PrimitiveTopology::LineStrip &&
+                   !batch.entity_starts.empty()) {
+            // Build entity ranges from entity_starts
+            struct Range { size_t vstart, vend; };
+            std::vector<Range> ranges;
+            for (size_t ei = 0; ei < batch.entity_starts.size(); ++ei) {
+                size_t vs = batch.entity_starts[ei] * 2;
+                size_t ve = (ei + 1 < batch.entity_starts.size())
+                    ? batch.entity_starts[ei + 1] * 2 : vd.size();
+                if (ve > vs + 1) ranges.push_back({vs, ve});
+            }
+            if (ranges.empty()) continue;
+
+            // Compute median entity extent
+            std::vector<float> extents;
+            for (auto& r : ranges) extents.push_back(entity_extent(r.vstart, r.vend));
+            std::sort(extents.begin(), extents.end());
+            float threshold = std::max(extents[extents.size() / 2] * 20.0f, 1.0f);
+
+            // Filter: keep entities within threshold
+            std::vector<float> filtered_vd;
+            std::vector<uint32_t> filtered_es;
+            for (auto& r : ranges) {
+                if (entity_extent(r.vstart, r.vend) <= threshold) {
+                    filtered_es.push_back(static_cast<uint32_t>(filtered_vd.size() / 2));
+                    for (size_t i = r.vstart; i < r.vend; ++i)
+                        filtered_vd.push_back(vd[i]);
+                }
+            }
+            vd = std::move(filtered_vd);
+            batch.entity_starts = std::move(filtered_es);
+        }
+    }
 }
 
 void RenderBatcher::tessellate_line(const Vec3& p0, const Vec3& p1,
                                      RenderBatch& batch, const Matrix4x4& xform) {
     Vec3 tp0 = xform.transform_point(p0);
     Vec3 tp1 = xform.transform_point(p1);
-    batch.vertex_data.push_back(tp0.x);
-    batch.vertex_data.push_back(tp0.y);
-    batch.vertex_data.push_back(tp1.x);
-    batch.vertex_data.push_back(tp1.y);
+    if (!is_renderable_coord(tp0.x, tp0.y) ||
+        !is_renderable_coord(tp1.x, tp1.y)) return;
+    append_vertex(batch.vertex_data, tp0.x, tp0.y);
+    append_vertex(batch.vertex_data, tp1.x, tp1.y);
 }
 
 void RenderBatcher::tessellate_circle(const Vec3& center, float radius,
@@ -633,8 +763,7 @@ void RenderBatcher::tessellate_circle(const Vec3& center, float radius,
         float x = center.x + radius * std::cos(angle);
         float y = center.y + radius * std::sin(angle);
         Vec3 tp = xform.transform_point({x, y, 0.0f});
-        batch.vertex_data.push_back(tp.x);
-        batch.vertex_data.push_back(tp.y);
+        append_vertex(batch.vertex_data, tp.x, tp.y);
     }
 }
 
@@ -649,8 +778,7 @@ void RenderBatcher::tessellate_arc(const Vec3& center, float radius,
         float x = center.x + radius * std::cos(angle);
         float y = center.y + radius * std::sin(angle);
         Vec3 tp = xform.transform_point({x, y, 0.0f});
-        batch.vertex_data.push_back(tp.x);
-        batch.vertex_data.push_back(tp.y);
+        append_vertex(batch.vertex_data, tp.x, tp.y);
     }
 }
 

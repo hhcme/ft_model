@@ -9,6 +9,13 @@ type: agent
 ## Role
 负责 DWG 中的**块引用（INSERT / MINSERT）**解析。把 DWG handle stream 中的 `block_header` handle 映射到 SceneGraph 的 `block_index`，让图块、门窗、标准符号正确渲染。
 
+## Global DWG Rules
+
+- DWG INSERT/Block 支持必须直接解析 DWG 二进制语义，不得通过外部 DWG→DXF 转换实现。
+- 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
+- Block/INSERT 语义要服务 AutoCAD 预览级还原：普通块、匿名块、属性、图框/标题栏、维度匿名块、布局视口相关块都需要按通用规则处理。
+- DXF INSERT 行为可作为变换语义参照，但 DWG 的 block_header handle、anonymous block name、handle stream 和 object order 必须按 DWG 规则解析。
+
 ## Scope
 
 ### 拥有的模块
@@ -42,6 +49,7 @@ type: agent
 - **任务**：
   - 在 `parse_objects` 的前置阶段（或 `parse_file` 的某个阶段），收集所有 BLOCK_HEADER 对象
   - 或者利用已有的 `SceneGraph::add_block` 流程，在解析 BLOCK 实体时记录 handle
+  - 保留 Model Space、Paper Space、Layout、图框/标题栏、匿名块之间的语义差异，不得只按几何 centroid 或文件名做判断
 
 ### 3. INSERT / MINSERT (types 7 / 8) 数据字段验证
 - 已有基础实现 (`parse_insert`)，但 `block_index = -1`。
@@ -72,3 +80,4 @@ type: agent
 - `big.dwg` 中解析出的 INSERT 实体 `block_index` 不再全是 `-1`。
 - Block 引用渲染后，图中出现重复的门窗符号、图例、标准标注块等。
 - `render_export` 的 `Block definition entities` 计数 > 0 且被正确过滤（不直接渲染）。
+- `Drawing2.dwg` 中图框、标题栏、机械部件块、标注匿名块在 Paper Space/Layout 中位置和比例合理。

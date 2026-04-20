@@ -1138,6 +1138,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     if (m_sections.object_data.empty()) {
         return Result::error(ErrorCode::ParseError, "No object data");
     }
+    reset_dwg_entity_parser_state();
 
     const uint8_t* obj_data = m_sections.object_data.data();
     size_t obj_data_size = m_sections.object_data.size();
@@ -1524,8 +1525,6 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             // Handle table objects (LAYER, LTYPE, STYLE, DIMSTYLE)
             if (obj_type == 51 || obj_type == 53 ||
                 obj_type == 57 || obj_type == 69) {
-                fprintf(stderr, "[DWG TABLE] type=%u bit_pos=%zu has_str=%d\n",
-                        obj_type, reader.bit_offset(), reader.has_string_stream());
                 parse_dwg_table_object(reader, obj_type, scene,
                                        m_version, entity_bits, main_data_bits,
                                        handle, &m_layer_handle_to_index);

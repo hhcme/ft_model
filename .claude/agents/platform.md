@@ -40,6 +40,10 @@ type: agent
 7. **MTEXT 格式码**：`\P` → 换行，去除 `{\...}` 样式码，去除多余花括号
 8. **视锥裁剪**：批次级别用预计算的 world coords bounds
 9. **big.json 可提交**，但 DXF/DWG 测试数据不提交（在 .gitignore 中）
+10. **AutoCAD 预览级 fitView**：初始视图优先 Layout/Plot Window → 图框/标题栏 → 布局视口内容 → 模型主实体 bounds → raw scene bounds fallback
+11. **空间语义不可混用**：Model Space、Paper Space、Layout Viewport 不得合并成一个 raw bounds 作为主预览范围
+12. **机械图视觉验收**：Drawing2 类图纸必须检查图框水平完整、主视图/详图在图框内、标注/引线/气泡/文字可读且位置正确
+13. **水印不是目标**：参考图水印不属于 DWG 渲染还原目标，不得驱动 UI 或解析逻辑
 
 ### React + Ant Design Frontend (v0.6+)
 
@@ -108,6 +112,7 @@ type: agent
 
 - `preview.html` 可视化验证渲染效果
 - 对比 `test_dwg/big.png` 参考图
+- 对比 `test_dwg/Drawing2.dwg` 的 Layout/Paper Space 机械图视觉效果
 - 多浏览器测试（Chrome, Safari, Firefox）
 - 触摸设备测试（iOS/Android）
 - 性能分析：帧率、内存使用

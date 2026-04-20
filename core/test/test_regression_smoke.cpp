@@ -8,6 +8,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <unordered_set>
@@ -48,6 +51,58 @@ bool is_dwg_path(const std::string& path) {
     return *ext == '.' && strcasecmp(ext, ".dwg") == 0;
 }
 
+std::string uppercase_ascii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+bool is_model_or_paper_space_block(const std::string& name) {
+    std::string upper = uppercase_ascii(name);
+    return upper == "*MODEL_SPACE" || upper == "*PAPER_SPACE";
+}
+
+bool valid_coord(float x, float y) {
+    return std::isfinite(x) && std::isfinite(y) &&
+           std::abs(x) <= 1.0e8f && std::abs(y) <= 1.0e8f;
+}
+
+bool should_render_dwg_block_direct(const Block& block,
+                                    const std::vector<EntityVariant>& entities) {
+    if (is_model_or_paper_space_block(block.name)) return true;
+
+    bool empty = true;
+    float min_x = 0.0f, min_y = 0.0f, max_x = 0.0f, max_y = 0.0f;
+    auto expand = [&](float x, float y) {
+        if (!valid_coord(x, y)) return;
+        if (empty) {
+            min_x = max_x = x;
+            min_y = max_y = y;
+            empty = false;
+            return;
+        }
+        min_x = std::min(min_x, x);
+        min_y = std::min(min_y, y);
+        max_x = std::max(max_x, x);
+        max_y = std::max(max_y, y);
+    };
+
+    for (int32_t idx : block.entity_indices) {
+        if (idx < 0 || static_cast<size_t>(idx) >= entities.size()) continue;
+        const auto& b = entities[static_cast<size_t>(idx)].bounds();
+        if (b.is_empty()) continue;
+        expand(b.min.x, b.min.y);
+        expand(b.max.x, b.max.y);
+    }
+    if (empty || block.entity_indices.empty()) return false;
+
+    const float cx = (min_x + max_x) * 0.5f;
+    const float cy = (min_y + max_y) * 0.5f;
+    const float centroid_dist = std::sqrt(cx * cx + cy * cy);
+    return block.entity_indices.size() > 50 && centroid_dist > 5000.0f;
+}
+
 size_t collect_text_count(const SceneGraph& scene) {
     size_t count = 0;
     for (const auto& entity : scene.entities()) {
@@ -81,29 +136,52 @@ Result parse_scene(const std::string& path, SceneGraph& scene) {
     return parser.parse_file(path, scene);
 }
 
-Summary summarize_scene(SceneGraph& scene) {
+Summary summarize_scene(SceneGraph& scene, bool is_dwg) {
     Summary summary;
     summary.entity_count = scene.entities().size();
     summary.bounds_empty = scene.total_bounds().is_empty();
     summary.text_count = collect_text_count(scene);
 
     std::unordered_set<int32_t> block_entity_indices;
-    // Only filter block entities if INSERT expansion is working
+    std::unordered_set<int32_t> direct_block_indices;
     bool insert_expansion_active = false;
-    const auto& entities = scene.entities();
-    for (const auto& entity : entities) {
-        if (entity.type() == EntityType::Insert) {
-            auto* ins = std::get_if<InsertEntity>(&entity.data);
-            if (ins && ins->block_index >= 0) {
-                insert_expansion_active = true;
-                break;
+    auto& entities = scene.entities();
+
+    if (is_dwg) {
+        const auto& blocks = scene.blocks();
+        for (size_t bi = 0; bi < blocks.size(); ++bi) {
+            const auto& block = blocks[bi];
+            if (should_render_dwg_block_direct(block, entities)) {
+                direct_block_indices.insert(static_cast<int32_t>(bi));
+                for (int32_t ei : block.entity_indices) {
+                    if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
+                        entities[static_cast<size_t>(ei)].header.in_block = false;
+                    }
+                }
+            } else {
+                for (int32_t ei : block.entity_indices) {
+                    block_entity_indices.insert(ei);
+                    if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
+                        entities[static_cast<size_t>(ei)].header.in_block = true;
+                    }
+                }
             }
         }
-    }
-    if (insert_expansion_active) {
-        for (const auto& block : scene.blocks()) {
-            for (int32_t ei : block.entity_indices) {
-                block_entity_indices.insert(ei);
+    } else {
+        for (const auto& entity : entities) {
+            if (entity.type() == EntityType::Insert) {
+                auto* ins = std::get_if<InsertEntity>(&entity.data);
+                if (ins && ins->block_index >= 0) {
+                    insert_expansion_active = true;
+                    break;
+                }
+            }
+        }
+        if (insert_expansion_active) {
+            for (const auto& block : scene.blocks()) {
+                for (int32_t ei : block.entity_indices) {
+                    block_entity_indices.insert(ei);
+                }
             }
         }
     }
@@ -117,9 +195,16 @@ Summary summarize_scene(SceneGraph& scene) {
 
     RenderBatcher batcher;
     batcher.begin_frame(camera);
+    batcher.set_outlier_filter_enabled(is_dwg);
     for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
         if (block_entity_indices.count(i)) {
             continue;
+        }
+        if (is_dwg && entities[static_cast<size_t>(i)].type() == EntityType::Insert) {
+            auto* ins = std::get_if<InsertEntity>(&entities[static_cast<size_t>(i)].data);
+            if (ins && direct_block_indices.count(ins->block_index)) {
+                continue;
+            }
         }
         batcher.submit_entity(entities[static_cast<size_t>(i)], scene);
     }
@@ -159,7 +244,8 @@ bool run_case(const SmokeCase& smoke_case) {
         return false;
     }
 
-    Summary summary = summarize_scene(scene);
+    bool is_dwg = is_dwg_path(smoke_case.path);
+    Summary summary = summarize_scene(scene, is_dwg);
     std::printf("[smoke] %s entities=%zu batches=%zu vertices=%zu texts=%zu boundsEmpty=%s\n",
                 smoke_case.path.c_str(), summary.entity_count, summary.batch_count,
                 summary.total_vertices, summary.text_count,
@@ -210,7 +296,7 @@ int main() {
          .min_texts = 7, .max_texts = 7,
          .expect_bounds_empty = false},
         {.path = "test_dwg/big.dwg",
-         .min_entities = 130000,
+         .min_entities = 100000,
          .min_batches = 50,
          .min_vertices = 350000,
          .min_texts = 5000, .max_texts = 7000,

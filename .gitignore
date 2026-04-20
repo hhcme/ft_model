@@ -30,6 +30,11 @@ test_dwg/*.pdf
 test_dwg/*.png
 test_dwg/*.nwd
 
+# Preview/export generated data
+platforms/electron/big.json
+platforms/electron/*_out.json
+platforms/electron/*_preview.json
+
 # Cache
 .cache/
 

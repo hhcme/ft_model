@@ -30,64 +30,105 @@ export function isVisible(
   );
 }
 
-/** Fit viewport to data — batch-level outlier filtering. */
+/** Fit viewport to data using IQR-based outlier rejection. */
 export function fitViewToBounds(
-  _batches: Batch[],
+  batches: Batch[],
   batchBoundsList: (BatchBounds | null)[],
   canvasWidth: number,
   canvasHeight: number,
-  _bounds?: Bounds,
+  bounds?: Bounds,
 ): { centerX: number; centerY: number; zoom: number } {
-  // Collect batch centers
-  type Entry = { bb: BatchBounds; cx: number; cy: number };
-  const entries: Entry[] = [];
-  for (const bb of batchBoundsList) {
-    if (!bb || bb.minX >= bb.maxX || bb.minY >= bb.maxY) continue;
-    entries.push({ bb, cx: (bb.minX + bb.maxX) / 2, cy: (bb.minY + bb.maxY) / 2 });
-  }
-  if (entries.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
-
-  // Median center of all batches
-  const sortedCX = entries.map(e => e.cx).sort((a, b) => a - b);
-  const sortedCY = entries.map(e => e.cy).sort((a, b) => a - b);
-  const medCX = sortedCX[Math.floor(sortedCX.length / 2)];
-  const medCY = sortedCY[Math.floor(sortedCY.length / 2)];
-
-  // Distance of each batch from median, then median distance
-  const dists = entries.map(e => Math.hypot(e.cx - medCX, e.cy - medCY));
-  const sortedDists = [...dists].sort((a, b) => a - b);
-  const medDist = sortedDists[Math.floor(sortedDists.length / 2)];
-
-  // Tighter filter: 5x median distance
-  const threshold = Math.max(medDist * 5, 1);
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  let count = 0;
-  for (let i = 0; i < entries.length; i++) {
-    if (dists[i] > threshold) continue;
-    const bb = entries[i].bb;
-    if (bb.minX < minX) minX = bb.minX;
-    if (bb.maxX > maxX) maxX = bb.maxX;
-    if (bb.minY < minY) minY = bb.minY;
-    if (bb.maxY > maxY) maxY = bb.maxY;
-    count++;
+  if (bounds && bounds.minX < bounds.maxX && bounds.minY < bounds.maxY &&
+      [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) {
+    const w = bounds.maxX - bounds.minX;
+    const h = bounds.maxY - bounds.minY;
+    return {
+      centerX: (bounds.minX + bounds.maxX) / 2,
+      centerY: (bounds.minY + bounds.maxY) / 2,
+      zoom: Math.min((canvasWidth * 0.9) / w, (canvasHeight * 0.9) / h),
+    };
   }
 
-  if (count === 0 || minX >= maxX || minY >= maxY) {
-    return { centerX: medCX, centerY: medCY, zoom: 1 };
+  const validEntries: { bb: BatchBounds; verts: number; idx: number }[] = [];
+  for (let i = 0; i < batchBoundsList.length; i++) {
+    const bb = batchBoundsList[i];
+    const batch = batches[i];
+    if (!bb || !batch?.vertices?.length) continue;
+    if (![bb.minX, bb.maxX, bb.minY, bb.maxY].every(Number.isFinite)) continue;
+    validEntries.push({ bb, verts: batch.vertices.length, idx: i });
+  }
+  if (validEntries.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
+
+  let totalVerts = 0;
+  for (const entry of validEntries) totalVerts += entry.verts;
+
+  const sampleSize = Math.min(totalVerts, 10000);
+  const sampleInterval = Math.max(1, Math.floor(totalVerts / sampleSize));
+
+  const samplesX: number[] = [];
+  const samplesY: number[] = [];
+  let globalIdx = 0;
+  for (const entry of validEntries) {
+    const batch = batches[entry.idx];
+    for (const v of batch.vertices) {
+      if (globalIdx % sampleInterval === 0 &&
+          Number.isFinite(v[0]) && Number.isFinite(v[1])) {
+        samplesX.push(v[0]);
+        samplesY.push(v[1]);
+      }
+      globalIdx++;
+    }
   }
 
-  const w = maxX - minX;
-  const h = maxY - minY;
+  if (samplesX.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
+
+  samplesX.sort((a, b) => a - b);
+  samplesY.sort((a, b) => a - b);
+  const n = samplesX.length;
+
+  const q1x = samplesX[Math.floor(n * 0.25)];
+  const q3x = samplesX[Math.floor(n * 0.75)];
+  const q1y = samplesY[Math.floor(n * 0.25)];
+  const q3y = samplesY[Math.floor(n * 0.75)];
+  const q05x = samplesX[Math.floor(n * 0.05)];
+  const q95x = samplesX[Math.floor(n * 0.95)];
+  const q05y = samplesY[Math.floor(n * 0.05)];
+  const q95y = samplesY[Math.floor(n * 0.95)];
+  const q01x = samplesX[Math.floor(n * 0.01)];
+  const q99x = samplesX[Math.floor(n * 0.99)];
+  const q01y = samplesY[Math.floor(n * 0.01)];
+  const q99y = samplesY[Math.floor(n * 0.99)];
+  const medianX = samplesX[Math.floor(n * 0.5)];
+  const medianY = samplesY[Math.floor(n * 0.5)];
+
+  const iqrX = q3x - q1x;
+  const iqrY = q3y - q1y;
+  const splitX = iqrX > 0 && ((q1x - q05x) > Math.max(iqrX * 2.5, 1) ||
+    (q95x - q3x) > Math.max(iqrX * 2.5, 1));
+  const splitY = iqrY > 0 && ((q1y - q05y) > Math.max(iqrY * 2.5, 1) ||
+    (q95y - q3y) > Math.max(iqrY * 2.5, 1));
+
+  let minX = q1x - iqrX * 0.1;
+  let maxX = q3x + iqrX * 0.1;
+  let minY = q1y - iqrY * 0.1;
+  let maxY = q3y + iqrY * 0.1;
+  if (!splitX && !splitY) {
+    const broadW = q99x - q01x;
+    const broadH = q99y - q01y;
+    if (broadW > 0 && broadH > 0) {
+      minX = q01x - broadW * 0.02;
+      maxX = q99x + broadW * 0.02;
+      minY = q01y - broadH * 0.02;
+      maxY = q99y + broadH * 0.02;
+    }
+  }
+
+  const w = (maxX - minX) || 1;
+  const h = (maxY - minY) || 1;
   const zoom = Math.min(
-    (canvasWidth * 0.92) / w,
-    (canvasHeight * 0.92) / h,
+    (canvasWidth * 0.9) / w,
+    (canvasHeight * 0.9) / h,
   );
 
-  // Center = median of batch centers (robust to outlier batches)
-  return {
-    centerX: medCX,
-    centerY: medCY,
-    zoom,
-  };
+  return { centerX: medianX, centerY: medianY, zoom };
 }
