@@ -5,7 +5,10 @@ interface LayerItem {
   name: string;
   color: [number, number, number];
   frozen: boolean;
+  off?: boolean;
   locked: boolean;
+  plotEnabled?: boolean;
+  lineweight?: number;
 }
 
 interface Props {
@@ -75,6 +78,11 @@ export default function LayerPanel({
                   }}>
                     {layer.name}
                   </span>
+                  {(layer.frozen || layer.off || layer.locked || layer.plotEnabled === false) && (
+                    <span style={{ marginLeft: 'auto', color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
+                      {layer.off ? 'OFF' : layer.frozen ? 'FRZ' : layer.locked ? 'LOCK' : 'NOPLOT'}
+                    </span>
+                  )}
                 </div>
               </List.Item>
             );

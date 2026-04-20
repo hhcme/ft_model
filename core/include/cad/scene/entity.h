@@ -32,6 +32,12 @@ enum class EntityType : uint8_t {
     Solid,
 };
 
+enum class DrawingSpace : uint8_t {
+    Unknown,
+    ModelSpace,
+    PaperSpace,
+};
+
 // ============================================================
 // Entity header — common metadata shared by all entity types
 // ============================================================
@@ -48,6 +54,13 @@ struct EntityHeader {
     bool in_block = false;             // True if entity belongs to a block definition (skip in top-level iteration)
     Bounds3d bounds = Bounds3d::empty();
     int32_t block_index = -1;          // For INSERT: resolved block index (-1 = unresolved)
+    DrawingSpace space = DrawingSpace::ModelSpace;
+    int32_t owner_block_index = -1;
+    int32_t layout_index = -1;
+    int32_t viewport_index = -1;
+    int32_t plot_style_index = -1;
+    uint32_t draw_order = 0;
+    float annotation_scale = 1.0f;
     uint8_t dimensionality = 0x02;     // 0x02 = 2D, 0x03 = 3D (reserved)
 };
 
@@ -87,9 +100,13 @@ struct PolylineEntity {
 
 struct SplineEntity {
     int32_t degree = 3;
+    bool is_rational = false;
+    bool is_closed = false;
+    bool is_periodic = false;
     std::vector<Vec3> control_points;
     std::vector<Vec3> fit_points;
     std::vector<float> knots;
+    std::vector<float> weights;
 };
 
 struct TextEntity {

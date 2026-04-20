@@ -79,8 +79,16 @@ void DxfTablesReader::parse_layer_table(DxfTokenizer& tokenizer, SceneGraph& sce
                 }
                 break;
             case 6:  // Linetype name reference (resolved later)
-                // Store linetype index is not straightforward from name alone here.
-                // The linetype table should have been parsed first. Skip for now.
+                {
+                    int32_t lt = scene.find_linetype(gv.value);
+                    if (lt >= 0) layer.linetype_index = lt;
+                }
+                break;
+            case 290: // Plot flag
+                layer.plot_enabled = gv.as_int() != 0;
+                break;
+            case 370: // Lineweight in hundredths of mm
+                layer.lineweight = static_cast<float>(gv.as_int()) / 100.0f;
                 break;
             default:
                 break;
@@ -189,8 +197,11 @@ void DxfTablesReader::parse_vport_table(DxfTokenizer& tokenizer, SceneGraph& sce
         (lower_left_y + upper_right_y) * 0.5f,
         0.0f
     );
+    vp.paper_center = vp.center;
     if (vp.width == 0.0f) vp.width = upper_right_x - lower_left_x;
     if (vp.height == 0.0f) vp.height = upper_right_y - lower_left_y;
+    vp.paper_width = vp.width;
+    vp.paper_height = vp.height;
 
     scene.add_viewport(std::move(vp));
 }

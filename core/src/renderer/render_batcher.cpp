@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <vector>
 
 namespace cad {
 
@@ -29,6 +30,282 @@ bool append_vertex(std::vector<float>& vertex_data, float x, float y) {
     vertex_data.push_back(x);
     vertex_data.push_back(y);
     return true;
+}
+
+bool is_renderable_point(const Vec3& pt) {
+    return is_renderable_coord(pt.x, pt.y) && std::isfinite(pt.z) &&
+           std::abs(pt.z) <= kMaxRenderableCoord;
+}
+
+float distance_xy(const Vec3& a, const Vec3& b) {
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+Vec3 lerp_vec3(const Vec3& a, const Vec3& b, float t) {
+    return {
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t,
+    };
+}
+
+Vec3 catmull_rom(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
+                 float t) {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    return {
+        0.5f * ((2.0f * p1.x) + (-p0.x + p2.x) * t +
+                (2.0f * p0.x - 5.0f * p1.x + 4.0f * p2.x - p3.x) * t2 +
+                (-p0.x + 3.0f * p1.x - 3.0f * p2.x + p3.x) * t3),
+        0.5f * ((2.0f * p1.y) + (-p0.y + p2.y) * t +
+                (2.0f * p0.y - 5.0f * p1.y + 4.0f * p2.y - p3.y) * t2 +
+                (-p0.y + 3.0f * p1.y - 3.0f * p2.y + p3.y) * t3),
+        0.5f * ((2.0f * p1.z) + (-p0.z + p2.z) * t +
+                (2.0f * p0.z - 5.0f * p1.z + 4.0f * p2.z - p3.z) * t2 +
+                (-p0.z + 3.0f * p1.z - 3.0f * p2.z + p3.z) * t3),
+    };
+}
+
+bool valid_knot_vector(const std::vector<float>& knots, size_t control_count, int degree) {
+    if (degree < 1 || control_count < 2) return false;
+    const size_t expected = control_count + static_cast<size_t>(degree) + 1;
+    if (knots.size() < expected) return false;
+    for (size_t i = 1; i < knots.size(); ++i) {
+        if (!std::isfinite(knots[i]) || knots[i] < knots[i - 1]) return false;
+    }
+    return true;
+}
+
+int find_spline_span(const std::vector<float>& knots, int control_count, int degree,
+                     float u) {
+    const int n = control_count - 1;
+    if (u >= knots[static_cast<size_t>(n + 1)]) return n;
+    if (u <= knots[static_cast<size_t>(degree)]) return degree;
+
+    int low = degree;
+    int high = n + 1;
+    int mid = (low + high) / 2;
+    while (u < knots[static_cast<size_t>(mid)] ||
+           u >= knots[static_cast<size_t>(mid + 1)]) {
+        if (u < knots[static_cast<size_t>(mid)]) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+        mid = (low + high) / 2;
+    }
+    return mid;
+}
+
+Vec3 evaluate_bspline(const SplineEntity& spline, float u) {
+    const auto& points = spline.control_points;
+    const auto& knots = spline.knots;
+    const int degree = std::clamp(spline.degree, 1, 16);
+    const int point_count = static_cast<int>(points.size());
+    const int span = find_spline_span(knots, point_count, degree, u);
+
+    struct WeightedPoint {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        double w = 1.0;
+    };
+
+    std::vector<WeightedPoint> d(static_cast<size_t>(degree + 1));
+    for (int j = 0; j <= degree; ++j) {
+        const int idx = span - degree + j;
+        const float weight =
+            (spline.weights.size() == points.size() && spline.weights[static_cast<size_t>(idx)] > 0.0f)
+                ? spline.weights[static_cast<size_t>(idx)]
+                : 1.0f;
+        const Vec3& pt = points[static_cast<size_t>(idx)];
+        d[static_cast<size_t>(j)] = {
+            static_cast<double>(pt.x) * weight,
+            static_cast<double>(pt.y) * weight,
+            static_cast<double>(pt.z) * weight,
+            static_cast<double>(weight),
+        };
+    }
+
+    for (int r = 1; r <= degree; ++r) {
+        for (int j = degree; j >= r; --j) {
+            const int left = span - degree + j;
+            const int right = span + 1 + j - r;
+            const double denom =
+                static_cast<double>(knots[static_cast<size_t>(right)] -
+                                    knots[static_cast<size_t>(left)]);
+            const double alpha = std::abs(denom) > 1.0e-12
+                ? (static_cast<double>(u) - knots[static_cast<size_t>(left)]) / denom
+                : 0.0;
+            auto& cur = d[static_cast<size_t>(j)];
+            const auto& prev = d[static_cast<size_t>(j - 1)];
+            cur.x = (1.0 - alpha) * prev.x + alpha * cur.x;
+            cur.y = (1.0 - alpha) * prev.y + alpha * cur.y;
+            cur.z = (1.0 - alpha) * prev.z + alpha * cur.z;
+            cur.w = (1.0 - alpha) * prev.w + alpha * cur.w;
+        }
+    }
+
+    const auto& out = d[static_cast<size_t>(degree)];
+    const double inv_w = std::abs(out.w) > 1.0e-12 ? (1.0 / out.w) : 1.0;
+    return {
+        static_cast<float>(out.x * inv_w),
+        static_cast<float>(out.y * inv_w),
+        static_cast<float>(out.z * inv_w),
+    };
+}
+
+std::vector<Vec3> tessellate_spline_points(const SplineEntity& spline) {
+    std::vector<Vec3> out;
+
+    if (!spline.fit_points.empty()) {
+        const auto& pts = spline.fit_points;
+        if (pts.size() < 2) return out;
+
+        const int samples_per_segment = 8;
+        out.reserve((pts.size() - 1) * samples_per_segment + 1);
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const Vec3& p0 = (i == 0) ? pts[i] : pts[i - 1];
+            const Vec3& p1 = pts[i];
+            const Vec3& p2 = pts[i + 1];
+            const Vec3& p3 = (i + 2 < pts.size()) ? pts[i + 2] : pts[i + 1];
+            for (int s = 0; s < samples_per_segment; ++s) {
+                const float t = static_cast<float>(s) / static_cast<float>(samples_per_segment);
+                Vec3 p = catmull_rom(p0, p1, p2, p3, t);
+                if (is_renderable_point(p)) out.push_back(p);
+            }
+        }
+        if (is_renderable_point(pts.back())) out.push_back(pts.back());
+        if (spline.is_closed && out.size() > 2) out.push_back(out.front());
+        return out;
+    }
+
+    const auto& pts = spline.control_points;
+    if (pts.size() < 2) return out;
+
+    const int degree = std::clamp(spline.degree, 1, 16);
+    if (valid_knot_vector(spline.knots, pts.size(), degree)) {
+        const int n = static_cast<int>(pts.size()) - 1;
+        const float u0 = spline.knots[static_cast<size_t>(degree)];
+        const float u1 = spline.knots[static_cast<size_t>(n + 1)];
+        if (std::isfinite(u0) && std::isfinite(u1) && u1 > u0) {
+            float chord = 0.0f;
+            for (size_t i = 1; i < pts.size(); ++i) {
+                chord += distance_xy(pts[i - 1], pts[i]);
+            }
+            const int chord_samples = static_cast<int>(std::ceil(chord / 12.0f));
+            const int samples = std::clamp(
+                std::max<int>(static_cast<int>(pts.size()) * 8, chord_samples), 12, 160);
+            out.reserve(static_cast<size_t>(samples + 1));
+            for (int i = 0; i <= samples; ++i) {
+                const float t = static_cast<float>(i) / static_cast<float>(samples);
+                const float u = (i == samples) ? u1 : (u0 + (u1 - u0) * t);
+                Vec3 p = evaluate_bspline(spline, u);
+                if (is_renderable_point(p)) out.push_back(p);
+            }
+            if (spline.is_closed && out.size() > 2) out.push_back(out.front());
+            return out;
+        }
+    }
+
+    out.reserve(pts.size());
+    for (const Vec3& pt : pts) {
+        if (is_renderable_point(pt)) out.push_back(pt);
+    }
+    if (spline.is_closed && out.size() > 2) out.push_back(out.front());
+    return out;
+}
+
+bool same_pattern(const LinePattern& a, const LinePattern& b) {
+    return a.dash_array == b.dash_array;
+}
+
+void split_line_strip_coordinate_jumps(RenderBatch& batch) {
+    if (batch.topology != PrimitiveTopology::LineStrip ||
+        batch.vertex_data.size() < 8 ||
+        batch.entity_starts.empty()) {
+        return;
+    }
+
+    const auto& vd = batch.vertex_data;
+    struct Range { size_t start = 0; size_t end = 0; };
+    std::vector<Range> ranges;
+    ranges.reserve(batch.entity_starts.size());
+    for (size_t ei = 0; ei < batch.entity_starts.size(); ++ei) {
+        const size_t start = static_cast<size_t>(batch.entity_starts[ei]) * 2;
+        const size_t end = (ei + 1 < batch.entity_starts.size())
+            ? static_cast<size_t>(batch.entity_starts[ei + 1]) * 2
+            : vd.size();
+        if (start + 3 < end && end <= vd.size()) {
+            ranges.push_back({start, end});
+        }
+    }
+    if (ranges.empty()) return;
+
+    std::vector<float> filtered;
+    std::vector<uint32_t> starts;
+    std::vector<float> path;
+
+    auto is_coordinate_jump = [](float x0, float y0, float x1, float y1, float len, float threshold) {
+        if (!std::isfinite(len)) return true;
+        if (len > threshold) return true;
+        const float n0 = std::sqrt(x0 * x0 + y0 * y0);
+        const float n1 = std::sqrt(x1 * x1 + y1 * y1);
+        const float max_norm = std::max(n0, n1);
+        const float min_norm = std::min(n0, n1);
+        return len > 1000000.0f &&
+               max_norm > 1000000.0f &&
+               min_norm < max_norm * 0.01f;
+    };
+
+    auto flush_path = [&]() {
+        if (path.size() >= 4) {
+            starts.push_back(static_cast<uint32_t>(filtered.size() / 2));
+            filtered.insert(filtered.end(), path.begin(), path.end());
+        }
+        path.clear();
+    };
+
+    for (const auto& range : ranges) {
+        std::vector<float> lengths;
+        for (size_t i = range.start; i + 3 < range.end; i += 2) {
+            const float dx = vd[i + 2] - vd[i];
+            const float dy = vd[i + 3] - vd[i + 1];
+            const float len = std::sqrt(dx * dx + dy * dy);
+            if (std::isfinite(len)) lengths.push_back(len);
+        }
+        float threshold = 1000000.0f;
+        if (lengths.size() >= 3) {
+            std::sort(lengths.begin(), lengths.end());
+            const float median = lengths[lengths.size() / 2];
+            const float q90 = lengths[std::min(lengths.size() - 1,
+                                               static_cast<size_t>(lengths.size() * 0.90f))];
+            threshold = std::max(100000.0f, std::max(median * 200.0f, q90 * 50.0f));
+        }
+
+        path.clear();
+        path.push_back(vd[range.start]);
+        path.push_back(vd[range.start + 1]);
+        for (size_t i = range.start; i + 3 < range.end; i += 2) {
+            const float dx = vd[i + 2] - vd[i];
+            const float dy = vd[i + 3] - vd[i + 1];
+            const float len = std::sqrt(dx * dx + dy * dy);
+            if (is_coordinate_jump(vd[i], vd[i + 1], vd[i + 2], vd[i + 3], len, threshold)) {
+                flush_path();
+                path.push_back(vd[i + 2]);
+                path.push_back(vd[i + 3]);
+                continue;
+            }
+            path.push_back(vd[i + 2]);
+            path.push_back(vd[i + 3]);
+        }
+        flush_path();
+    }
+
+    batch.vertex_data = std::move(filtered);
+    batch.entity_starts = std::move(starts);
 }
 
 } // namespace
@@ -68,45 +345,111 @@ void RenderBatcher::begin_frame(const Camera& camera) {
 void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph& scene) {
     // Skip block child entities — they are only rendered through INSERT expansion
     if (entity.header.in_block) return;
-    submit_entity_impl(entity, scene, Matrix4x4::identity(), 0);
+    submit_entity_impl(entity, scene, Matrix4x4::identity(), 0, nullptr);
 }
 
 void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
-                                        const Matrix4x4& xform, int depth) {
+                                        const Matrix4x4& xform, int depth,
+                                        const EntityHeader* inherited_header) {
     if (!entity.is_visible()) return;
     if (depth > 16) return; // prevent infinite recursion
 
-    // Resolve color: true_color (RGB) > entity ACI override > layer color
-    Color draw_color;
-    if (entity.header.has_true_color) {
-        draw_color = entity.header.true_color;
-    } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
-        draw_color = Color::from_aci(entity.header.color_override);
-    } else {
-        int32_t li = entity.header.layer_index;
-        const auto& layers = scene.layers();
-        if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
-            draw_color = layers[static_cast<size_t>(li)].color;
-        } else {
-            draw_color = Color::white();
-        }
+    const auto& layers = scene.layers();
+    const Layer* layer = nullptr;
+    int32_t li = entity.header.layer_index;
+    if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
+        layer = &layers[static_cast<size_t>(li)];
     }
 
-    // Helper: find or create a batch with matching (topology, color).
-    auto find_batch = [this](PrimitiveTopology topo, const Color& col) -> RenderBatch* {
+    auto layer_for = [&layers](const EntityHeader& hdr) -> const Layer* {
+        int32_t idx = hdr.layer_index;
+        if (idx >= 0 && static_cast<size_t>(idx) < layers.size()) {
+            return &layers[static_cast<size_t>(idx)];
+        }
+        return nullptr;
+    };
+
+    auto color_for = [&](const EntityHeader& hdr, const Layer* hdr_layer) -> Color {
+        if (hdr.has_true_color) return hdr.true_color;
+        if (hdr.color_override != 256 && hdr.color_override != 0) {
+            return Color::from_aci(hdr.color_override);
+        }
+        if (hdr_layer) return hdr_layer->color;
+        return Color::white();
+    };
+
+    // Resolve color: TrueColor > explicit ACI > ByBlock inherited > ByLayer.
+    Color draw_color;
+    if (entity.header.color_override == 0 && inherited_header) {
+        draw_color = color_for(*inherited_header, layer_for(*inherited_header));
+    } else {
+        draw_color = color_for(entity.header, layer);
+    }
+
+    float line_width = 1.0f;
+    if (entity.header.lineweight < 0.0f && inherited_header) {
+        const Layer* inherited_layer = layer_for(*inherited_header);
+        if (inherited_header->lineweight > 0.0f) {
+            line_width = inherited_header->lineweight;
+        } else if (inherited_layer && inherited_layer->lineweight > 0.0f) {
+            line_width = inherited_layer->lineweight;
+        }
+    } else if (entity.header.lineweight > 0.0f) {
+        line_width = entity.header.lineweight;
+    } else if (layer && layer->lineweight > 0.0f) {
+        line_width = layer->lineweight;
+    }
+    if (!std::isfinite(line_width) || line_width <= 0.0f) line_width = 1.0f;
+
+    LinePattern line_pattern;
+    int32_t linetype_index = entity.header.linetype_index;
+    if (linetype_index == -2 && inherited_header) {
+        const Layer* inherited_layer = layer_for(*inherited_header);
+        linetype_index = inherited_header->linetype_index;
+        if (linetype_index < 0 && inherited_layer) {
+            linetype_index = inherited_layer->linetype_index;
+        }
+    }
+    if (linetype_index < 0 && layer) {
+        linetype_index = layer->linetype_index;
+    }
+    const auto& linetypes = scene.linetypes();
+    if (linetype_index >= 0 && static_cast<size_t>(linetype_index) < linetypes.size()) {
+        line_pattern = linetypes[static_cast<size_t>(linetype_index)].pattern;
+    }
+
+    // Helper: find or create a batch with matching visible CAD appearance.
+    auto find_batch = [this, line_width, &line_pattern, &entity](
+        PrimitiveTopology topo, const Color& col) -> RenderBatch* {
         for (auto& b : m_batches) {
-            if (b.topology == topo && b.color == col) return &b;
+            if (b.topology == topo && b.color == col &&
+                b.line_width == line_width &&
+                same_pattern(b.line_pattern, line_pattern) &&
+                b.space == entity.header.space &&
+                b.layout_index == entity.header.layout_index &&
+                b.viewport_index == entity.header.viewport_index) {
+                return &b;
+            }
         }
         m_batches.push_back(RenderBatch{});
         auto& b = m_batches.back();
         b.topology = topo;
         b.color = col;
+        b.line_width = line_width;
+        b.line_pattern = line_pattern;
+        b.space = entity.header.space;
+        b.layout_index = entity.header.layout_index;
+        b.viewport_index = entity.header.viewport_index;
+        b.draw_order = entity.header.draw_order;
         return &b;
     };
 
     uint8_t entity_type_u8 = static_cast<uint8_t>(entity.header.type);
     int32_t entity_index = static_cast<int32_t>(entity.header.entity_id);
     uint16_t layer_u16 = static_cast<uint16_t>(entity.header.layer_index);
+    uint32_t depth_order = entity.header.draw_order != 0
+        ? entity.header.draw_order
+        : static_cast<uint32_t>(entity_index & 0x00FFFFFF);
 
     // Helper: transform a world point through the current xform
     auto tx = [&xform](float x, float y) -> std::pair<float, float> {
@@ -125,7 +468,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         tessellate_line(line->start, line->end, *batch, xform);
         break;
     }
@@ -137,7 +480,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
         tessellate_circle(circle->center, circle->radius, segments, *batch, xform);
         break;
@@ -152,7 +495,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
         tessellate_arc(arc->center, arc->radius, arc->start_angle, arc->end_angle, segments, *batch, xform);
         break;
@@ -165,7 +508,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         int32_t count = poly->vertex_count;
@@ -286,6 +629,18 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
 
         constexpr size_t MAX_BLOCK_VERTICES = 500000;
 
+        bool uses_byblock = false;
+        for (int32_t ei : block.entity_indices) {
+            if (ei < 0 || static_cast<size_t>(ei) >= all_entities.size()) continue;
+            const auto& child_hdr = all_entities[static_cast<size_t>(ei)].header;
+            if (child_hdr.color_override == 0 ||
+                child_hdr.linetype_index == -2 ||
+                child_hdr.lineweight < 0.0f) {
+                uses_byblock = true;
+                break;
+            }
+        }
+
         // Check block tessellation cache
         auto cache_it = m_block_cache.find(bk_idx);
         if (cache_it == m_block_cache.end()) {
@@ -361,8 +716,43 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                 Matrix4x4 final_xform = base_offset * insert_xform *
                     Matrix4x4::translation_2d(arr_off.x, arr_off.y) * xform;
 
+                if (uses_byblock) {
+                    for (int32_t ei : block.entity_indices) {
+                        if (ei < 0 || static_cast<size_t>(ei) >= all_entities.size()) continue;
+                        const auto& child = all_entities[static_cast<size_t>(ei)];
+                        if (!child.is_visible()) continue;
+                        submit_entity_impl(child, scene, final_xform, depth + 1, &entity.header);
+                    }
+                    continue;
+                }
+
                 for (const RenderBatch& src : cached_batches) {
-                    RenderBatch* dst = find_batch(src.topology, src.color);
+                    RenderBatch* dst = nullptr;
+                    for (auto& candidate : m_batches) {
+                        if (candidate.topology == src.topology &&
+                            candidate.color == src.color &&
+                            candidate.line_width == src.line_width &&
+                            same_pattern(candidate.line_pattern, src.line_pattern) &&
+                            candidate.space == src.space &&
+                            candidate.layout_index == src.layout_index &&
+                            candidate.viewport_index == src.viewport_index) {
+                            dst = &candidate;
+                            break;
+                        }
+                    }
+                    if (!dst) {
+                        m_batches.push_back(RenderBatch{});
+                        dst = &m_batches.back();
+                        dst->sort_key = src.sort_key;
+                        dst->topology = src.topology;
+                        dst->color = src.color;
+                        dst->line_width = src.line_width;
+                        dst->line_pattern = src.line_pattern;
+                        dst->space = src.space;
+                        dst->layout_index = src.layout_index;
+                        dst->viewport_index = src.viewport_index;
+                        dst->draw_order = src.draw_order;
+                    }
                     uint32_t dst_voff = static_cast<uint32_t>(dst->vertex_data.size() / 2);
 
                     std::vector<float> transformed;
@@ -401,7 +791,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         int32_t count = poly->vertex_count;
@@ -433,7 +823,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
 
         for (const auto& loop : hatch->loops) {
             if (loop.vertices.size() < 3) continue;
@@ -462,7 +852,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
 
         auto [x0, y0] = tx(solid->corners[0].x, solid->corners[0].y);
         auto [x1, y1] = tx(solid->corners[1].x, solid->corners[1].y);
@@ -505,7 +895,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         float major_r = ellipse->radius;
@@ -546,19 +936,21 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
-    // Spline — tessellate from fit points or control points
+    // Spline — tessellate B-spline knots/control points or fit-point curves.
     case EntityType::Spline: {
         auto* spline = std::get_if<5>(&entity.data);
         if (!spline) break;
 
+        std::vector<Vec3> sampled = tessellate_spline_points(*spline);
+        if (sampled.size() < 2) break;
+
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
-        const auto& pts = spline->fit_points.empty() ? spline->control_points : spline->fit_points;
-        for (const auto& pt : pts) {
+        for (const auto& pt : sampled) {
             auto [tpx, tpy] = tx(pt.x, pt.y);
             append_vertex(batch->vertex_data, tpx, tpy);
         }
@@ -585,7 +977,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
         append_vertex(batch->vertex_data, rx0, ry0);
         append_vertex(batch->vertex_data, rx1, ry1);
         break;
@@ -603,7 +995,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
-            static_cast<uint32_t>(entity_index & 0x00FFFFFF));
+            depth_order);
 
         // The definition_point (10/20/30) is typically the point where dimension line meets
         // the second extension line. We need to draw:
@@ -647,8 +1039,9 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
 
 void RenderBatcher::end_frame() {
     // Sort batches by render key for correct ordering
-    std::sort(m_batches.begin(), m_batches.end(),
+    std::stable_sort(m_batches.begin(), m_batches.end(),
               [](const RenderBatch& a, const RenderBatch& b) {
+                  if (a.draw_order != b.draw_order) return a.draw_order < b.draw_order;
                   return a.sort_key < b.sort_key;
               });
 
@@ -684,7 +1077,10 @@ void RenderBatcher::end_frame() {
             }
             if (lengths.empty()) continue;
             std::sort(lengths.begin(), lengths.end());
-            float threshold = std::max(lengths[lengths.size() / 2] * 20.0f, 1.0f);
+            const float median = lengths[lengths.size() / 2];
+            const float q95 = lengths[std::min(lengths.size() - 1,
+                                               static_cast<size_t>(lengths.size() * 0.95f))];
+            float threshold = std::max({median * 200.0f, q95 * 50.0f, 5000.0f});
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 3 < vd.size(); i += 4) {
@@ -701,7 +1097,10 @@ void RenderBatcher::end_frame() {
             }
             if (extents.empty()) continue;
             std::sort(extents.begin(), extents.end());
-            float threshold = std::max(extents[extents.size() / 2] * 20.0f, 1.0f);
+            const float median = extents[extents.size() / 2];
+            const float q95 = extents[std::min(extents.size() - 1,
+                                               static_cast<size_t>(extents.size() * 0.95f))];
+            float threshold = std::max({median * 100.0f, q95 * 20.0f, 5000.0f});
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 5 < vd.size(); i += 6) {
@@ -727,7 +1126,10 @@ void RenderBatcher::end_frame() {
             std::vector<float> extents;
             for (auto& r : ranges) extents.push_back(entity_extent(r.vstart, r.vend));
             std::sort(extents.begin(), extents.end());
-            float threshold = std::max(extents[extents.size() / 2] * 20.0f, 1.0f);
+            const float median = extents[extents.size() / 2];
+            const float q95 = extents[std::min(extents.size() - 1,
+                                               static_cast<size_t>(extents.size() * 0.95f))];
+            float threshold = std::max({median * 100.0f, q95 * 20.0f, 5000.0f});
 
             // Filter: keep entities within threshold
             std::vector<float> filtered_vd;
@@ -741,6 +1143,7 @@ void RenderBatcher::end_frame() {
             }
             vd = std::move(filtered_vd);
             batch.entity_starts = std::move(filtered_es);
+            split_line_strip_coordinate_jumps(batch);
         }
     }
 }

@@ -1,6 +1,8 @@
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/spatial_index.h"
 
+#include <cctype>
+
 namespace cad {
 
 // ============================================================
@@ -20,6 +22,8 @@ public:
     std::vector<TextStyle> text_styles;
     std::vector<Block> blocks;
     std::vector<Viewport> viewports;
+    std::vector<Layout> layouts;
+    std::vector<SceneDiagnostic> diagnostics;
 
     // Name -> index maps for fast lookup
     std::unordered_map<std::string, int32_t> layer_name_map;
@@ -129,6 +133,13 @@ int32_t SceneGraph::add_text_style(TextStyle style) {
 int32_t SceneGraph::add_block(Block block) {
     int32_t idx = static_cast<int32_t>(m_impl->blocks.size());
     std::string name = block.name;
+    std::string upper = name;
+    for (char& c : upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    block.is_model_space = (upper == "*MODEL_SPACE");
+    block.is_paper_space = (upper == "*PAPER_SPACE");
+    block.is_anonymous = !name.empty() && name[0] == '*';
     m_impl->blocks.push_back(std::move(block));
     m_impl->block_name_map[name] = idx;
     return idx;
@@ -138,6 +149,16 @@ int32_t SceneGraph::add_viewport(Viewport vp) {
     int32_t idx = static_cast<int32_t>(m_impl->viewports.size());
     m_impl->viewports.push_back(std::move(vp));
     return idx;
+}
+
+int32_t SceneGraph::add_layout(Layout layout) {
+    int32_t idx = static_cast<int32_t>(m_impl->layouts.size());
+    m_impl->layouts.push_back(std::move(layout));
+    return idx;
+}
+
+void SceneGraph::add_diagnostic(SceneDiagnostic diagnostic) {
+    m_impl->diagnostics.push_back(std::move(diagnostic));
 }
 
 int32_t SceneGraph::find_or_add_layer(const std::string& name) {
@@ -162,7 +183,10 @@ const std::vector<Layer>& SceneGraph::layers() const { return m_impl->layers; }
 const std::vector<Linetype>& SceneGraph::linetypes() const { return m_impl->linetypes; }
 const std::vector<TextStyle>& SceneGraph::text_styles() const { return m_impl->text_styles; }
 const std::vector<Block>& SceneGraph::blocks() const { return m_impl->blocks; }
+std::vector<Block>& SceneGraph::blocks() { return m_impl->blocks; }
 const std::vector<Viewport>& SceneGraph::viewports() const { return m_impl->viewports; }
+const std::vector<Layout>& SceneGraph::layouts() const { return m_impl->layouts; }
+const std::vector<SceneDiagnostic>& SceneGraph::diagnostics() const { return m_impl->diagnostics; }
 
 int32_t SceneGraph::find_layer(const std::string& name) const {
     auto it = m_impl->layer_name_map.find(name);
@@ -215,12 +239,89 @@ std::vector<int32_t> SceneGraph::entities_on_layer(int32_t layer_index) const {
     return result;
 }
 
+std::vector<int32_t> SceneGraph::entities_in_space(DrawingSpace space) const {
+    std::vector<int32_t> result;
+    for (size_t i = 0; i < m_impl->entities.size(); ++i) {
+        if (m_impl->entities[i].header.space == space) {
+            result.push_back(static_cast<int32_t>(i));
+        }
+    }
+    return result;
+}
+
+std::vector<int32_t> SceneGraph::entities_for_layout(int32_t layout_index) const {
+    std::vector<int32_t> result;
+    for (size_t i = 0; i < m_impl->entities.size(); ++i) {
+        if (m_impl->entities[i].header.layout_index == layout_index) {
+            result.push_back(static_cast<int32_t>(i));
+        }
+    }
+    return result;
+}
+
 Bounds3d SceneGraph::total_bounds() const {
     Bounds3d total = Bounds3d::empty();
     for (const auto& ent : m_impl->entities) {
         total.expand(ent.bounds());
     }
     return total;
+}
+
+const Layout* SceneGraph::active_layout() const {
+    auto has_presentation_bounds = [](const Layout& layout) {
+        return !layout.plot_window.is_empty() ||
+               !layout.border_bounds.is_empty() ||
+               !layout.paper_bounds.is_empty();
+    };
+    auto has_layout_entities = [&](int32_t layout_index) {
+        for (const auto& ent : m_impl->entities) {
+            if (ent.header.layout_index == layout_index) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const auto& layout : m_impl->layouts) {
+        const int32_t layout_index = static_cast<int32_t>(&layout - m_impl->layouts.data());
+        if (layout.is_active && !layout.is_model_layout &&
+            has_presentation_bounds(layout) && has_layout_entities(layout_index)) {
+            return &layout;
+        }
+    }
+    for (const auto& layout : m_impl->layouts) {
+        const int32_t layout_index = static_cast<int32_t>(&layout - m_impl->layouts.data());
+        if (!layout.is_model_layout && has_presentation_bounds(layout) &&
+            has_layout_entities(layout_index)) {
+            return &layout;
+        }
+    }
+    return nullptr;
+}
+
+Bounds3d SceneGraph::presentation_bounds() const {
+    if (const Layout* layout = active_layout()) {
+        if (!layout->plot_window.is_empty()) return layout->plot_window;
+        if (!layout->border_bounds.is_empty()) return layout->border_bounds;
+        if (!layout->paper_bounds.is_empty()) return layout->paper_bounds;
+    }
+
+    Bounds3d paper_bounds = Bounds3d::empty();
+    for (const auto& ent : m_impl->entities) {
+        if (ent.header.space == DrawingSpace::PaperSpace) {
+            paper_bounds.expand(ent.bounds());
+        }
+    }
+    if (!paper_bounds.is_empty()) return paper_bounds;
+
+    Bounds3d model_bounds = Bounds3d::empty();
+    for (const auto& ent : m_impl->entities) {
+        if (ent.header.space == DrawingSpace::ModelSpace) {
+            model_bounds.expand(ent.bounds());
+        }
+    }
+    if (!model_bounds.is_empty()) return model_bounds;
+
+    return total_bounds();
 }
 
 // ============================================================
@@ -282,6 +383,8 @@ void SceneGraph::clear() {
     m_impl->text_styles.clear();
     m_impl->blocks.clear();
     m_impl->viewports.clear();
+    m_impl->layouts.clear();
+    m_impl->diagnostics.clear();
     m_impl->layer_name_map.clear();
     m_impl->linetype_name_map.clear();
     m_impl->text_style_name_map.clear();
@@ -303,6 +406,7 @@ void SceneGraph::shrink_to_fit() {
     m_impl->text_styles.shrink_to_fit();
     m_impl->blocks.shrink_to_fit();
     m_impl->viewports.shrink_to_fit();
+    m_impl->layouts.shrink_to_fit();
 }
 
 } // namespace cad

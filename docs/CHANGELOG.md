@@ -27,7 +27,7 @@ Initial DWG/DXF parsing and rendering baseline.
 - Gzip output support
 
 ### Canvas 2D Preview (preview.html)
-- Pan (mouse drag, touch), zoom (wheel, pinch), fit view (MAD-based)
+- Pan (mouse drag, touch), zoom (wheel, pinch), robust fit view
 - Layer panel with visibility toggles and search
 - Frustum culling (batch-level AABB)
 - Dark background with auto color boost

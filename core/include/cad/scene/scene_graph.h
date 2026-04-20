@@ -30,6 +30,22 @@ struct DrawingMetadata {
     std::string acad_version;
 };
 
+struct Layout {
+    std::string name;
+    Bounds3d paper_bounds = Bounds3d::empty();
+    Bounds3d plot_window = Bounds3d::empty();
+    Bounds3d border_bounds = Bounds3d::empty();
+    bool is_active = false;
+    bool is_model_layout = false;
+};
+
+struct SceneDiagnostic {
+    std::string code;
+    std::string category;
+    std::string message;
+    int32_t count = 0;
+};
+
 // ============================================================
 // SceneGraph — central data structure for a CAD drawing
 //
@@ -81,6 +97,8 @@ public:
     int32_t add_text_style(TextStyle style);
     int32_t add_block(Block block);
     int32_t add_viewport(Viewport vp);
+    int32_t add_layout(Layout layout);
+    void add_diagnostic(SceneDiagnostic diagnostic);
 
     // Find or create a layer by name. Returns the layer index.
     int32_t find_or_add_layer(const std::string& name);
@@ -93,7 +111,10 @@ public:
     const std::vector<Linetype>& linetypes() const;
     const std::vector<TextStyle>& text_styles() const;
     const std::vector<Block>& blocks() const;
+    std::vector<Block>& blocks();
     const std::vector<Viewport>& viewports() const;
+    const std::vector<Layout>& layouts() const;
+    const std::vector<SceneDiagnostic>& diagnostics() const;
 
     // Name-based lookups (returns index or -1)
     int32_t find_layer(const std::string& name) const;
@@ -109,12 +130,16 @@ public:
 
     // Get all entity indices within a bounding region
     std::vector<int32_t> entities_in_bounds(const Bounds3d& bounds) const;
+    std::vector<int32_t> entities_in_space(DrawingSpace space) const;
+    std::vector<int32_t> entities_for_layout(int32_t layout_index) const;
 
     // Get all entity indices on a given layer (by layer index)
     std::vector<int32_t> entities_on_layer(int32_t layer_index) const;
 
     // Overall bounding box of all entities
     Bounds3d total_bounds() const;
+    const Layout* active_layout() const;
+    Bounds3d presentation_bounds() const;
 
     // ---- Spatial index ----
     void rebuild_spatial_index();

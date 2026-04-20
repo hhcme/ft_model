@@ -6,6 +6,8 @@ type: agent
 
 # Platform Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to platform-owned work and must not conflict with it.
+
 ## Role
 负责所有平台层的渲染和交互实现。包括 Electron (Canvas 2D / WebGL)、WASM 桥接、以及未来的 Flutter FFI 接口。将 RenderBatch 数据转化为屏幕上的像素。
 
@@ -39,11 +41,15 @@ type: agent
 6. **文本渲染**：Canvas `fillText()` 配合世界坐标到屏幕坐标变换、Y 翻转、旋转、宽度缩放
 7. **MTEXT 格式码**：`\P` → 换行，去除 `{\...}` 样式码，去除多余花括号
 8. **视锥裁剪**：批次级别用预计算的 world coords bounds
-9. **big.json 可提交**，但 DXF/DWG 测试数据不提交（在 .gitignore 中）
+9. **预览 JSON 不提交**：预览器选择文件后生成的 JSON 属于构建/缓存数据，必须留在 `/tmp`、IndexedDB 或 ignored 路径
 10. **AutoCAD 预览级 fitView**：初始视图优先 Layout/Plot Window → 图框/标题栏 → 布局视口内容 → 模型主实体 bounds → raw scene bounds fallback
 11. **空间语义不可混用**：Model Space、Paper Space、Layout Viewport 不得合并成一个 raw bounds 作为主预览范围
 12. **机械图视觉验收**：Drawing2 类图纸必须检查图框水平完整、主视图/详图在图框内、标注/引线/气泡/文字可读且位置正确
 13. **水印不是目标**：参考图水印不属于 DWG 渲染还原目标，不得驱动 UI 或解析逻辑
+14. **Paper mode**：仅 Layout/Paper Space 视图使用 paper background、plot window、border；model-only 图纸不得强制套纸张背景
+15. **Diagnostics 可见性**：DWG gaps、proxy/fallback、missing xref/image/font、plot-style deferred 等核心 diagnostics 应可在 UI 或调试面板查看
+16. **文本显示**：支持 MTEXT inline color/height/underline/paragraph/font fallback，中文、Unicode、`%%c`、`%%d`、`%%p` 等 CAD 符号不得直接露出乱码
+17. **图层状态**：off/frozen 默认隐藏，locked 仍显示；plot mode 可以处理 non-plottable layer，但 viewer mode 默认仍显示
 
 ### React + Ant Design Frontend (v0.6+)
 

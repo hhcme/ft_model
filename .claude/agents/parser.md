@@ -6,6 +6,8 @@ type: agent
 
 # Parser Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to parser-owned work and must not conflict with it.
+
 ## Role
 负责所有文件格式的解析工作，包括 DXF 文本格式和 DWG 二进制格式。确保正确提取几何数据、图层信息、块定义、布局/图纸空间信息等。
 
@@ -46,6 +48,15 @@ type: agent
 - 需要区分 Model Space、Paper Space、Layout、Layout Viewport、Plot Window、Drawing Border、Title Block。
 - DWG parser 应尽量保留布局、视口、图层冻结/隐藏、块引用、匿名块、注释比例等语义，使 Renderer/Platform 能按图纸空间还原预览。
 - DWG 实体可用 DXF group-code 行为做语义对照，但 DWG 字段顺序、编码、handle 引用必须按 DWG 规则解析。
+
+## DWG Compatibility / Object Semantics
+
+- 任何 DWG 改动都要声明版本族：R12/AC1009、R13/AC1012、R14/AC1014、R2000/AC1015、R2004/AC1018、R2007/AC1021、R2010/AC1024、R2013/AC1027、R2018+/AC1032。
+- 对象必须先分类再处理：Standard Entity、Table Object、Dictionary Object、Block/Layout Container、Proxy Object、Custom Object、External Dependency。
+- Header/section/object map/object framing/string stream/handle stream/CED/EED/XData/reactor/extension dictionary 属于 DWG binary infra；实体 parser 不得靠猜边界读字段。
+- Proxy/custom object 不允许静默忽略；至少输出 class name、count、gap category diagnostics。
+- AutoCAD Mechanical objects (`ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, `ACMDETAIL*`, `FIELD`, `AcDsPrototype` 等) 是优先解析对象族。
+- FIELD/FIELDLIST/CONTEXTDATA、Xref、image/underlay/font 缺失应进入 diagnostics，不得导致崩溃或飞线。
 
 ## Common Tasks
 

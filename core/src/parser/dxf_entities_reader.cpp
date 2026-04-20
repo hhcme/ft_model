@@ -18,6 +18,9 @@ bool DxfEntitiesReader::read_entity_header_field(EntityHeader& header,
         case 60:  // Visibility (0 = visible, 1 = invisible)
             header.is_visible = (gv.as_int() == 0);
             break;
+        case 67:  // Space flag: 0 = model space, 1 = paper space
+            header.space = (gv.as_int() == 1) ? DrawingSpace::PaperSpace : DrawingSpace::ModelSpace;
+            break;
         default:
             return false;
     }
@@ -587,6 +590,7 @@ void DxfEntitiesReader::parse_spline(DxfTokenizer& tokenizer, SceneGraph& scene)
     hdr.dimensionality = 0x02;
     std::string layer_name;
     int32_t knot_count = 0;
+    int32_t spline_flags = 0;
     Vec3 current_control{};
     Vec3 current_fit{};
     bool have_control = false;
@@ -598,11 +602,17 @@ void DxfEntitiesReader::parse_spline(DxfTokenizer& tokenizer, SceneGraph& scene)
         const auto& gv = tokenizer.current();
         if (gv.code == 0) break;
         switch (gv.code) {
-            case 70: data.degree      = gv.as_int(); break;
+            case 70:
+                spline_flags = gv.as_int();
+                data.is_closed = (spline_flags & 1) != 0;
+                data.is_periodic = (spline_flags & 2) != 0;
+                data.is_rational = (spline_flags & 4) != 0;
+                break;
             case 71: data.degree      = gv.as_int(); break;  // degree (alternate code)
             case 72: knot_count       = gv.as_int(); break;
             // Knot values (code 40, multiple occurrences)
             case 40: data.knots.push_back(gv.as_float()); break;
+            case 41: data.weights.push_back(gv.as_float()); break;
             // Control points (code 10/20 pairs)
             case 10:
                 if (have_control) {

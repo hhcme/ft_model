@@ -25,6 +25,8 @@ struct Summary {
     size_t batch_count = 0;
     size_t total_vertices = 0;
     size_t text_count = 0;
+    size_t layout_count = 0;
+    size_t viewport_count = 0;
     bool bounds_empty = true;
 };
 
@@ -38,6 +40,8 @@ struct SmokeCase {
     size_t max_vertices = static_cast<size_t>(-1);
     size_t min_texts = 0;
     size_t max_texts = static_cast<size_t>(-1);
+    size_t min_layouts = 0;
+    size_t min_viewports = 0;
     bool expect_bounds_empty = false;
     bool optional = false;
 };
@@ -141,6 +145,8 @@ Summary summarize_scene(SceneGraph& scene, bool is_dwg) {
     summary.entity_count = scene.entities().size();
     summary.bounds_empty = scene.total_bounds().is_empty();
     summary.text_count = collect_text_count(scene);
+    summary.layout_count = scene.layouts().size();
+    summary.viewport_count = scene.viewports().size();
 
     std::unordered_set<int32_t> block_entity_indices;
     std::unordered_set<int32_t> direct_block_indices;
@@ -246,9 +252,10 @@ bool run_case(const SmokeCase& smoke_case) {
 
     bool is_dwg = is_dwg_path(smoke_case.path);
     Summary summary = summarize_scene(scene, is_dwg);
-    std::printf("[smoke] %s entities=%zu batches=%zu vertices=%zu texts=%zu boundsEmpty=%s\n",
+    std::printf("[smoke] %s entities=%zu batches=%zu vertices=%zu texts=%zu layouts=%zu viewports=%zu boundsEmpty=%s\n",
                 smoke_case.path.c_str(), summary.entity_count, summary.batch_count,
                 summary.total_vertices, summary.text_count,
+                summary.layout_count, summary.viewport_count,
                 summary.bounds_empty ? "true" : "false");
 
     bool ok = true;
@@ -260,6 +267,10 @@ bool run_case(const SmokeCase& smoke_case) {
                       smoke_case.min_vertices, smoke_case.max_vertices);
     ok &= check_range("textCount", smoke_case.path, summary.text_count,
                       smoke_case.min_texts, smoke_case.max_texts);
+    ok &= check_range("layoutCount", smoke_case.path, summary.layout_count,
+                      smoke_case.min_layouts, static_cast<size_t>(-1));
+    ok &= check_range("viewportCount", smoke_case.path, summary.viewport_count,
+                      smoke_case.min_viewports, static_cast<size_t>(-1));
 
     if (summary.bounds_empty != smoke_case.expect_bounds_empty) {
         std::fprintf(stderr,
@@ -300,6 +311,15 @@ int main() {
          .min_batches = 50,
          .min_vertices = 350000,
          .min_texts = 5000, .max_texts = 7000,
+         .expect_bounds_empty = false,
+         .optional = true},
+        {.path = "test_dwg/Drawing2.dwg",
+         .min_entities = 15000,
+         .min_batches = 5,
+         .min_vertices = 100000,
+         .min_texts = 10,
+         .min_layouts = 3,
+         .min_viewports = 1,
          .expect_bounds_empty = false,
          .optional = true},
     };

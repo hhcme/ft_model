@@ -1,10 +1,37 @@
 #include "cad/parser/dwg_reader.h"
 
 #include "cad/parser/dwg_parser.h"
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
 namespace cad {
+
+namespace {
+
+bool dwg_debug_enabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("FT_DWG_DEBUG");
+        return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+void dwg_debug_log(const char* fmt, ...)
+{
+    if (!dwg_debug_enabled()) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
+} // namespace
 
 // ============================================================
 // DwgBitReader implementation
@@ -257,7 +284,7 @@ uint16_t DwgBitReader::read_bs()
         default: result = 0; break;
     }
     // DEBUG: only print in class parsing context
-    // fprintf(stderr, "[read_bs] bit_pos=%zu code=%u result=%u m_error=%d\n", m_bit_pos, code, result, (int)m_error);
+    // dwg_debug_log("[read_bs] bit_pos=%zu code=%u result=%u m_error=%d\n", m_bit_pos, code, result, (int)m_error);
     return result;
 }
 
@@ -384,7 +411,7 @@ std::string DwgBitReader::read_tv()
         return {};
     }
 
-    if (length > 64 * 1024) {
+    if (length > 32768) {
         m_error = true;
         return {};
     }
@@ -416,7 +443,7 @@ std::string DwgBitReader::read_tu()
         return {};
     }
 
-    if (length > 64 * 1024) {
+    if (length > 32768) {
         m_error = true;
         return {};
     }
@@ -598,20 +625,27 @@ uint32_t DwgBitReader::read_modular_char()
 uint32_t DwgBitReader::read_modular_short()
 {
     // Variable-length encoding using 16-bit LE words (RS).
-    // High bit of each 16-bit word means "more words follow".
-    uint32_t result = 0;
-    for (int i = 0; i < 4; ++i) {  // Max 4 shorts = 28 bits
+    // High bit of each word means more words follow; the low 15 bits are
+    // accumulated least-significant chunk first.
+    uint64_t result = 0;
+    int shift = 0;
+    for (int i = 0; i < 4; ++i) {
         if (m_error || remaining_bits() < 16) {
             m_error = true;
-            return result;
+            return static_cast<uint32_t>(result);
         }
         uint16_t word_val = read_rs();  // RS is little-endian, byte-aligned
-        result = (result << 15) | (word_val & 0x7FFF);
+        result |= static_cast<uint64_t>(word_val & 0x7FFF) << shift;
         if ((word_val & 0x8000) == 0) {
             break;
         }
+        shift += 15;
+        if (shift >= 32) {
+            m_error = true;
+            break;
+        }
     }
-    return result;
+    return static_cast<uint32_t>(result);
 }
 
 void DwgBitReader::read_2d_point(double& x, double& y)
@@ -670,7 +704,7 @@ void DwgBitReader::setup_string_stream(uint32_t bitsize)
         return;
     }
     m_bit_pos = bitsize - 17;
-    uint16_t data_size = read_rs();
+    uint32_t data_size = read_rs();
 
     // Extended size: if bit 15 set, read another RS
     if (!m_error && (data_size & 0x8000)) {
@@ -682,7 +716,7 @@ void DwgBitReader::setup_string_stream(uint32_t bitsize)
         }
         m_bit_pos -= 32;
         uint16_t hi = read_rs();
-        data_size = static_cast<uint16_t>(((data_size & 0x7FFF) << 15) | (hi & 0x7FFF));
+        data_size = ((data_size & 0x7FFFu) << 15) | (hi & 0x7FFFu);
     }
 
     if (m_error || data_size == 0 || data_size >= bitsize) {
@@ -1015,7 +1049,7 @@ size_t dwg_decompress_into(const uint8_t* data,
         }
     }
 
-    fprintf(stderr, "[decomp] returned actual=%zu\n", (size_t)(dst - write_offset));
+    dwg_debug_log("[decomp] returned actual=%zu\n", (size_t)(dst - write_offset));
     return dst - write_offset;
 }
 

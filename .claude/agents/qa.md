@@ -6,6 +6,8 @@ type: agent
 
 # QA Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to QA-owned work and must not conflict with it.
+
 ## Role
 负责质量保证。包括回归测试、视觉对比、性能基准、代码审查。确保每次变更不引入回归，性能不退化。
 
@@ -46,6 +48,22 @@ type: agent
 - **Render gap**：对象存在且数据正确，但线型、线宽、填充、文字、标注、遮罩、绘制顺序或颜色输出错误。
 - **View gap**：默认 bounds/fitView 未按 Layout/Paper Space/Viewport 选择。
 - **Plot appearance gap**：CTB/STB、plot style、lineweight、paper/background、screening 或 plotted color 未体现。
+- **Version gap**：版本族字段布局或编码差异未支持。
+- **Encoding gap**：string/color/handle/CMC/CED/EED 等编码未支持或不确定。
+- **Object framing gap**：object stream 边界、size、type、string stream 或 handle stream offset 错误。
+- **Handle resolution gap**：handle/object/owner/reactor/extension dictionary 未解析。
+- **Custom object semantic gap**：proxy/custom object 存在但原生语义未恢复。
+- **External dependency gap**：xref/image/underlay/font 等外部依赖缺失或未支持。
+
+## DWG Fixture Matrix
+
+- 版本 fixture 至少覆盖 R2000/AC1015、R2004/AC1018、R2007/AC1021、R2010/AC1024、R2013/AC1027、R2018+/AC1032；缺真实文件时必须在 audit 标记 Missing fixture。
+- `big.dwg`：大文件、异常实体、飞线过滤、性能、下界 sentinel。
+- `Drawing2.dwg`：Mechanical/Layout/Paper Space/annotation visual sentinel。
+- `zj-02-00-1.dwg` 和 `新块.dwg`：先进入 fixture catalog，记录 AC code、domain、expected spaces/layouts、object families、current diagnostics、acceptance type，再决定是否作为 release gate。
+- DXF exact regression 至少覆盖 minimal、insert_blocks、text_entities、layout/paper、linetype/lineweight、dimension/leader synthetic fixtures。
+- DWG sentinel 不做精确 golden；使用 lower-bound + finite JSON + diagnostics + visual acceptance。
+- QA 报告每个 DWG 问题必须包含 version family、object family、pipeline stage、gap label、fixtures checked、diagnostics changed。
 
 ## Common Tasks
 

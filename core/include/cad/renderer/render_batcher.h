@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cad/cad_types.h"
+#include "cad/scene/entity.h"
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,7 +12,6 @@ namespace cad {
 class Camera;
 
 // Forward declarations for scene types
-struct EntityVariant;
 class SceneGraph;
 
 // ============================================================
@@ -60,6 +60,10 @@ struct RenderBatch {
     LinePattern line_pattern;
     Color color;
     float line_width = 1.0f;
+    DrawingSpace space = DrawingSpace::Unknown;
+    int32_t layout_index = -1;
+    int32_t viewport_index = -1;
+    uint32_t draw_order = 0;
 };
 
 // ============================================================
@@ -91,7 +95,8 @@ public:
 private:
     // Internal submit with optional transform (for INSERT block entities)
     void submit_entity_impl(const EntityVariant& entity, const SceneGraph& scene,
-                            const Matrix4x4& xform, int depth);
+                            const Matrix4x4& xform, int depth,
+                            const EntityHeader* inherited_header = nullptr);
 
     // Tessellation helpers — transform applied to output vertices
     void tessellate_line(const Vec3& p0, const Vec3& p1, RenderBatch& batch,

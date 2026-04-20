@@ -6,6 +6,17 @@ Self-developed 2D CAD rendering engine for parsing and rendering DWG/DXF files.
 C++20 core engine with Canvas 2D / WebGL / Flutter rendering targets.
 Commercial product — no GPL or copyleft dependencies.
 
+`AGENTS.md` is the canonical rule source. Claude-side instructions must follow the same
+self-developed CAD/DWG policy, DXF role, and AutoCAD-level viewer fidelity standard.
+
+## Self-Developed Core Policy
+
+- DWG/DXF parser, SceneGraph, RenderBatcher, export, and platform renderers must remain self-developed.
+- Do not use GPL/copyleft CAD parsers, external DWG→DXF converters, or closed/commercial SDKs in the product rendering path.
+- MIT/BSD tools may be used only for tests, diagnostics, and fixture generation.
+- DWG support must parse DWG binary semantics directly; it must not be implemented as "convert DWG to DXF first".
+- DXF is a first-class product input format, a DWG semantic reference, and a regression baseline.
+
 **Reference products:** HOOPS, CAD看图王
 
 **Target platforms:**
@@ -19,9 +30,9 @@ Commercial product — no GPL or copyleft dependencies.
 cd build && cmake --build . --target render_export
 cd build && cmake --build . --target cad_core
 
-# Generate preview data from DXF/DWG (auto-gzip if output ends with .gz)
-./build/core/test/render_export test_data/big.dxf test_data/big.json.gz
-./build/core/test/render_export test_dwg/big.dwg test_dwg/big.json.gz
+# Generate preview data from DXF/DWG (generated JSON stays out of git)
+./build/core/test/render_export test_data/minimal.dxf /tmp/minimal.json
+./build/core/test/render_export test_dwg/big.dwg /tmp/big.json
 
 # === React Preview (v0.6+, recommended) ===
 # One-command launch (from project root)
@@ -36,7 +47,7 @@ cd platforms/electron && npm run dev
 
 # === Legacy Canvas Preview (backup) ===
 python3 -m http.server 8080
-# Open: http://localhost:8080/platforms/electron/preview.html?data=/test_dwg/big.json.gz
+# Open: http://localhost:8080/platforms/electron/preview.html?data=/tmp/minimal.json
 ```
 
 ## Architecture Rules
@@ -125,17 +136,42 @@ python3 -m http.server 8080
 - Per-entity frustum culling: check first/last vertex against viewport with 50% margin.
 - Dark color boost: brightness < 30 → boost to minimum 60 for dark background visibility.
 - LOD: arc/circle segment count varies with zoom level via LodSelector.
-- MAD-based fitView: samples 5000 vertices, uses median+MAD to find densest cluster, handles outlier coordinates.
+- Robust fitView must use finite exported/viewable geometry with outlier-resistant sampling. Layout/Paper Space priority overrides raw model-space bounds.
 - Text rendering: Canvas `fillText()` with proper world-to-screen transform, Y-flip, rotation, width scaling.
 - MTEXT formatting codes: strip `\P` → newline, remove `{\...}` style codes, remove stray braces.
 
-## DWG Parsing Rules
+## DWG Viewer Fidelity Rules
 
-- Reference implementation: libredwg (`/tmp/libredwg/`), used ONLY for spec verification — never copy code (GPL).
+- Target quality is AutoCAD preview level, not just visible geometry.
+- Default open view must prioritize Layout/Plot Window → drawing border/title block → layout viewport content → model-space main entity bounds → raw scene bounds fallback.
+- Model Space, Paper Space, and Layout Viewport content must not be collapsed into one raw bounds for primary preview fitting.
+- Layout Viewports need viewport clipping, viewport scale, model-space content display, and per-viewport frozen/hidden layer state.
+- Mechanical drawing acceptance checks border completeness, main/detail views inside the sheet, readable dimensions/leaders/balloons/text, and correct placement.
+- Rendering fidelity includes layer/color inheritance, ByLayer/ByBlock, linetype, lineweight, draw order, wipeout/masking, hatch, text style, dimension style, annotation scale, and plot-style behavior.
+- Watermarks from reference screenshots are not a DWG fidelity target.
+
+## DWG Industry Compatibility Rules
+
+`AGENTS.md` is canonical. Claude-side DWG work must follow these summarized rules:
+
+- Track DWG version families explicitly: R12/AC1009, R13/AC1012, R14/AC1014, R2000/AC1015, R2004/AC1018, R2007/AC1021, R2010/AC1024, R2013/AC1027, and R2018+/AC1032.
+- Do not infer all version behavior from `big.dwg` or any single R2010 fixture. Version-specific branches must use `DwgVersion`, AC code, section metadata, or object metadata.
+- Infrastructure owns header variables, section/page maps, object maps, object framing, compression/encryption/CRC, string streams, handle streams, CED/common entity header, EED/XData, reactors, extension dictionaries, and diagnostics.
+- DWG objects must be classified as Standard Entity, Table Object, Dictionary Object, Block/Layout Container, Proxy Object, Custom Object, or External Dependency before deciding whether they render.
+- Proxy/custom objects must never be silently ignored. Recovered proxy geometry/text must be labeled as fallback and exported with diagnostics.
+- AutoCAD Mechanical objects are priority custom objects: `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, `ACMDETAIL*`, `ACMSECTION*`, `ACDBDETAILVIEWSTYLE`, `ACDBSECTIONVIEWSTYLE`, `FIELD`, `FIELDLIST`, `ACDB_MTEXTOBJECTCONTEXTDATA_CLASS`, and `AcDb:AcDsPrototype_*`.
+- Yellow bubble ordinal labels are visual fallback only. Native FIELD/Mechanical labels must replace them once decoded, and proxy labels must not become exact golden regression data.
+- Keep WCS/UCS/OCS/DCS, Model Space, Paper Space, viewport scale, plot scale, INSUNITS, and annotation scale distinct.
+- Track fonts and annotation semantics: SHX, TrueType, bigfont, MTEXT formatting, DIMSTYLE, anonymous dimension blocks, Leader/MLeader, Balloon/Callout, FIELD/ContextData.
+- Track plot and external dependency gaps: CTB/STB, screening, draw order, wipeout/mask, xref, image/PDF/DGN/DWF underlay, OLE, missing fonts.
+
+## DWG Parsing Notes
+
+- External references such as libredwg or ODA documentation may be used for spec verification only; do not copy GPL code or introduce those libraries into the product path.
 - Entity type numbers are HEX in spec but DECIMAL in our dispatch: LINE=19(0x13), ARC=17(0x11), CIRCLE=18(0x12), TEXT=1, INSERT=7, HATCH=78(0x4E), etc.
 - **Object map**: per libredwg R2004 decoder, BOTH handle and offset accumulators reset per section.
 - **R2004+ CMC (Encoded Color)**: reads `BS(index)` + `BL(rgb)` + `RC(flag)` + conditional text. NOT just BS. Use `read_cmc_r2004()`.
-- **R2007+ string stream**: text fields (TV/TU/T) are in a separate string stream, NOT the main entity data stream. Skip text reads when version >= R2007 until string stream is implemented.
+- **R2007+ string stream**: text fields (TV/TU/T) are in a separate string stream, NOT the main entity data stream. Use the shared string-stream reader and keep codepage/UTF-16/empty/corrupt string behavior diagnosable.
 - **HATCH edges**: 2RD coordinates use `read_rd()` (raw double), NOT `read_bd()`. Curve_type uses `read_raw_char()` (RC).
 - **DIMENSION common fields (R2010)**: `RC(class_version)` → `3BD(extrusion)` → `2RD(text_midpt)` → `BD(elevation)` → `RC(flag1)` → text → BD0×2 → 3BD_1 → BD0 → BS×3 → BD → B×3 → 2RD0. Note `2RD` = raw doubles.
 - Table objects (BLOCK_HEADER=49, LAYER=51, LTYPE=57, etc.) are non-graphical — dispatch but produce no geometry.
@@ -151,7 +187,7 @@ python3 -m http.server 8080
 - Layer panel: visibility toggles by layer name (frozen layers hidden by default).
 - Batch-level frustum culling using precomputed batch bounds (world coords).
 - **Gzip support**: preview.html fetches `.json.gz` files using `fetch()` with `Automatic gzip decompression` (`DecompressionStream`) — native browser API, no extra JS library needed.
-- `test_dwg/big.json.gz` is generated from `big.dwg` and NOT committed to git (in .gitignore).
+- Generated preview JSON belongs in `/tmp`, IndexedDB, or ignored paths and is not committed.
 - **此文件为旧版备用**，新版预览器使用 React + Ant Design（见下方）。
 
 ## React Preview (v0.6.1+) Notes
@@ -190,7 +226,7 @@ cd platforms/electron && npm run dev
 
 **渲染管线要点**：
 - `getViewportWorldBounds`：屏幕四角转世界坐标，注意 Y 轴翻转（screenToWorld(0, canvasH) → minY, screenToWorld(canvasW, 0) → maxY）
-- `fitViewToBounds`：batch 级别离群过滤（median 中心 + 5x 中位距离阈值），不用顶点采样避免被大 batch 污染
+- `fitViewToBounds`：优先使用 Layout/Plot Window/presentation bounds；没有有效 view 时才使用有限几何的离群过滤 fallback
 - `renderBatches`：batch 级视锥裁剪 + linestrip 逐实体 AABB 裁剪（非首尾顶点）
 - `renderBorder`：根据 DrawData.bounds 绘制虚线图框 + 淡背景填充
 - batch bounds 用 `useMemo` 缓存，避免每次平移/缩放重算
@@ -231,15 +267,23 @@ cd platforms/electron && npm run dev
 - **核心结构变更**（EntityVariant, RenderBatch, SceneGraph 接口）需说明影响范围并通知相关 Agent
 - **C++ 性能敏感代码**审查要点：避免不必要的拷贝、关注内存布局和 cache 友好性
 - **不得针对特定测试文件特殊处理**，所有修复必须是通用改进
-- 变更后须通过 `big.dxf` 回归验证
+- 变更后须通过 synthetic DXF exact regression and real DWG sentinel visual/data regression
 
 ## Testing
 
 - Use ezdxf (MIT) to generate test DXF files.
-- Primary test files: `test_data/big.dxf` (DXF) and `test_dwg/big.dwg` (DWG R2010/AC1024).
+- Validate shared parser/renderer behavior with synthetic DXF exact regression fixtures.
+- Use `test_dwg/big.dwg` for abnormal-entity filtering, large-file behavior, and main drawing sentinel checks.
+- Use `test_dwg/Drawing2.dwg` for Layout/Paper Space, drawing border, viewport, mechanical annotation, leader, balloon, and title-block visual checks.
+- Track DWG version fixtures for R2000, R2004, R2007, R2010, R2013, and R2018+. Missing real fixtures must be recorded in the audit as Missing fixture.
+- Use `test_dwg/zj-02-00-1.dwg` and `test_dwg/新块.dwg` as fixture catalog candidates after classification.
 - Visual comparison against `test_dwg/big.png` reference image.
-- Regression: run `render_export` on both DXF and DWG, verify JSON output and vertex counts.
+- Regression: run `render_export` on DXF and DWG, verify JSON schema, finite bounds, diagnostics, and sentinel lower bounds.
 - Never commit generated JSON files to git (they are in .gitignore).
+
+## Required DWG Change Description
+
+Every DWG change summary should include version family, object family, affected pipeline stage, gap label, fixtures checked, and diagnostics changed.
 
 ## Agent Team
 

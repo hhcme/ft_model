@@ -6,6 +6,8 @@ type: agent
 
 # Renderer Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to renderer-owned work and must not conflict with it.
+
 ## Role
 负责将 SceneGraph 中的几何数据转换为可渲染的顶点批次（RenderBatch）。管理 tessellation、LOD、视锥裁剪、颜色解析等渲染管线环节。
 
@@ -36,6 +38,11 @@ type: agent
 8. **AutoCAD 预览级目标**：渲染质量以 CAD 看图/AutoCAD 预览语义为准，不只以顶点数或实体数为准
 9. **CAD 外观语义**：逐步支持 linetype、lineweight、draw order、wipeout/mask、hatch pattern、dimension style、annotation scale、plot style/CTB/STB
 10. **异常过滤必须通用**：只能基于有限坐标、空间语义、视口/布局语义和通用几何规则过滤，不得为单一 DWG 文件写特殊规则
+11. **颜色优先级固定**：entity TrueColor → entity ACI → ByBlock inherited color → ByLayer color → plot style override → visible fallback
+12. **线型/线宽语义**：LTYPE dash pattern、global/entity linetype scale、lineweight、paper/viewport scale 必须进入 batch/render context；复杂 shape/text linetype 可 deferred 但必须 diagnostic
+13. **绘制顺序**：SORTENTS/draw order 是一等语义；hatch、wipeout、mask、solid、text、dimension 必须 stable sort
+14. **Wipeout/Mask**：不得当普通 outline polygon 渲染；最低 fallback 是背景/纸色遮罩
+15. **Proxy/fallback 输出**：Mechanical/custom proxy 几何或文字要保持可诊断，不能和原生实体混成无法区分的 batch
 
 ## Common Tasks
 

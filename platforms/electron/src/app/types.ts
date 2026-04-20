@@ -5,6 +5,13 @@ export interface Batch {
   layerName: string;
   vertices: [number, number][];
   breaks?: number[];
+  lineWidth?: number;
+  linePattern?: number[];
+  space?: 'model' | 'paper' | 'unknown';
+  layoutId?: number;
+  viewportId?: number;
+  drawOrder?: number;
+  bounds?: Bounds;
 }
 
 /** Text entity rendered via Canvas fillText. */
@@ -17,6 +24,12 @@ export interface TextEntity {
   color: [number, number, number];
   layerName?: string;
   widthFactor?: number;
+  space?: 'model' | 'paper' | 'unknown';
+  layoutId?: number;
+  viewportId?: number;
+  styleName?: string;
+  styleIndex?: number;
+  align?: number;
 }
 
 /** Layer definition. */
@@ -24,7 +37,12 @@ export interface Layer {
   name: string;
   color: [number, number, number];
   frozen: boolean;
+  off?: boolean;
   locked: boolean;
+  plotEnabled?: boolean;
+  lineweight?: number;
+  linetypeIndex?: number;
+  plotStyleIndex?: number;
 }
 
 /** Axis-aligned bounding box. */
@@ -33,6 +51,35 @@ export interface Bounds {
   maxX: number;
   minY: number;
   maxY: number;
+  isEmpty?: boolean;
+}
+
+export interface ViewDefinition {
+  id: string;
+  name: string;
+  type: 'layout' | 'model' | 'fallback';
+  source?: string;
+  paperMode?: boolean;
+  layoutIndex?: number;
+  viewportId?: number;
+  bounds?: Bounds;
+  presentationBounds?: Bounds;
+  paperBounds?: Bounds;
+  plotWindow?: Bounds;
+  clipBounds?: Bounds;
+}
+
+export interface DiagnosticGap {
+  code: string;
+  category: string;
+  message: string;
+  count?: number;
+}
+
+export interface DrawDiagnostics {
+  layouts?: number;
+  viewports?: number;
+  gaps?: DiagnosticGap[];
 }
 
 /** Full drawing data from render_export. */
@@ -41,7 +88,11 @@ export interface DrawData {
   texts: TextEntity[];
   layers: Layer[];
   bounds: Bounds;
+  presentationBounds?: Bounds;
   rawBounds?: Bounds;
+  views?: ViewDefinition[];
+  activeViewId?: string;
+  diagnostics?: DrawDiagnostics;
   entityCount: number;
   totalVertices: number;
 }

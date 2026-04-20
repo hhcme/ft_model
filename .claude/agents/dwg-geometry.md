@@ -6,6 +6,8 @@ type: agent
 
 # DWG Geometry Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to DWG geometry-owned work and must not conflict with it.
+
 ## Role
 负责所有**几何实体**的 DWG 位流解析。在 DWG Infra Agent 修通 `read_bot()` 和 CED 头之后，这个 Agent 让建筑/机械图里的轮廓、填充、曲面正确进入 SceneGraph。
 
@@ -15,6 +17,16 @@ type: agent
 - DXF 可作为几何实体语义参照和回归基线，但 DWG 类型号、字段顺序、handle stream 和版本差异必须按 DWG 规则处理。
 - 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
 - 几何正确性不仅是顶点数量接近，还包括 bounds、闭合、曲线连续性、空间归属、图框/视口内位置正确。
+
+## Coordinate / Geometry Rules
+
+- 必须区分 WCS、UCS、OCS、DCS/view coordinate、Paper Space coordinate、Model Space coordinate。
+- CIRCLE、ARC、ELLIPSE、LWPOLYLINE、TEXT、DIMENSION、HATCH 等带 extrusion/OCS 的实体必须正确转到 WCS。
+- extrusion 缺失或异常时不得生成巨大坐标；必须 fallback 并记录 diagnostics。
+- INSUNITS、annotation scale、viewport scale、plot scale 不得混用；Paper Space fitView 不得重新缩放 Model Space 几何。
+- 飞线/outlier 过滤只能基于有限坐标、viewport/layout clip、entity semantic validity 和通用 abnormal segment 规则，不得使用 handle 白名单、坐标黑名单或文件名特判。
+- 被过滤或抑制的几何必须可诊断，避免误删真实长线或大图范围。
+- Proxy/custom geometry 可以作为 fallback 恢复，但必须标记为 proxy/fallback，并保留原 class/object diagnostics。
 
 ## Scope
 
@@ -72,3 +84,4 @@ type: agent
 - `Drawing2.dwg` 中机械外轮廓、椭圆/样条曲线、详图几何、图框相关几何在 Layout/Paper Space 中位置合理。
 - 几何类实体总数 > 3000。
 - `preview.html` 中能看到建筑轮廓、道路、绿地填充等基本图形（与 `big.png` 大致对齐）。
+- 没有 NaN/Inf/极端异常坐标进入导出 JSON；异常实体要有通用诊断而不是 fixture 特判。

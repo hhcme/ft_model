@@ -6,6 +6,8 @@ type: agent
 
 # DWG Insert Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to DWG insert/block-owned work and must not conflict with it.
+
 ## Role
 负责 DWG 中的**块引用（INSERT / MINSERT）**解析。把 DWG handle stream 中的 `block_header` handle 映射到 SceneGraph 的 `block_index`，让图块、门窗、标准符号正确渲染。
 
@@ -15,6 +17,16 @@ type: agent
 - 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
 - Block/INSERT 语义要服务 AutoCAD 预览级还原：普通块、匿名块、属性、图框/标题栏、维度匿名块、布局视口相关块都需要按通用规则处理。
 - DXF INSERT 行为可作为变换语义参照，但 DWG 的 block_header handle、anonymous block name、handle stream 和 object order 必须按 DWG 规则解析。
+
+## Block / Reference Semantics
+
+- INSERT/MINSERT/ATTRIB/ATTDEF 必须保留 owner handle、block record handle、layout handle、anonymous block name、attribute ownership 和 paper/model space 归属。
+- Block/INSERT 变换必须遵守项目 row-vector 约定；nested INSERT 深度限制保留。
+- ByBlock 颜色、线型、线宽、plot style 必须从 INSERT context 传给 block children。
+- Anonymous dimension/detail/annotation blocks 是标注语义的一部分，不得只按普通重复几何处理。
+- Xref block/path/resolution state 必须 diagnostic；未加载或找不到外部参照不能崩溃，也不能生成飞线占位。
+- MINSERT 大阵列不得静默抽样改变语义；需要 LOD/预算策略和 diagnostics。
+- Paper Space/Layout block record、Model Space block record、普通 block definition 必须分开处理，不得用 centroid 或坐标距离猜归属。
 
 ## Scope
 
@@ -81,3 +93,4 @@ type: agent
 - Block 引用渲染后，图中出现重复的门窗符号、图例、标准标注块等。
 - `render_export` 的 `Block definition entities` 计数 > 0 且被正确过滤（不直接渲染）。
 - `Drawing2.dwg` 中图框、标题栏、机械部件块、标注匿名块在 Paper Space/Layout 中位置和比例合理。
+- Xref/missing external dependency 能被诊断，不会污染默认视图。

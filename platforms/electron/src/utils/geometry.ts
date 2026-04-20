@@ -1,8 +1,18 @@
-import type { Batch, BatchBounds, Bounds } from '../app/types';
+import type { Batch, BatchBounds, Bounds, DrawData } from '../app/types';
 
 /** Compute axis-aligned bounding box for each batch. */
 export function computeBatchBounds(batches: Batch[]): (BatchBounds | null)[] {
   return batches.map((batch) => {
+    if (batch.bounds && !batch.bounds.isEmpty &&
+        batch.bounds.minX < batch.bounds.maxX && batch.bounds.minY < batch.bounds.maxY &&
+        [batch.bounds.minX, batch.bounds.maxX, batch.bounds.minY, batch.bounds.maxY].every(Number.isFinite)) {
+      return {
+        minX: batch.bounds.minX,
+        minY: batch.bounds.minY,
+        maxX: batch.bounds.maxX,
+        maxY: batch.bounds.maxY,
+      };
+    }
     const verts = batch.vertices;
     if (!verts || verts.length === 0) return null;
     let minX = Infinity, minY = Infinity;
@@ -31,6 +41,18 @@ export function isVisible(
 }
 
 /** Fit viewport to data using IQR-based outlier rejection. */
+export function getPreferredViewBounds(drawData: DrawData): Bounds | undefined {
+  const active = drawData.views?.find((v) => v.id === drawData.activeViewId);
+  const candidate = active?.presentationBounds ?? active?.bounds ??
+    drawData.presentationBounds ?? drawData.bounds;
+  if (candidate && !candidate.isEmpty &&
+      candidate.minX < candidate.maxX && candidate.minY < candidate.maxY &&
+      [candidate.minX, candidate.maxX, candidate.minY, candidate.maxY].every(Number.isFinite)) {
+    return candidate;
+  }
+  return undefined;
+}
+
 export function fitViewToBounds(
   batches: Batch[],
   batchBoundsList: (BatchBounds | null)[],

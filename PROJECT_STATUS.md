@@ -33,7 +33,7 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 - [x] LOD selector: adaptive curve segment count
 - [x] Canvas 2D preview: preview.html with mouse/touch input
 - [x] Frustum culling: per-batch and per-entity
-- [x] MAD-based fitView for outlier coordinate handling
+- [x] Robust finite-geometry fitView for outlier coordinate handling
 
 ### Phase 2: Complete Entity Parsing + Interaction — MOSTLY DONE
 
@@ -72,12 +72,15 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 
 ### Phase 4: DWG Support — IN PROGRESS
 
-> **`test_dwg/big.dwg` (R2010/AC1024, 9.6MB): 136,567 entities parsed, 399,927 vertices rendered (no INSERT expansion).**
-> Core geometric entity types are at 99-100% success rate.
-> Baseline gap (~520 entities) is from EED-fix clearing 25 misclassified "ghost HATCH" objects that produced garbage geometry.
-> Remaining gaps: INSERT block expansion (BLOCK_HEADER name truncation), table objects.
+> 0.8.0 reframes DWG progress around AutoCAD-level preview semantics, not raw geometry totals.
+> `test_dwg/big.dwg` remains a large-file sentinel, while `test_dwg/Drawing2.dwg` is the Layout/Paper Space mechanical drawing sentinel.
+> Current export schema includes `presentationBounds`, `views`, and `diagnostics` so missing Layout/Viewport/Plot semantics are explicit.
 
-#### What Works (as of 2026-04-18)
+#### What Works (0.8.x baseline)
+
+The table below is a historical `big.dwg` parser health snapshot, not a
+release contract. DWG correctness is now evaluated by version family, object
+family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 
 | DWG Type | Entity | Dispatched | Success | Rate |
 |----------|--------|------------|---------|------|
@@ -119,14 +122,16 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 
 #### Remaining Work
 
-##### P0 — String Stream
+##### P0 — Versioned Binary Infrastructure
 
 - [x] String stream extraction implemented in `DwgBitReader::setup_string_stream()`
   - Locates `has_strings` flag at bit (bitsize-1)
   - Extracts string data: RS data_size (with extended size support), then string bytes
   - `read_t()` / `read_tu()` / `read_tv()` automatically dispatch to string stream when active
-- [x] Text content restored: 5,940 text entries (TEXT + MTEXT + DIMENSION) on `big.dwg`
+- [x] Text content restored for current R2010 sentinel fixtures.
 - [ ] HATCH pattern_name still skipped for R2007+ (needs wire-up in `parse_hatch`)
+- [ ] Version-family fixture matrix still incomplete: R2000, R2004, R2007, R2013, and R2018+ need representative DWG fixtures.
+- [ ] Header variables, INSUNITS, LIMITS/EXTENTS, current layout hints, EED/XData/reactors, and extension dictionary links need fuller SceneGraph/diagnostics preservation.
 
 ##### P1 — Block Resolution (unlocks 25,290 INSERTs)
 
@@ -137,8 +142,8 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 - [x] Post-processing INSERT resolution: deferred to after all objects parsed (handles ordering)
 - [x] Conditional block entity filtering: only active when INSERT expansion is verified
 - [ ] Fix BLOCK_HEADER name truncation: stores `*D` instead of `*D1077` for anonymous dimension blocks
-- [ ] Apply INSERT transform to block entities for rendering (disabled until name fix)
-- [ ] Expected: expand geometry from ~400K to potentially millions of vertices
+- [ ] Apply INSERT transform to block entities for rendering while preserving owner/layout/block/ByBlock semantics
+- [ ] Expand missing geometry through correct block/reference semantics; geometry volume is a trend signal, not a goal by itself.
 
 ##### P2 — Table Objects & Polish
 
@@ -147,8 +152,18 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 - [ ] Parse STYLE table objects (type=53) → text style names
 - [ ] DIMSTYLE table (type=69) → dimension style parameters
 - [ ] Classes section parsing for custom entity types >= 500
+- [ ] LAYOUT/PLOTSETTINGS/VPORT/SORTENTS objects → active layout, plot window, viewport clipping, draw order
+- [ ] Proxy/custom object diagnostics → class name, object count, gap category, recovered fallback marker
 
-##### P3 — Edge Cases & Validation
+##### P3 — Layout / Paper Space / Annotation Fidelity
+
+- [x] `Drawing2.dwg` recognized as the Mechanical/Layout/Paper Space visual sentinel.
+- [x] Paper background, border candidates, presentation bounds, and diagnostics are present in the preview/export path.
+- [ ] Native FIELD/FIELDLIST/ContextData and AutoCAD Mechanical annotation semantics are partial; yellow bubble ordinal fallback is allowed only as a visual fallback and is not golden data.
+- [ ] Layout viewport model view center/height/custom scale/twist/clip/frozen layers need complete parsing and export.
+- [ ] Leader/MLeader/Balloon/Callout/DIMSTYLE fidelity remains a primary 0.8.x gap.
+
+##### P4 — Edge Cases & Validation
 
 - [x] POLYLINE_2D (type=15) — parsed cleanly; vertices rendered as POINT entities (DWG semantic difference from DXF). Full PolylineEntity assembly requires handle-stream vertex chaining (deferred).
 - [x] LWPOLYLINE extrusion bug — fixed: LWPOLYLINE uses `3BD` extrusion, not `BE`. Restored 67 entities / ~368 vertices.
@@ -180,18 +195,29 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 |------|----------|---------|----------|
 | campus_masterplan.dxf | 3,804 | 11 | 21,605 |
 
-### DWG Performance (`test_dwg/big.dwg`, R2010)
+### DWG Sentinel Baseline (`test_dwg/big.dwg`, R2010)
 
 | Metric | Value |
 |--------|-------|
 | Object map handles | 109,834 |
-| Parsed entities | 136,567 |
-| Render batches | 76 |
-| Exported vertices | 399,927 |
-| Lines vertices | 114,282 |
-| Linestrip vertices | 182,830 |
-| Triangle vertices | 104,208 |
-| Text entries | 5,940 (TEXT/MTEXT/DIMENSION) |
+| Parsed entities | ~103,000 lower-bound sentinel |
+| Render batches | >= 50 |
+| Exported vertices | >= 350,000 lower-bound sentinel |
+| Text entries | >= 5,000 lower-bound sentinel |
+| Diagnostics | Required for unsupported version/object/layout/render gaps |
+
+### DWG Compatibility / Fidelity Rule Status
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Pure self-developed DWG/DXF core | Implemented | Product path must not use GPL/copyleft CAD parsers, external DWG→DXF converters, or closed SDKs. |
+| DXF as first-class format | Implemented | Synthetic DXF fixtures remain exact regression baselines. |
+| Version family matrix | Partial | R2010 sentinel exists; R2000/R2004/R2007/R2013/R2018+ fixtures are currently missing or not cataloged. |
+| Binary infra diagnostics | Partial | String stream/CMC/CED are partly implemented; EED/XData/reactors/extension dictionary need fuller diagnostics. |
+| Layout/Paper Space | Partial | Presentation bounds and paper view path exist; full Layout/PLOTSETTINGS/Viewport semantics remain incomplete. |
+| Mechanical/custom objects | Partial | Proxy/fallback visuals are allowed for `Drawing2.dwg`; native FIELD/Mechanical semantic recovery remains incomplete. |
+| Plot appearance | Partial | Basic color/line/text display exists; CTB/STB, full lineweight/linetype, draw order, wipeout/mask need completion. |
+| External dependencies | Missing | Xref, raster/image/OLE/PDF/DGN/DWF underlay, fonts, and missing dependency diagnostics need a cataloged pipeline. |
 
 ### DWG Progress Timeline
 
@@ -228,7 +254,9 @@ CMC in R2004+ binary is NOT just a BS color index. It reads: `BS(index)` + `BL(r
 
 ### R2007+ String Stream
 
-For R2007+ (including R2010), text fields (TV/TU/T) reside in a **separate string stream**, not the main entity data stream. The main stream contains only non-text fields. When `has_strings=1` (flag at bit position `bitsize-1`), all `FIELD_T` reads must come from `str_dat` instead of `dat`. Currently we skip text reads entirely — implementing string stream is the next priority.
+For R2007+ (including R2010), text fields (TV/TU/T) reside in a **separate string stream**, not the main entity data stream. The main stream contains only non-text fields. When `has_strings=1` (flag at bit position `bitsize-1`), all `FIELD_T` reads must come from `str_dat` instead of `dat`.
+
+Current status: the shared string stream reader is implemented for current R2007+ sentinel coverage. Remaining work is broader version-family validation, damaged/empty string diagnostics, STYLE/LTYPE/LAYER name coverage, FIELD/FIELDLIST linking, and MTEXT ContextData semantics.
 
 ### DIMENSION Common Fields (R2010)
 
@@ -296,11 +324,15 @@ BLOCK_HEADER (type 49) stores truncated names for anonymous dimension blocks: `*
   - `test_data/insert_blocks.dxf` → `33 entities / 2 batches / 783 vertices / 0 texts`
   - `test_data/text_entities.dxf` → `7 entities / 1 batch / 14 vertices / 7 texts`
 - DWG sentinel lower-bound:
-  - `test_dwg/big.dwg` → at least `100,000 entities / 50 batches / 300,000 vertices`
+  - `test_dwg/big.dwg` → at least `100,000 entities / 50 batches / 350,000 vertices / 5,000 texts`
+  - `test_dwg/Drawing2.dwg` → optional Layout/Paper Space visual sentinel; JSON must include diagnostics when full layout semantics are missing.
 
 ## Test Data
 
 - `test_dwg/big.dwg` — R2010/AC1024 campus masterplan (9.6MB, 109K objects, primary DWG test)
 - `test_dwg/big.png` — Reference image for visual comparison
+- `test_dwg/Drawing2.dwg` — Mechanical/Layout/Paper Space visual sentinel
+- `test_dwg/zj-02-00-1.dwg` — DWG fixture catalog candidate; domain and gate pending classification
+- `test_dwg/新块.dwg` — DWG fixture catalog candidate for block/reference behavior; gate pending classification
 - `test_data/campus_masterplan.dxf` — DXF version of campus plan
 - Various synthetic DXF files in `test_data/` generated via ezdxf (MIT)

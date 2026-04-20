@@ -4,6 +4,10 @@
 #include "cad/scene/scene_graph.h"
 #include "cad/cad_types.h"
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cmath>
 #include <utility>
 
@@ -15,6 +19,26 @@ namespace {
 // Constants
 // ============================================================
 constexpr double kVeryLargeDistance = 1e10;
+
+bool dwg_debug_enabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("FT_DWG_DEBUG");
+        return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+void dwg_debug_log(const char* fmt, ...)
+{
+    if (!dwg_debug_enabled()) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(stderr, fmt, args);
+    va_end(args);
+}
 
 // ============================================================
 // Diagnostic: track which entity types successfully add to scene
@@ -47,6 +71,63 @@ inline EntityVariant make_entity(EntityHeader hdr, T data) {
 // ============================================================
 inline bool reader_ok(const DwgBitReader& reader) {
     return !reader.has_error();
+}
+
+bool is_default_extrusion(double nx, double ny, double nz)
+{
+    return std::abs(nx) < 1.0e-9 &&
+           std::abs(ny) < 1.0e-9 &&
+           std::abs(nz - 1.0) < 1.0e-9;
+}
+
+Vec3 normalize_vec3(double x, double y, double z)
+{
+    const double len = std::sqrt(x * x + y * y + z * z);
+    if (!std::isfinite(len) || len <= 1.0e-12) {
+        return Vec3::unit_z();
+    }
+    return {
+        static_cast<float>(x / len),
+        static_cast<float>(y / len),
+        static_cast<float>(z / len),
+    };
+}
+
+struct OcsBasis {
+    Vec3 x_axis = {1.0f, 0.0f, 0.0f};
+    Vec3 y_axis = {0.0f, 1.0f, 0.0f};
+    Vec3 z_axis = Vec3::unit_z();
+};
+
+OcsBasis make_ocs_basis(double nx, double ny, double nz)
+{
+    OcsBasis basis;
+    basis.z_axis = normalize_vec3(nx, ny, nz);
+
+    const Vec3 world_y{0.0f, 1.0f, 0.0f};
+    const Vec3 world_z{0.0f, 0.0f, 1.0f};
+    const Vec3 helper =
+        (std::abs(basis.z_axis.x) < 1.0f / 64.0f &&
+         std::abs(basis.z_axis.y) < 1.0f / 64.0f)
+            ? world_y
+            : world_z;
+    basis.x_axis = helper.cross(basis.z_axis).normalized();
+    basis.y_axis = basis.z_axis.cross(basis.x_axis).normalized();
+    return basis;
+}
+
+Vec3 ocs_point_to_wcs(double x, double y, double z, const OcsBasis& basis)
+{
+    return basis.x_axis * static_cast<float>(x) +
+           basis.y_axis * static_cast<float>(y) +
+           basis.z_axis * static_cast<float>(z);
+}
+
+Vec3 ocs_vector_to_wcs(double x, double y, double z, const OcsBasis& basis)
+{
+    return basis.x_axis * static_cast<float>(x) +
+           basis.y_axis * static_cast<float>(y) +
+           basis.z_axis * static_cast<float>(z);
 }
 
 // ============================================================
@@ -98,7 +179,11 @@ void parse_circle(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     if (!reader_ok(r)) return;
 
     CircleEntity circle;
-    circle.center = {static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
+    const bool has_custom_ocs = !is_default_extrusion(nx, ny, nz);
+    const OcsBasis basis = has_custom_ocs ? make_ocs_basis(nx, ny, nz) : OcsBasis{};
+    circle.center = has_custom_ocs
+        ? ocs_point_to_wcs(cx, cy, cz, basis)
+        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
     circle.radius = static_cast<float>(radius);
     circle.normal = {static_cast<float>(nx), static_cast<float>(ny), static_cast<float>(nz)};
     circle.start_angle = 0.0f;
@@ -128,7 +213,11 @@ void parse_arc(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     if (!reader_ok(r)) return;
 
     ArcEntity arc;
-    arc.center      = {static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
+    const bool has_custom_ocs = !is_default_extrusion(nx, ny, nz);
+    const OcsBasis basis = has_custom_ocs ? make_ocs_basis(nx, ny, nz) : OcsBasis{};
+    arc.center      = has_custom_ocs
+        ? ocs_point_to_wcs(cx, cy, cz, basis)
+        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
     arc.radius      = static_cast<float>(radius);
     arc.start_angle = static_cast<float>(start_angle);
     arc.end_angle   = static_cast<float>(end_angle);
@@ -152,7 +241,7 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
     auto dbg_lw_fail = [&](const char* reason) {
         static int g_lw_fail = 0;
         if (g_lw_fail < 5) {
-            fprintf(stderr, "[DWG LWPOLYLINE] fail %s start=%zu limit=%zu now=%zu\n",
+            dwg_debug_log("[DWG LWPOLYLINE] fail %s start=%zu limit=%zu now=%zu\n",
                     reason, lw_start, lw_limit, r.bit_offset());
             g_lw_fail++;
         }
@@ -161,11 +250,15 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
     uint16_t flag = r.read_bs();
 
     if (flag & 0x04) r.read_bd();  // const_width
-    if (flag & 0x08) r.read_bd();  // elevation
+    double elevation = 0.0;
+    if (flag & 0x08) elevation = r.read_bd();
     if (flag & 0x02) r.read_bt();  // thickness
+    double nx = 0.0, ny = 0.0, nz = 1.0;
     if (flag & 0x01) {
         // LWPOLYLINE extrusion is 3BD (not BE per libredwg)
-        (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd();
+        nx = r.read_bd();
+        ny = r.read_bd();
+        nz = r.read_bd();
     }
 
     uint32_t num_points = r.read_bl();
@@ -187,7 +280,7 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
     auto dbg_lw_fail2 = [&](const char* reason) {
         static int g_lw_fail2 = 0;
         if (g_lw_fail2 < 10) {
-            fprintf(stderr, "[DWG LWPOLYLINE] fail %s flag=0x%x np=%u nb=%u nw=%u start=%zu limit=%zu now=%zu\n",
+            dwg_debug_log("[DWG LWPOLYLINE] fail %s flag=0x%x np=%u nb=%u nw=%u start=%zu limit=%zu now=%zu\n",
                     reason, flag, num_points, num_bulges, num_widths, lw_start, lw_limit, r.bit_offset());
             g_lw_fail2++;
         }
@@ -211,7 +304,8 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
         }
         prev_x = x;
         prev_y = y;
-        vertices.push_back({static_cast<float>(x), static_cast<float>(y), 0.0f});
+        vertices.push_back({static_cast<float>(x), static_cast<float>(y),
+                            static_cast<float>(elevation)});
     }
 
     // Read bulges (contiguous array, not interleaved)
@@ -233,6 +327,13 @@ void parse_lwpolyline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scen
 
     if (r.has_error()) { dbg_lw_fail2("reader_error"); return; }
     if (vertices.empty()) { dbg_lw_fail2("empty_vertices"); return; }
+
+    if (!is_default_extrusion(nx, ny, nz)) {
+        const OcsBasis basis = make_ocs_basis(nx, ny, nz);
+        for (Vec3& vertex : vertices) {
+            vertex = ocs_point_to_wcs(vertex.x, vertex.y, vertex.z, basis);
+        }
+    }
 
     int32_t offset = scene.add_polyline_vertices(vertices.data(), vertices.size());
 
@@ -500,17 +601,26 @@ void parse_ellipse(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
-    double major_radius = std::sqrt(smx * smx + smy * smy + smz * smz);
+    const bool has_custom_ocs = !is_default_extrusion(enx, eny, enz);
+    const OcsBasis basis = has_custom_ocs ? make_ocs_basis(enx, eny, enz) : OcsBasis{};
+    Vec3 major_axis = has_custom_ocs
+        ? ocs_vector_to_wcs(smx, smy, smz, basis)
+        : Vec3{static_cast<float>(smx), static_cast<float>(smy), static_cast<float>(smz)};
+    Vec3 center = has_custom_ocs
+        ? ocs_point_to_wcs(cx, cy, cz, basis)
+        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
+
+    double major_radius = major_axis.length();
     if (!std::isfinite(major_radius) || major_radius <= 0.0 ||
         !std::isfinite(ratio) || ratio <= 0.0) {
         return;
     }
 
     // Compute the rotation angle of the major axis in the XY plane
-    float rotation = std::atan2(static_cast<float>(smy), static_cast<float>(smx));
+    float rotation = std::atan2(major_axis.y, major_axis.x);
 
     CircleEntity ellipse;
-    ellipse.center       = {static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
+    ellipse.center       = center;
     ellipse.radius       = static_cast<float>(major_radius);
     ellipse.normal       = {static_cast<float>(enx), static_cast<float>(eny), static_cast<float>(enz)};
     ellipse.minor_radius = static_cast<float>(major_radius * ratio);
@@ -560,9 +670,9 @@ void parse_spline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (scenario == 1U) {
         // Scenario 1: control point spline
-        (void)r.read_b();   // rational
-        (void)r.read_b();   // closed
-        (void)r.read_b();   // periodic
+        spline.is_rational = r.read_b();
+        spline.is_closed = r.read_b();
+        spline.is_periodic = r.read_b();
         (void)r.read_bd();  // knot_tol
         (void)r.read_bd();  // ctrl_tol
         uint32_t num_knots = r.read_bl();
@@ -577,12 +687,22 @@ void parse_spline(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
         }
 
         spline.control_points.reserve(num_control_pts);
+        if (weighted || spline.is_rational) {
+            spline.weights.reserve(num_control_pts);
+        }
         for (uint32_t i = 0; i < num_control_pts; ++i) {
             double x = r.read_bd();
             double y = r.read_bd();
             double z = r.read_bd();
             add_point(spline.control_points, x, y, z);
-            if (weighted) (void)r.read_bd();  // weight
+            if (weighted) {
+                const double weight = r.read_bd();
+                if (std::isfinite(weight) && weight > 0.0 && weight < 1.0e6) {
+                    spline.weights.push_back(static_cast<float>(weight));
+                } else {
+                    spline.weights.push_back(1.0f);
+                }
+            }
         }
     } else {
         // Scenario 2: fit point / bezier spline
@@ -815,7 +935,7 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     auto dbg_hatch_fail = [&](int stage) {
         static int g_hatch_fail = 0;
         if (g_hatch_fail < 10) {
-            fprintf(stderr, "[DWG HATCH] fail stage=%d start=%zu limit=%zu now=%zu\n",
+            dwg_debug_log("[DWG HATCH] fail stage=%d start=%zu limit=%zu now=%zu\n",
                     stage, hatch_start, hatch_limit, r.bit_offset());
             g_hatch_fail++;
         }
@@ -1332,8 +1452,18 @@ void parse_viewport(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene)
 
     Vec3 center{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
 
+    Viewport vp;
+    vp.name = "VIEWPORT";
+    vp.center = center;
+    vp.paper_center = center;
+    vp.model_view_center = center;
+    vp.is_paper_space = true;
+    int32_t viewport_index = scene.add_viewport(std::move(vp));
+
     EntityHeader vp_hdr = hdr;
     vp_hdr.type = EntityType::Viewport;
+    vp_hdr.space = DrawingSpace::PaperSpace;
+    vp_hdr.viewport_index = viewport_index;
     vp_hdr.bounds = Bounds3d::from_point(center);
     scene.add_entity(make_entity<15>(vp_hdr, std::move(center)));
 }
@@ -1456,7 +1586,8 @@ std::string read_table_text(DwgBitReader& r) {
 static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
                                 DwgVersion version,
                                 const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
-                                size_t main_data_bits, size_t entity_bits) {
+                                size_t main_data_bits, size_t entity_bits,
+                                const std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index) {
     // R2010+ COMMON_TABLE_FLAGS (after R2004):
     //   T(name) [string stream] → BS(is_xref_resolved) → [H(xref) in handle stream]
     // Then LAYER-specific:
@@ -1470,7 +1601,10 @@ static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
     // BS(flag0) — bitmask: frozen(1), off(2), frozen_in_new(4), locked(8), plotflag(16), linewt(>>5)
     uint16_t flag0 = r.read_bs();
     bool is_frozen = (flag0 & 1) != 0;
+    bool is_off = (flag0 & 2) != 0;
     bool is_locked = (flag0 & 8) != 0;
+    bool plot_enabled = (flag0 & 16) == 0;
+    uint16_t lineweight_code = static_cast<uint16_t>((flag0 >> 5) & 0x1F);
 
     auto cmc = r.read_cmc_r2004(version);
 
@@ -1505,14 +1639,17 @@ static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
     }
 
     // Read linetype handle from handle stream (at end of entity data)
-    int32_t linetype_index = 0;
+    int32_t linetype_index = -1;
     if (main_data_bits < entity_bits) {
         DwgBitReader hr = r;  // copy reader at current position
         hr.set_bit_offset(main_data_bits);
         hr.set_bit_limit(entity_bits);
         auto lt_handle = hr.read_h();
-        if (lt_handle.value != 0) {
-            linetype_index = static_cast<int32_t>(lt_handle.value);
+        if (lt_handle.value != 0 && linetype_handle_to_index) {
+            auto it = linetype_handle_to_index->find(lt_handle.value);
+            if (it != linetype_handle_to_index->end()) {
+                linetype_index = it->second;
+            }
         }
     }
 
@@ -1524,8 +1661,13 @@ static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
     layer.name = name;
     layer.color = color;
     layer.is_frozen = is_frozen;
+    layer.is_off = is_off;
     layer.is_locked = is_locked;
-    if (linetype_index != 0) {
+    layer.plot_enabled = plot_enabled;
+    if (lineweight_code > 0) {
+        layer.lineweight = static_cast<float>(lineweight_code) / 100.0f;
+    }
+    if (linetype_index >= 0) {
         layer.linetype_index = linetype_index;
     }
     scene.update_layer(layer_idx, layer);
@@ -1538,7 +1680,7 @@ static int32_t parse_layer_object(DwgBitReader& r, SceneGraph& scene,
 //         + [pattern_length BD] + [num_dashes BL]
 //         + num_dashes × [BD(dash_or_gap)]
 // ============================================================
-static void parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
+static int32_t parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
                                 DwgVersion version,
                                 const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
                                 size_t main_data_bits, size_t entity_bits) {
@@ -1571,7 +1713,7 @@ static void parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
     }
     (void)main_data_bits; (void)entity_bits;
 
-    if (!reader_ok(r)) return;
+    if (!reader_ok(r)) return -1;
 
     Linetype lt;
     lt.name = name;
@@ -1580,7 +1722,7 @@ static void parse_ltype_object(DwgBitReader& r, SceneGraph& scene,
         lt.pattern.dash_array = std::move(dash_lengths);
     }
 
-    scene.add_linetype(std::move(lt));
+    return scene.add_linetype(std::move(lt));
 }
 
 // ============================================================
@@ -1654,14 +1796,117 @@ static void parse_dimstyle_object(DwgBitReader& r, SceneGraph& scene,
     scene.add_text_style(std::move(dimstyle));
 }
 
+static int32_t parse_vport_object(DwgBitReader& r, SceneGraph& scene,
+                                  DwgVersion version,
+                                  const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
+                                  size_t main_data_bits, size_t entity_bits) {
+    std::string name = r.read_t();
+    (void)r.read_bs();  // common table flags / xref status
+
+    const double view_height = r.read_bd();
+    const double view_width = r.read_bd();
+    const double view_center_x = r.read_double();
+    const double view_center_y = r.read_double();
+    const double target_x = r.read_bd();
+    const double target_y = r.read_bd();
+    const double target_z = r.read_bd();
+    (void)r.read_bd();  // VIEWDIR.x
+    (void)r.read_bd();  // VIEWDIR.y
+    (void)r.read_bd();  // VIEWDIR.z
+    const double twist = r.read_bd();
+    (void)r.read_bd();  // lens_length
+    (void)r.read_bd();  // front_clip_z
+    (void)r.read_bd();  // back_clip_z
+    (void)r.read_bits(4); // VIEWMODE
+    if (version >= DwgVersion::R2000) {
+        (void)r.read_raw_char(); // render_mode
+    }
+    if (version >= DwgVersion::R2007) {
+        (void)r.read_b();        // use_default_lights
+        (void)r.read_raw_char(); // default_lighting_type
+        (void)r.read_bd();       // brightness
+        (void)r.read_bd();       // contrast
+        (void)r.read_cmc_r2004(version);
+    }
+
+    const double lower_left_x = r.read_double();
+    const double lower_left_y = r.read_double();
+    const double upper_right_x = r.read_double();
+    const double upper_right_y = r.read_double();
+
+    (void)r.read_b();       // UCSFOLLOW
+    (void)r.read_bs();      // circle_zoom
+    (void)r.read_b();       // FASTZOOM
+    (void)r.read_bits(2);   // UCSICON
+    (void)r.read_b();       // GRIDMODE
+    (void)r.read_double();  // GRIDUNIT.x
+    (void)r.read_double();  // GRIDUNIT.y
+    (void)r.read_b();       // SNAPMODE
+    (void)r.read_b();       // SNAPSTYLE
+    (void)r.read_bs();      // SNAPISOPAIR
+    if (version != DwgVersion::R2007) {
+        (void)r.read_bd();      // SNAPANG
+        (void)r.read_double();  // SNAPBASE.x
+        (void)r.read_double();  // SNAPBASE.y
+    }
+    (void)r.read_double();  // SNAPUNIT.x
+    (void)r.read_double();  // SNAPUNIT.y
+
+    if (version >= DwgVersion::R2000) {
+        (void)r.read_b();  // ucs_at_origin
+        (void)r.read_b();  // UCSVP
+        (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd(); // ucsorg
+        (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd(); // ucsxdir
+        (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd(); // ucsydir
+        (void)r.read_bd(); // ucs_elevation
+        (void)r.read_bs(); // UCSORTHOVIEW
+    }
+    if (version >= DwgVersion::R2007) {
+        (void)r.read_bs(); // grid_flags
+        (void)r.read_bs(); // grid_major
+    }
+    (void)main_data_bits;
+    (void)entity_bits;
+
+    if (!reader_ok(r) ||
+        !std::isfinite(view_height) || !std::isfinite(view_width) ||
+        !std::isfinite(view_center_x) || !std::isfinite(view_center_y) ||
+        view_height <= 0.0 || view_width <= 0.0 ||
+        view_height > 1.0e9 || view_width > 1.0e9) {
+        return -1;
+    }
+
+    Viewport vp;
+    vp.name = name.empty() ? "*Active" : name;
+    vp.center = Vec3{static_cast<float>(view_center_x),
+                     static_cast<float>(view_center_y), 0.0f};
+    vp.width = static_cast<float>(view_width);
+    vp.height = static_cast<float>(view_height);
+    vp.paper_center = Vec3{static_cast<float>((lower_left_x + upper_right_x) * 0.5),
+                           static_cast<float>((lower_left_y + upper_right_y) * 0.5),
+                           0.0f};
+    vp.paper_width = static_cast<float>(upper_right_x - lower_left_x);
+    vp.paper_height = static_cast<float>(upper_right_y - lower_left_y);
+    vp.model_view_center = vp.center;
+    vp.model_view_target = Vec3{static_cast<float>(target_x),
+                                static_cast<float>(target_y),
+                                static_cast<float>(target_z)};
+    vp.view_height = static_cast<float>(view_height);
+    vp.custom_scale = static_cast<float>(view_width / view_height);
+    vp.twist_angle = static_cast<float>(twist);
+    vp.is_paper_space = false;
+    return scene.add_viewport(std::move(vp));
+}
+
 // ============================================================
 // Public entry point for table objects
 // ============================================================
-void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
+int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               SceneGraph& scene, DwgVersion version,
                               size_t entity_bits, size_t main_data_bits,
                               uint64_t handle,
-                              std::unordered_map<uint64_t, int32_t>* layer_handle_to_index) {
+                              std::unordered_map<uint64_t, int32_t>* layer_handle_to_index,
+                              std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index) {
     const uint8_t* obj_data = reader.data();
     size_t obj_bytes = reader.data_size();
 
@@ -1669,16 +1914,22 @@ void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
         case 51:  // LAYER
             {
                 int32_t layer_idx = parse_layer_object(reader, scene, version, obj_data, obj_bytes,
-                                   main_data_bits, entity_bits);
+                                   main_data_bits, entity_bits, linetype_handle_to_index);
                 if (layer_handle_to_index && layer_idx >= 0) {
                     (*layer_handle_to_index)[handle] = layer_idx;
                 }
+                return layer_idx;
             }
             break;
         case 57:  // LTYPE
-            parse_ltype_object(reader, scene, version, obj_data, obj_bytes,
-                               main_data_bits, entity_bits);
-            break;
+            {
+                int32_t linetype_idx = parse_ltype_object(reader, scene, version, obj_data, obj_bytes,
+                                                          main_data_bits, entity_bits);
+                if (linetype_handle_to_index && linetype_idx >= 0) {
+                    (*linetype_handle_to_index)[handle] = linetype_idx;
+                }
+                return linetype_idx;
+            }
         case 53:  // STYLE
             parse_style_object(reader, scene, version, obj_data, obj_bytes,
                                main_data_bits, entity_bits);
@@ -1687,9 +1938,13 @@ void parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
             parse_dimstyle_object(reader, scene, version, obj_data, obj_bytes,
                                   main_data_bits, entity_bits);
             break;
+        case 65:  // VPORT
+            return parse_vport_object(reader, scene, version, obj_data, obj_bytes,
+                                      main_data_bits, entity_bits);
         default:
             break;
     }
+    return -1;
 }
 
 // ============================================================

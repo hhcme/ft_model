@@ -48,3 +48,4 @@ platforms/electron/*_preview.json
 *.wasm
 *.js.map
 node_modules/
+platforms/electron/dist/

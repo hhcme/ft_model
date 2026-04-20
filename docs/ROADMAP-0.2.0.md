@@ -54,7 +54,7 @@ R2000=1, R2004=2, R2007=3, R2010=4
 
 ```bash
 cmake --build build --target render_export
-./build/core/test/render_export test_dwg/big.dwg test_dwg/big_test.json.gz
+./build/core/test/render_export test_dwg/big.dwg /tmp/big_test.json.gz
 # 预期: layers 数组包含多个命名图层（如 "0", "标注", "建筑" 等）
 # 预期: 实体有正确的 layerName
 # 预期: LTYPE 和 STYLE 的名称也不再为空（如 read_t 有问题）
@@ -89,7 +89,7 @@ cmake --build build --target render_export
 ### 2.4 验证
 
 ```bash
-./build/core/test/render_export test_dwg/big.dwg test_dwg/big_test.json.gz
+./build/core/test/render_export test_dwg/big.dwg /tmp/big_test.json.gz
 # 预期: 顶点数降至 <30M，gzip <100MB
 ```
 
@@ -216,4 +216,4 @@ preview.html 已实现：
 2. 对 big.dwg 运行 render_export，检查 JSON（图层数量、顶点数、文件大小）
 3. preview.html 打开与 big.png 参考图对比
 4. 检查内存占用
-5. 对 test_data/big.dxf 回归测试
+5. 对 synthetic DXF fixtures 做精确回归，并对 real DWG sentinel 做视觉/数据回归

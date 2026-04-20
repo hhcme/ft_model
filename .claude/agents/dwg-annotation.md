@@ -6,6 +6,8 @@ type: agent
 
 # DWG Annotation Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to DWG annotation-owned work and must not conflict with it.
+
 ## Role
 负责所有**标注类实体**的 DWG 位流解析。包括文字、尺寸、引线等。这些实体对工程图的可读性至关重要。
 
@@ -15,6 +17,24 @@ type: agent
 - DXF 可作为 TEXT/MTEXT/DIMENSION/LEADER 语义参照，但 DWG 字段顺序、匿名块、handle stream、annotation scale 必须按 DWG 规则处理。
 - 不得为 `big.dwg`、`Drawing2.dwg` 或任何单一 fixture 写文件名特判、handle 白名单或专用坐标例外。
 - AutoCAD 预览级验收必须关注文字可读性、尺寸标注、引线、多重引线、气泡/序号、详图标签、标题栏文字和注释比例。
+
+## Annotation Fidelity Rules
+
+- TEXT 必须保留 insertion point、alignment point、horizontal/vertical alignment、rotation、oblique、width factor、height、generation/mirror flags、OCS/extrusion、style reference。
+- MTEXT 必须保留 attachment、direction/x-axis、rect width/height、line spacing、inline color `\C`、height `\H`、underline `\L`、paragraph `\P`、font block `\f`、stacked/fraction fallback、brace scope。
+- Font 语义必须保留 TrueType font name、SHX font、bigfont。缺字体时用 deterministic fallback，并输出 diagnostics。
+- CAD 符号和中文必须正常显示：`%%c`、`%%d`、`%%p`、Unicode、中文、机械符号。
+- DIMENSION 优先使用 anonymous dimension block；缺失/未解析时才使用简化 fallback geometry，并 diagnostic。
+- DIMSTYLE 至少逐步保留 text height、arrow size、scale factor、unit format、precision。
+- Leader/MLeader/Balloon/Callout 必须作为标注语义处理，包括 leader path、arrowhead、landing、dogleg、content text/block、bubble/callout。
+- FIELD/FIELDLIST/MTEXT context data 必须通过 handle graph 关联后再判断文字缺失；FIELD 是动态语义内容，不是普通 literal text。
+
+## Mechanical Annotation Rules
+
+- AutoCAD Mechanical 对象是 Drawing2 类工程图的重点：`ACMDATUMTARGET`、`AMDTNOTE`、`ACDBLINERES`、`ACMDETAIL*`、`ACMSECTION*`、`ACDBDETAILVIEWSTYLE`、`ACDBSECTIONVIEWSTYLE`、`FIELD`、`FIELDLIST`、`ACDB_MTEXTOBJECTCONTEXTDATA_CLASS`、`AcDb:AcDsPrototype_*`。
+- Proxy/custom annotation 不允许静默忽略；必须输出 class name、object count 和 gap category。
+- 恢复出的 proxy geometry/text 必须标记为 fallback，不得伪装成原生语义完成。
+- 黄色气泡 ordinal proxy 只能作为视觉 fallback；一旦解析出真实 FIELD/Mechanical label，必须优先用真实 label。proxy 编号不得成为 exact golden。
 
 ## Scope
 
@@ -75,3 +95,4 @@ type: agent
 - DIMENSION 实体被正确 dispatch 且 `text` 字段非空。
 - `preview.html` 中能看到道路名称、建筑标注、尺寸标注等文字。
 - `Drawing2.dwg` 中 Detail A/B/C、Main Isometric View、Scale、机械说明、气泡编号和引线位置应接近 AutoCAD 预览。
+- `Drawing2.dwg` 的 Mechanical annotation diagnostics 能区分 native parsed、proxy fallback、deferred FIELD/ContextData。

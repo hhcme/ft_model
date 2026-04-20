@@ -5,7 +5,7 @@ import Toolbar from './Toolbar';
 import LayerPanel from './LayerPanel';
 import StatusBar from './StatusBar';
 import { useMeasurement } from '../../hooks/useMeasurement';
-import { computeBatchBounds, fitViewToBounds } from '../../utils/geometry';
+import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
 
 interface Props {
   drawData: DrawData;
@@ -30,7 +30,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
   useEffect(() => {
     if (!drawData.layers) return;
     const m = new Map<string, boolean>();
-    for (const l of drawData.layers) m.set(l.name, !l.frozen);
+    for (const l of drawData.layers) m.set(l.name, !l.frozen && !l.off);
     setLayerVisible(m);
   }, [drawData]);
 
@@ -41,7 +41,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
       // First time or data changed: auto fit
       if (prev.canvasWidth === 0 && w > 0 && h > 0 && drawData.batches.length > 0) {
         const bb = computeBatchBounds(drawData.batches);
-        const fit = fitViewToBounds(drawData.batches, bb, w, h, drawData.bounds);
+        const fit = fitViewToBounds(drawData.batches, bb, w, h, getPreferredViewBounds(drawData));
         return { ...next, ...fit };
       }
       return next;
@@ -73,7 +73,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
     const c = canvasRef.current;
     if (!c || !drawData.batches.length) return;
     const bb = computeBatchBounds(drawData.batches);
-    const fit = fitViewToBounds(drawData.batches, bb, c.width, c.height, drawData.bounds);
+    const fit = fitViewToBounds(drawData.batches, bb, c.width, c.height, getPreferredViewBounds(drawData));
     setViewport((prev) => ({ ...prev, ...fit }));
   }, [drawData]);
 

@@ -1,6 +1,6 @@
-import type { Batch, BatchBounds, Bounds, TextEntity, Viewport } from '../app/types';
+import type { Batch, BatchBounds, Bounds, TextEntity, ViewDefinition, Viewport } from '../app/types';
 import { worldToScreen, getViewportWorldBounds } from './transforms';
-import { cleanMText } from './textUtils';
+import { cleanMText, parseRichMText } from './textUtils';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -52,6 +52,163 @@ function boostColor(r: number, g: number, b: number): [number, number, number] {
   return [r, g, b];
 }
 
+function adaptColor(r: number, g: number, b: number, paperMode = false): [number, number, number] {
+  if (!paperMode) return boostColor(r, g, b);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const brightness = (r + g + b) / 3;
+  if (brightness > 210 && max - min < 70) return [24, 28, 34];
+  if (brightness > 170 && max - min < 45) return [54, 60, 70];
+  return [r, g, b];
+}
+
+function validBounds(bounds: Bounds | undefined): bounds is Bounds {
+  return !!bounds && !bounds.isEmpty &&
+    bounds.minX < bounds.maxX && bounds.minY < bounds.maxY &&
+    [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite);
+}
+
+function intersectsBounds(a: BatchBounds, b: Bounds): boolean {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+function expandBounds(bounds: Bounds, padRatio: number): Bounds {
+  const w = bounds.maxX - bounds.minX;
+  const h = bounds.maxY - bounds.minY;
+  const pad = Math.max(w, h) * padRatio;
+  return {
+    minX: bounds.minX - pad,
+    minY: bounds.minY - pad,
+    maxX: bounds.maxX + pad,
+    maxY: bounds.maxY + pad,
+  };
+}
+
+function pointInBounds(x: number, y: number, bounds: Bounds): boolean {
+  return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+function segmentIntersectsBounds(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  bounds: Bounds,
+): boolean {
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+  return !(maxX < bounds.minX || minX > bounds.maxX || maxY < bounds.minY || minY > bounds.maxY);
+}
+
+function isArtifactSegment(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  presentationBounds?: Bounds,
+): boolean {
+  if (![x0, y0, x1, y1].every(Number.isFinite)) return true;
+  if (!validBounds(presentationBounds)) return false;
+
+  const w = presentationBounds.maxX - presentationBounds.minX;
+  const h = presentationBounds.maxY - presentationBounds.minY;
+  const diag = Math.hypot(w, h);
+  if (!Number.isFinite(diag) || diag <= 0) return false;
+
+  const padded = expandBounds(presentationBounds, 0.08);
+  const intersectsPresentation = segmentIntersectsBounds(x0, y0, x1, y1, padded);
+
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  if (!Number.isFinite(len)) return true;
+  const inside0 = pointInBounds(x0, y0, padded);
+  const inside1 = pointInBounds(x1, y1, padded);
+  if (inside0 && inside1) return false;
+  if (!intersectsPresentation) {
+    return len > diag * 0.03;
+  }
+
+  // DWG previews commonly contain bad open entities where one endpoint is
+  // decoded in the visible drawing and the other flies far outside the sheet.
+  // Keep ordinary long site lines inside the view, but break these outliers.
+  if (len > diag * 1.25) return true;
+  if (len > diag * 0.45) {
+    const farPad = expandBounds(presentationBounds, 0.35);
+    return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
+  }
+  return false;
+}
+
+/** Draw paper background/plot window for layout views. */
+export function renderPaper(ctx: Ctx, view: ViewDefinition | undefined, vp: Viewport): void {
+  if (!view || (view.type !== 'layout' && !view.paperMode)) return;
+  const paper = validBounds(view.paperBounds) ? view.paperBounds :
+    validBounds(view.presentationBounds) ? view.presentationBounds :
+    validBounds(view.bounds) ? view.bounds : undefined;
+  if (!paper) return;
+
+  const [x0, y0] = worldToScreen(paper.minX, paper.maxY, vp);
+  const [x1, y1] = worldToScreen(paper.maxX, paper.minY, vp);
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const width = Math.abs(x1 - x0);
+  const height = Math.abs(y1 - y0);
+  if (width < 1 || height < 1) return;
+
+  ctx.save();
+  const shadowOffset = Math.max(6, 10 * vp.dpr);
+  ctx.fillStyle = 'rgba(0,0,0,0.32)';
+  ctx.fillRect(left + shadowOffset, top + shadowOffset, width, height);
+  ctx.fillStyle = '#f8f8f4';
+  ctx.fillRect(left, top, width, height);
+  ctx.strokeStyle = 'rgba(20,20,20,0.62)';
+  ctx.lineWidth = Math.max(1, vp.dpr);
+  ctx.strokeRect(left, top, width, height);
+
+  const plot = validBounds(view.plotWindow) ? view.plotWindow : undefined;
+  if (plot) {
+    const [px0, py0] = worldToScreen(plot.minX, plot.maxY, vp);
+    const [px1, py1] = worldToScreen(plot.maxX, plot.minY, vp);
+    ctx.strokeStyle = 'rgba(20,20,20,0.72)';
+    ctx.lineWidth = Math.max(1, vp.dpr);
+    ctx.strokeRect(
+      Math.min(px0, px1),
+      Math.min(py0, py1),
+      Math.abs(px1 - px0),
+      Math.abs(py1 - py0),
+    );
+  }
+  ctx.restore();
+}
+
+export function withWorldClip(
+  ctx: Ctx,
+  bounds: Bounds | undefined,
+  vp: Viewport,
+  draw: () => void,
+): void {
+  if (!validBounds(bounds)) {
+    draw();
+    return;
+  }
+
+  const [x0, y0] = worldToScreen(bounds.minX, bounds.maxY, vp);
+  const [x1, y1] = worldToScreen(bounds.maxX, bounds.minY, vp);
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const width = Math.abs(x1 - x0);
+  const height = Math.abs(y1 - y0);
+  if (width < 1 || height < 1) return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, width, height);
+  ctx.clip();
+  draw();
+  ctx.restore();
+}
+
 /** Render geometry batches. Returns render stats. */
 export function renderBatches(
   ctx: Ctx,
@@ -59,6 +216,9 @@ export function renderBatches(
   boundsList: (BatchBounds | null)[],
   vp: Viewport,
   layerVisible: Map<string, boolean>,
+  clipBounds?: Bounds,
+  presentationBounds?: Bounds,
+  paperMode = false,
 ): { visible: number; drawn: number; culled: number; hidden: number } {
   const wb = getViewportWorldBounds(vp);
   const margin = 200 / vp.zoom;
@@ -75,6 +235,10 @@ export function renderBatches(
       culled++;
       continue;
     }
+    if (bb && validBounds(clipBounds) && !intersectsBounds(bb, clipBounds)) {
+      culled++;
+      continue;
+    }
 
     const name = batch.layerName;
     if (name && layerVisible.has(name) && !layerVisible.get(name)) {
@@ -85,17 +249,28 @@ export function renderBatches(
     visible++;
     drawn += batch.vertices.length;
 
-    const [dr, dg, db] = boostColor(...batch.color);
+    const [dr, dg, db] = adaptColor(...batch.color, paperMode);
     ctx.strokeStyle = `rgb(${dr},${dg},${db})`;
-    ctx.lineWidth = Math.max(1, dpr);
+    const worldLineWidth = Number.isFinite(batch.lineWidth) ? (batch.lineWidth ?? 1) : 1;
+    if (paperMode) {
+      const paperCssWidth = worldLineWidth <= 0.12 ? 0.8 : worldLineWidth <= 0.2 ? 1.0 : 1.25;
+      ctx.lineWidth = Math.max(1, Math.min(8 * dpr, paperCssWidth * dpr));
+    } else {
+      ctx.lineWidth = Math.max(1, Math.min(8, worldLineWidth * dpr));
+    }
+    const dash = batch.linePattern
+      ?.filter((v) => Number.isFinite(v) && Math.abs(v) > 1e-6)
+      .map((v) => Math.abs(v)) ?? [];
+    ctx.setLineDash(dash.length >= 2 ? dash.map((v) => Math.max(1, v * vp.zoom)) : []);
 
     if (batch.topology === 'triangles') {
       renderTriangles(ctx, batch, vp, dr, dg, db);
     } else if (batch.topology === 'lines') {
-      renderLines(ctx, batch, vp);
+      renderLines(ctx, batch, vp, presentationBounds);
     } else {
-      renderLinestrip(ctx, batch, vp, wb, margin);
+      renderLinestrip(ctx, batch, vp, wb, margin, presentationBounds);
     }
+    ctx.setLineDash([]);
   }
   return { visible, drawn, culled, hidden };
 }
@@ -121,22 +296,26 @@ function renderTriangles(
   ctx.fill();
 }
 
-function renderLines(ctx: Ctx, batch: Batch, vp: Viewport): void {
+function renderLines(ctx: Ctx, batch: Batch, vp: Viewport, presentationBounds?: Bounds): void {
   ctx.beginPath();
+  let hasPath = false;
   for (let i = 0; i < batch.vertices.length; i += 2) {
     const v0 = batch.vertices[i];
     const v1 = batch.vertices[i + 1];
+    if (!v0 || !v1) continue;
+    if (isArtifactSegment(v0[0], v0[1], v1[0], v1[1], presentationBounds)) continue;
     const [sx0, sy0] = worldToScreen(v0[0], v0[1], vp);
     const [sx1, sy1] = worldToScreen(v1[0], v1[1], vp);
     ctx.moveTo(sx0, sy0);
     ctx.lineTo(sx1, sy1);
+    hasPath = true;
   }
-  ctx.stroke();
+  if (hasPath) ctx.stroke();
 }
 
 function renderLinestrip(
   ctx: Ctx, batch: Batch, vp: Viewport,
-  wb: Bounds, margin: number,
+  wb: Bounds, margin: number, presentationBounds?: Bounds,
 ): void {
   const breaks = batch.breaks;
   if (breaks?.length) {
@@ -157,27 +336,46 @@ function renderLinestrip(
       if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
       if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
 
-      const [sx0, sy0] = worldToScreen(batch.vertices[startIdx][0], batch.vertices[startIdx][1], vp);
-      ctx.moveTo(sx0, sy0);
+      let penDown = false;
       for (let i = startIdx + 1; i < endIdx; i++) {
+        const prev = batch.vertices[i - 1];
         const v = batch.vertices[i];
+        if (isArtifactSegment(prev[0], prev[1], v[0], v[1], presentationBounds)) {
+          penDown = false;
+          continue;
+        }
+        if (!penDown) {
+          const [sx0, sy0] = worldToScreen(prev[0], prev[1], vp);
+          ctx.moveTo(sx0, sy0);
+          penDown = true;
+        }
         const [sx, sy] = worldToScreen(v[0], v[1], vp);
         ctx.lineTo(sx, sy);
+        hasPath = true;
       }
-      hasPath = true;
     }
     if (hasPath) ctx.stroke();
   } else {
-    const v0 = batch.vertices[0];
-    const [sx0, sy0] = worldToScreen(v0[0], v0[1], vp);
     ctx.beginPath();
-    ctx.moveTo(sx0, sy0);
+    let hasPath = false;
+    let penDown = false;
     for (let i = 1; i < batch.vertices.length; i++) {
+      const prev = batch.vertices[i - 1];
       const v = batch.vertices[i];
+      if (isArtifactSegment(prev[0], prev[1], v[0], v[1], presentationBounds)) {
+        penDown = false;
+        continue;
+      }
+      if (!penDown) {
+        const [sx0, sy0] = worldToScreen(prev[0], prev[1], vp);
+        ctx.moveTo(sx0, sy0);
+        penDown = true;
+      }
       const [sx, sy] = worldToScreen(v[0], v[1], vp);
       ctx.lineTo(sx, sy);
+      hasPath = true;
     }
-    ctx.stroke();
+    if (hasPath) ctx.stroke();
   }
 }
 
@@ -187,9 +385,14 @@ export function renderTexts(
   texts: TextEntity[],
   vp: Viewport,
   layerVisible: Map<string, boolean>,
+  clipBounds?: Bounds,
+  paperMode = false,
 ): void {
   for (const txt of texts) {
     if (txt.layerName && layerVisible.has(txt.layerName) && !layerVisible.get(txt.layerName)) continue;
+    if (validBounds(clipBounds) &&
+        (txt.x < clipBounds.minX || txt.x > clipBounds.maxX ||
+         txt.y < clipBounds.minY || txt.y > clipBounds.maxY)) continue;
 
     const [sx, sy] = worldToScreen(txt.x, txt.y, vp);
     if (sx < -500 || sx > vp.canvasWidth + 500 || sy < -500 || sy > vp.canvasHeight + 500) continue;
@@ -197,19 +400,58 @@ export function renderTexts(
     const screenHeight = txt.height * vp.zoom;
     if (screenHeight < 3) continue;
 
-    const clean = cleanMText(txt.text);
-    if (!clean) continue;
-
-    const [dr, dg, db] = boostColor(...txt.color);
-    ctx.fillStyle = `rgb(${dr},${dg},${db})`;
-    ctx.font = `${screenHeight}px -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif`;
-    ctx.textBaseline = 'bottom';
-
     ctx.save();
     ctx.translate(sx, sy);
     if (txt.rotation) ctx.rotate(-txt.rotation);
     ctx.scale(txt.widthFactor || 1, 1);
-    ctx.fillText(clean, 0, 0);
+    ctx.textAlign = txt.align === 1 ? 'center' : txt.align === 2 ? 'right' : 'left';
+    ctx.textBaseline = txt.align === 1 ? 'middle' : 'bottom';
+    let richLines = parseRichMText(txt.text);
+    if (richLines.length === 0) {
+      const clean = cleanMText(txt.text);
+      richLines = clean
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => [{ text: line }]);
+    }
+    if (richLines.length === 0) {
+      ctx.restore();
+      continue;
+    }
+
+    let baselineY = 0;
+    for (let i = 0; i < richLines.length; i++) {
+      let x = 0;
+      const lineMaxScale = Math.max(
+        1,
+        ...richLines[i].map((run) => Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1),
+      );
+      const y = baselineY;
+      for (const run of richLines[i]) {
+        const runText = run.text.trim();
+        if (!runText) continue;
+        const runScale = Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1;
+        const runHeight = Math.max(3, screenHeight * Math.max(0.12, Math.min(8, runScale)));
+        ctx.font = `${runHeight}px -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif`;
+        const [dr, dg, db] = adaptColor(...(run.color ?? txt.color), paperMode);
+        ctx.fillStyle = `rgb(${dr},${dg},${db})`;
+        ctx.fillText(runText, x, y);
+        const w = ctx.measureText(runText).width;
+        if (run.underline) {
+          ctx.save();
+          ctx.strokeStyle = `rgb(${dr},${dg},${db})`;
+          ctx.lineWidth = Math.max(1, runHeight * 0.035);
+          ctx.beginPath();
+          ctx.moveTo(x, y + runHeight * 0.08);
+          ctx.lineTo(x + w, y + runHeight * 0.08);
+          ctx.stroke();
+          ctx.restore();
+        }
+        x += w + runHeight * 0.08;
+      }
+      baselineY += screenHeight * lineMaxScale * 1.15;
+    }
     ctx.restore();
   }
 }

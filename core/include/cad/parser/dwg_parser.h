@@ -73,6 +73,11 @@ struct SectionInfoDesc {
     std::vector<PageInfo> pages;
 };
 
+struct DwgAuxiliarySection {
+    std::string name;
+    std::vector<uint8_t> data;
+};
+
 // ============================================================
 // DWG R2004+ section data storage
 // ============================================================
@@ -90,6 +95,12 @@ struct DwgFileSections {
     // handle -> offset within object_data
     std::unordered_map<uint64_t, size_t> handle_map;
 
+    // Additional handle -> offset candidates from alternate Object Map
+    // accumulator interpretations. The primary handle_map remains authoritative;
+    // these are only used when the primary offset does not frame a valid object
+    // and the candidate object's own handle matches the requested handle.
+    std::unordered_map<uint64_t, std::vector<size_t>> handle_offset_candidates;
+
     // class type number -> (dxf_name, is_entity)
     std::unordered_map<uint32_t, std::pair<std::string, bool>> class_map;
 
@@ -103,6 +114,10 @@ struct DwgFileSections {
     // Object Map page size (max_decomp_size from section_info).
     // Used to detect page boundaries during stream-based Object Map parsing.
     uint32_t objmap_page_size = 0;
+
+    // Non-primary DWG sections that carry product-specific presentation
+    // semantics, for example AutoCAD Mechanical/AcDs associative data.
+    std::vector<DwgAuxiliarySection> auxiliary_sections;
 };
 
 // ============================================================
@@ -171,10 +186,14 @@ private:
     Result parse_header_variables(SceneGraph& scene);
 
     // Parse Section 1: Classes (type number -> name + is_entity)
-    Result parse_classes();
+    Result parse_classes(SceneGraph& scene);
 
     // Parse Section 2: Object Map (handle -> offset in object data)
     Result parse_object_map(const uint8_t* data, size_t size);
+
+    // Record diagnostics for DWG sections that are decoded but not yet
+    // semantically interpreted by the self-developed pipeline.
+    void record_auxiliary_section_diagnostics(SceneGraph& scene) const;
 
     // Iterate the object map and parse each entity via parse_dwg_entity()
     Result parse_objects(SceneGraph& scene);
@@ -234,10 +253,11 @@ private:
     Vec3 m_current_block_base_point = Vec3::zero();
     size_t m_block_entity_start = 0;
 
-    // ---- DWG layer handle tracking ----
-    // Maps LAYER object handle → layer_index in SceneGraph.
-    // Populated during LAYER (type 51) parsing, used during entity layer resolution.
+    // ---- DWG table handle tracking ----
+    // Maps table object handles → SceneGraph indices. Populated during table
+    // pre-scan because entities/layers may appear before their table records.
     std::unordered_map<uint64_t, int32_t> m_layer_handle_to_index;
+    std::unordered_map<uint64_t, int32_t> m_linetype_handle_to_index;
 };
 
 } // namespace cad

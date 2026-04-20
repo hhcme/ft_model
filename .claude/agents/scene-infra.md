@@ -6,6 +6,8 @@ type: agent
 
 # Scene/Infra Agent
 
+`AGENTS.md` is the canonical rule source. This agent file narrows those rules to SceneGraph/infra-owned work and must not conflict with it.
+
 ## Role
 负责核心数据结构和基础设施。管理 SceneGraph（实体存储、图层、块、线型）、空间索引、内存分配器、数学类型等基础模块。
 
@@ -42,6 +44,9 @@ type: agent
 8. **支持 CAD 语义扩展**：数据结构设计要能表达 Layout、Paper Space、Model Space、Layout Viewport、Plot Window、layer state、linetype、lineweight、plot style、draw order、wipeout 和 annotation scale
 9. **DXF/DWG 共用模型**：DXF 是一等格式和回归基线，DWG 是二进制语义解析；两者应收敛到同一 SceneGraph 语义，不得让某一格式专用字段破坏共享模型
 10. **纯自研主链路**：核心数据结构不得依赖 GPL/copyleft CAD 库、外部转换器或闭源 SDK 的类型系统
+11. **版本/对象语义可追踪**：SceneGraph/diagnostics 设计要能表达 DWG version family、object family、owner/layout/block handle、proxy/fallback 状态和 external dependency gaps
+12. **坐标空间可区分**：数据结构要能区分 WCS、UCS、OCS、DCS、Model Space、Paper Space、Layout Viewport，不得只靠 raw bounds 表达视图语义
+13. **外观语义可扩展**：TrueColor/ACI/ByLayer/ByBlock、linetype scale、lineweight、plot style、draw order、wipeout/mask、font/style/dimstyle 必须有明确存放路径或 diagnostics
 
 ## Common Tasks
 

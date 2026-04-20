@@ -1,7 +1,15 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
 import type { DrawData, Viewport, Measurement, MeasurePoint } from '../../app/types';
 import { computeBatchBounds } from '../../utils/geometry';
-import { renderGrid, renderBatches, renderTexts, renderMeasurements, renderBorder } from '../../utils/renderer';
+import {
+  renderGrid,
+  renderBatches,
+  renderTexts,
+  renderMeasurements,
+  renderBorder,
+  renderPaper,
+  withWorldClip,
+} from '../../utils/renderer';
 
 interface Props {
   drawData: DrawData | null;
@@ -36,6 +44,10 @@ export default function CadCanvas({
 
   // Cache batch bounds — only recompute when drawData changes
   const batchBounds = useMemo(() => computeBatchBounds(drawData?.batches ?? []), [drawData]);
+  const activeView = useMemo(
+    () => drawData?.views?.find((v) => v.id === drawData.activeViewId),
+    [drawData],
+  );
 
   // Canvas resize
   useEffect(() => {
@@ -159,21 +171,27 @@ export default function CadCanvas({
       ctx.fillStyle = '#1e1e2e';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      renderGrid(ctx, viewport);
+      const paperMode = activeView?.paperMode === true;
+      if (!paperMode) renderGrid(ctx, viewport);
 
       if (!drawData?.batches?.length) return;
 
-      renderBorder(ctx, drawData.bounds, viewport);
-      renderBatches(ctx, drawData.batches, batchBounds, viewport, layerVisible);
+      renderPaper(ctx, activeView, viewport);
+      renderBorder(ctx, activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds, viewport);
+      const presentationBounds = activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds;
+      const artifactBounds = activeView?.source === 'vport' ? undefined : presentationBounds;
+      withWorldClip(ctx, activeView?.clipBounds, viewport, () => {
+        renderBatches(ctx, drawData.batches, batchBounds, viewport, layerVisible, activeView?.clipBounds, artifactBounds, paperMode);
 
-      if (drawData.texts?.length) {
-        renderTexts(ctx, drawData.texts, viewport, layerVisible);
-      }
+        if (drawData.texts?.length) {
+          renderTexts(ctx, drawData.texts, viewport, layerVisible, activeView?.clipBounds, paperMode);
+        }
+      });
 
       renderMeasurements(ctx, measurements, measurePoints, measurePreview, viewport, measureMode);
     };
     render();
-  }, [drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode]);
+  }, [drawData, activeView, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode]);
 
   return (
     <canvas
