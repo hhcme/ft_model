@@ -6,7 +6,7 @@ import LandingPage from '../components/landing/LandingPage';
 import ParsingOverlay from '../components/parsing/ParsingOverlay';
 import CadViewer from '../components/viewer/CadViewer';
 import { useFileLoader } from '../hooks/useFileLoader';
-import { getRecentFiles, getLastCacheKey } from '../utils/cache';
+import { getRecentFiles, getLastCacheKey, addRecentFile } from '../utils/cache';
 
 function AppInner() {
   const [phase, setPhase] = useState<AppPhase>('landing');
@@ -62,13 +62,15 @@ function AppInner() {
     setPhase('parsing');
     const data = await loader.loadFromCache(recent.cacheKey);
     if (data) {
+      addRecentFile({ ...recent, timestamp: Date.now() });
       setDrawData(data);
       setPhase('viewer');
+      refreshRecent();
     } else {
       setPhase('landing');
       message.warning('缓存已失效，请重新选择文件');
     }
-  }, [loader, message]);
+  }, [loader, message, refreshRecent]);
 
   const handleReparse = useCallback(async () => {
     const key = getLastCacheKey();

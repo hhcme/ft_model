@@ -61,7 +61,7 @@ export function renderBatches(
   layerVisible: Map<string, boolean>,
 ): { visible: number; drawn: number; culled: number; hidden: number } {
   const wb = getViewportWorldBounds(vp);
-  const margin = 100 / vp.zoom;
+  const margin = 200 / vp.zoom;
   const dpr = vp.dpr;
   let visible = 0, drawn = 0, culled = 0, hidden = 0;
 
@@ -147,14 +147,17 @@ function renderLinestrip(
       const endIdx = (ei + 1 < breaks.length) ? breaks[ei + 1] : batch.vertices.length;
       if (endIdx - startIdx < 2) continue;
 
-      const vFirst = batch.vertices[startIdx];
-      const vLast = batch.vertices[endIdx - 1];
-      if (vFirst[0] < wb.minX - margin && vLast[0] < wb.minX - margin) continue;
-      if (vFirst[0] > wb.maxX + margin && vLast[0] > wb.maxX + margin) continue;
-      if (vFirst[1] < wb.minY - margin && vLast[1] < wb.minY - margin) continue;
-      if (vFirst[1] > wb.maxY + margin && vLast[1] > wb.maxY + margin) continue;
+      // Compute entity AABB for culling (not just first/last vertex)
+      let eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
+      for (let i = startIdx; i < endIdx; i++) {
+        const x = batch.vertices[i][0], y = batch.vertices[i][1];
+        if (x < eMinX) eMinX = x; if (x > eMaxX) eMaxX = x;
+        if (y < eMinY) eMinY = y; if (y > eMaxY) eMaxY = y;
+      }
+      if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
+      if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
 
-      const [sx0, sy0] = worldToScreen(vFirst[0], vFirst[1], vp);
+      const [sx0, sy0] = worldToScreen(batch.vertices[startIdx][0], batch.vertices[startIdx][1], vp);
       ctx.moveTo(sx0, sy0);
       for (let i = startIdx + 1; i < endIdx; i++) {
         const v = batch.vertices[i];
@@ -294,4 +297,23 @@ export function renderMeasurements(
     ctx.moveTo(sx, sy - 6); ctx.lineTo(sx, sy + 6);
     ctx.stroke();
   }
+}
+
+/** Draw a subtle border rectangle from DrawData.bounds. */
+export function renderBorder(ctx: Ctx, bounds: Bounds | undefined, vp: Viewport): void {
+  if (!bounds || bounds.minX >= bounds.maxX || bounds.minY >= bounds.maxY) return;
+
+  const [sx0, sy0] = worldToScreen(bounds.minX, bounds.maxY, vp);
+  const [sx1, sy1] = worldToScreen(bounds.maxX, bounds.minY, vp);
+
+  // Light fill — subtle "paper" background
+  ctx.fillStyle = 'rgba(255,255,255,0.015)';
+  ctx.fillRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
+
+  // Border line
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([8, 4]);
+  ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
+  ctx.setLineDash([]);
 }

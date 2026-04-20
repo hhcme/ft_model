@@ -1,7 +1,7 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import type { DrawData, Viewport, Measurement, MeasurePoint } from '../../app/types';
 import { computeBatchBounds } from '../../utils/geometry';
-import { renderGrid, renderBatches, renderTexts, renderMeasurements } from '../../utils/renderer';
+import { renderGrid, renderBatches, renderTexts, renderMeasurements, renderBorder } from '../../utils/renderer';
 
 interface Props {
   drawData: DrawData | null;
@@ -33,6 +33,9 @@ export default function CadCanvas({
   const lastY = useRef(0);
   const lastTouchDist = useRef(0);
   const lastTapTime = useRef(0);
+
+  // Cache batch bounds — only recompute when drawData changes
+  const batchBounds = useMemo(() => computeBatchBounds(drawData?.batches ?? []), [drawData]);
 
   // Canvas resize
   useEffect(() => {
@@ -160,8 +163,8 @@ export default function CadCanvas({
 
       if (!drawData?.batches?.length) return;
 
-      const bb = computeBatchBounds(drawData.batches);
-      renderBatches(ctx, drawData.batches, bb, viewport, layerVisible);
+      renderBorder(ctx, drawData.bounds, viewport);
+      renderBatches(ctx, drawData.batches, batchBounds, viewport, layerVisible);
 
       if (drawData.texts?.length) {
         renderTexts(ctx, drawData.texts, viewport, layerVisible);

@@ -39,9 +39,9 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
     setViewport((prev) => {
       const next = { ...prev, canvasWidth: w, canvasHeight: h, dpr };
       // First time or data changed: auto fit
-      if (prev.canvasWidth === 0 && drawData.batches.length > 0) {
+      if (prev.canvasWidth === 0 && w > 0 && h > 0 && drawData.batches.length > 0) {
         const bb = computeBatchBounds(drawData.batches);
-        const fit = fitViewToBounds(drawData.batches, bb, w, h);
+        const fit = fitViewToBounds(drawData.batches, bb, w, h, drawData.bounds);
         return { ...next, ...fit };
       }
       return next;
@@ -73,7 +73,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
     const c = canvasRef.current;
     if (!c || !drawData.batches.length) return;
     const bb = computeBatchBounds(drawData.batches);
-    const fit = fitViewToBounds(drawData.batches, bb, c.width, c.height);
+    const fit = fitViewToBounds(drawData.batches, bb, c.width, c.height, drawData.bounds);
     setViewport((prev) => ({ ...prev, ...fit }));
   }, [drawData]);
 

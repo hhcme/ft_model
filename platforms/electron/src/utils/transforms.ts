@@ -17,7 +17,7 @@ export function screenToWorld(
 }
 
 export function getViewportWorldBounds(vp: Viewport) {
-  const [minX, maxY] = screenToWorld(0, vp.canvasHeight, vp);
-  const [maxX, minY] = screenToWorld(vp.canvasWidth, 0, vp);
+  const [minX, minY] = screenToWorld(0, vp.canvasHeight, vp);
+  const [maxX, maxY] = screenToWorld(vp.canvasWidth, 0, vp);
   return { minX, maxX, minY, maxY };
 }

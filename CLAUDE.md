@@ -154,7 +154,7 @@ python3 -m http.server 8080
 - `test_dwg/big.json.gz` is generated from `big.dwg` and NOT committed to git (in .gitignore).
 - **此文件为旧版备用**，新版预览器使用 React + Ant Design（见下方）。
 
-## React Preview (v0.6+) Notes
+## React Preview (v0.6.1+) Notes
 
 **技术栈**：Vite + React 18 + TypeScript + Ant Design 5（暗色主题，`colorPrimary: '#00ff88'`）
 
@@ -178,7 +178,7 @@ cd platforms/electron && npm run dev
 - `components/viewer/` — 预览器：Canvas 渲染 + 工具栏 + 图层面板 + 状态栏
 - `components/parsing/` — 解析进度遮罩
 - `hooks/` — `useFileLoader`（文件加载+缓存）、`useMeasurement`（距离/面积测量）
-- `utils/` — `renderer`（Canvas 渲染）、`geometry`（包围盒+fitView）、`transforms`（坐标变换）、`cache`（IndexedDB+localStorage）、`textUtils`（MTEXT 格式处理）
+- `utils/` — `renderer`（Canvas 渲染+图框）、`geometry`（包围盒+fitView 离群过滤）、`transforms`（坐标变换）、`cache`（IndexedDB+localStorage）、`textUtils`（MTEXT 格式处理）
 
 **缓存机制**：
 - IndexedDB（`cad-preview-cache`）存储解析后的 DrawData + 原始文件 Blob
@@ -186,6 +186,14 @@ cd platforms/electron && npm run dev
 - CacheKey 格式：`${file.name}:${file.size}:${file.lastModified}`
 - 页面刷新自动恢复上次打开的文件
 - 重新解析：从 IndexedDB 取出原始 Blob 重新发给 /parse，无需重新选文件
+- 从最近文件切换也会更新"上次打开"记录
+
+**渲染管线要点**：
+- `getViewportWorldBounds`：屏幕四角转世界坐标，注意 Y 轴翻转（screenToWorld(0, canvasH) → minY, screenToWorld(canvasW, 0) → maxY）
+- `fitViewToBounds`：batch 级别离群过滤（median 中心 + 5x 中位距离阈值），不用顶点采样避免被大 batch 污染
+- `renderBatches`：batch 级视锥裁剪 + linestrip 逐实体 AABB 裁剪（非首尾顶点）
+- `renderBorder`：根据 DrawData.bounds 绘制虚线图框 + 淡背景填充
+- batch bounds 用 `useMemo` 缓存，避免每次平移/缩放重算
 
 **核心设计原则**：
 1. 单一职责：组件只做一件事，逻辑提取到 hooks，计算提取到 utils

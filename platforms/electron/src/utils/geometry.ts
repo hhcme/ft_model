@@ -30,76 +30,64 @@ export function isVisible(
   );
 }
 
-/** Fit viewport to data using IQR-based outlier rejection. */
+/** Fit viewport to data — batch-level outlier filtering. */
 export function fitViewToBounds(
-  batches: Batch[],
+  _batches: Batch[],
   batchBoundsList: (BatchBounds | null)[],
   canvasWidth: number,
   canvasHeight: number,
+  _bounds?: Bounds,
 ): { centerX: number; centerY: number; zoom: number } {
-  const validEntries: { bb: BatchBounds; verts: number; idx: number }[] = [];
-  for (let i = 0; i < batchBoundsList.length; i++) {
-    const bb = batchBoundsList[i];
-    if (!bb) continue;
-    const batch = batches[i];
-    if (!batch?.vertices?.length) continue;
-    validEntries.push({ bb, verts: batch.vertices.length, idx: i });
+  // Collect batch centers
+  type Entry = { bb: BatchBounds; cx: number; cy: number };
+  const entries: Entry[] = [];
+  for (const bb of batchBoundsList) {
+    if (!bb || bb.minX >= bb.maxX || bb.minY >= bb.maxY) continue;
+    entries.push({ bb, cx: (bb.minX + bb.maxX) / 2, cy: (bb.minY + bb.maxY) / 2 });
   }
-  if (validEntries.length === 0) {
-    return { centerX: 0, centerY: 0, zoom: 1 };
+  if (entries.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
+
+  // Median center of all batches
+  const sortedCX = entries.map(e => e.cx).sort((a, b) => a - b);
+  const sortedCY = entries.map(e => e.cy).sort((a, b) => a - b);
+  const medCX = sortedCX[Math.floor(sortedCX.length / 2)];
+  const medCY = sortedCY[Math.floor(sortedCY.length / 2)];
+
+  // Distance of each batch from median, then median distance
+  const dists = entries.map(e => Math.hypot(e.cx - medCX, e.cy - medCY));
+  const sortedDists = [...dists].sort((a, b) => a - b);
+  const medDist = sortedDists[Math.floor(sortedDists.length / 2)];
+
+  // Tighter filter: 5x median distance
+  const threshold = Math.max(medDist * 5, 1);
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let count = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (dists[i] > threshold) continue;
+    const bb = entries[i].bb;
+    if (bb.minX < minX) minX = bb.minX;
+    if (bb.maxX > maxX) maxX = bb.maxX;
+    if (bb.minY < minY) minY = bb.minY;
+    if (bb.maxY > maxY) maxY = bb.maxY;
+    count++;
   }
 
-  let totalVerts = 0;
-  for (const e of validEntries) totalVerts += e.verts;
-
-  const sampleSize = Math.min(totalVerts, 10000);
-  const sampleInterval = Math.max(1, Math.floor(totalVerts / sampleSize));
-
-  const samplesX: number[] = [];
-  const samplesY: number[] = [];
-
-  let globalIdx = 0;
-  for (const e of validEntries) {
-    const batch = batches[e.idx];
-    const verts = batch.vertices;
-    for (let j = 0; j < verts.length; j++) {
-      if (globalIdx % sampleInterval === 0) {
-        samplesX.push(verts[j][0]);
-        samplesY.push(verts[j][1]);
-      }
-      globalIdx++;
-    }
+  if (count === 0 || minX >= maxX || minY >= maxY) {
+    return { centerX: medCX, centerY: medCY, zoom: 1 };
   }
 
-  if (samplesX.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
-
-  const n = samplesX.length;
-  const sortedX = [...samplesX].sort((a, b) => a - b);
-  const sortedY = [...samplesY].sort((a, b) => a - b);
-
-  const q1x = sortedX[Math.floor(n * 0.25)];
-  const q3x = sortedX[Math.floor(n * 0.75)];
-  const q1y = sortedY[Math.floor(n * 0.25)];
-  const q3y = sortedY[Math.floor(n * 0.75)];
-  const iqrX = q3x - q1x;
-  const iqrY = q3y - q1y;
-  const medianX = sortedX[Math.floor(n * 0.5)];
-  const medianY = sortedY[Math.floor(n * 0.5)];
-
-  const padX = iqrX * 0.1;
-  const padY = iqrY * 0.1;
-  const minX = q1x - padX;
-  const maxX = q3x + padX;
-  const minY = q1y - padY;
-  const maxY = q3y + padY;
-
-  const w = (maxX - minX) || 1;
-  const h = (maxY - minY) || 1;
-  const margin = 0.9;
+  const w = maxX - minX;
+  const h = maxY - minY;
   const zoom = Math.min(
-    (canvasWidth * margin) / w,
-    (canvasHeight * margin) / h,
+    (canvasWidth * 0.92) / w,
+    (canvasHeight * 0.92) / h,
   );
 
-  return { centerX: medianX, centerY: medianY, zoom };
+  // Center = median of batch centers (robust to outlier batches)
+  return {
+    centerX: medCX,
+    centerY: medCY,
+    zoom,
+  };
 }
