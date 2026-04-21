@@ -255,8 +255,8 @@ void split_line_strip_coordinate_jumps(RenderBatch& batch) {
         const float n1 = std::sqrt(x1 * x1 + y1 * y1);
         const float max_norm = std::max(n0, n1);
         const float min_norm = std::min(n0, n1);
-        return len > 1000000.0f &&
-               max_norm > 1000000.0f &&
+        return len > 100000.0f &&
+               max_norm > 100000.0f &&
                min_norm < max_norm * 0.01f;
     };
 
@@ -282,7 +282,7 @@ void split_line_strip_coordinate_jumps(RenderBatch& batch) {
             const float median = lengths[lengths.size() / 2];
             const float q90 = lengths[std::min(lengths.size() - 1,
                                                static_cast<size_t>(lengths.size() * 0.90f))];
-            threshold = std::max(100000.0f, std::max(median * 200.0f, q90 * 50.0f));
+            threshold = std::max(10000.0f, std::max(median * 200.0f, q90 * 50.0f));
         }
 
         path.clear();
@@ -1080,7 +1080,7 @@ void RenderBatcher::end_frame() {
             const float median = lengths[lengths.size() / 2];
             const float q95 = lengths[std::min(lengths.size() - 1,
                                                static_cast<size_t>(lengths.size() * 0.95f))];
-            float threshold = std::max({median * 200.0f, q95 * 50.0f, 5000.0f});
+            float threshold = std::max({median * 200.0f, q95 * 50.0f, std::max(median * 10.0f, 500.0f)});
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 3 < vd.size(); i += 4) {
@@ -1100,7 +1100,7 @@ void RenderBatcher::end_frame() {
             const float median = extents[extents.size() / 2];
             const float q95 = extents[std::min(extents.size() - 1,
                                                static_cast<size_t>(extents.size() * 0.95f))];
-            float threshold = std::max({median * 100.0f, q95 * 20.0f, 5000.0f});
+            float threshold = std::max({median * 100.0f, q95 * 20.0f, std::max(median * 10.0f, 500.0f)});
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 5 < vd.size(); i += 6) {
@@ -1129,7 +1129,7 @@ void RenderBatcher::end_frame() {
             const float median = extents[extents.size() / 2];
             const float q95 = extents[std::min(extents.size() - 1,
                                                static_cast<size_t>(extents.size() * 0.95f))];
-            float threshold = std::max({median * 100.0f, q95 * 20.0f, 5000.0f});
+            float threshold = std::max({median * 100.0f, q95 * 20.0f, std::max(median * 10.0f, 500.0f)});
 
             // Filter: keep entities within threshold
             std::vector<float> filtered_vd;

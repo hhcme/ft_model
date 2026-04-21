@@ -117,7 +117,7 @@ function isArtifactSegment(
   const diag = Math.hypot(w, h);
   if (!Number.isFinite(diag) || diag <= 0) return false;
 
-  const padded = expandBounds(presentationBounds, 0.08);
+  const padded = expandBounds(presentationBounds, 0.12);
   const intersectsPresentation = segmentIntersectsBounds(x0, y0, x1, y1, padded);
 
   const len = Math.hypot(x1 - x0, y1 - y0);
@@ -126,23 +126,28 @@ function isArtifactSegment(
   const inside1 = pointInBounds(x1, y1, padded);
   if (inside0 && inside1) return false;
   if (!intersectsPresentation) {
-    return len > diag * 0.03;
+    // Both endpoints outside the padded presentation bounds and segment
+    // doesn't cross it. Only filter if the segment is significantly
+    // longer than the drawing extent (likely a flying line).
+    return len > diag * 0.05;
   }
 
-  // DWG previews commonly contain bad open entities where one endpoint is
-  // decoded in the visible drawing and the other flies far outside the sheet.
-  // Keep ordinary long site lines inside the view, but break these outliers.
-  if (len > diag * 1.25) return true;
-  if (len > diag * 0.45) {
-    const farPad = expandBounds(presentationBounds, 0.35);
+  // One endpoint inside, one outside — typical flying-line pattern where
+  // DWG decoding produces one valid coordinate and one garbage coordinate.
+  // Filter if the segment is much longer than the drawing diagonal.
+  if (len > diag * 1.0) return true;
+  if (len > diag * 0.5) {
+    const farPad = expandBounds(presentationBounds, 0.4);
     return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
   }
   return false;
 }
 
 function horizontalTextAlign(align?: number): CanvasTextAlign {
-  if (align === 2 || align === 3 || align === 6 || align === 9) return 'right';
-  if (align === 1 || align === 4 || align === 5 || align === 8) return 'center';
+  // DXF/DWG horizontal justification:
+  // 0=Left, 1=Center, 2=Right, 3=Aligned, 4=Middle, 5=Fit
+  if (align === 2 || align === 3 || align === 5) return 'right';
+  if (align === 1 || align === 4) return 'center';
   return 'left';
 }
 
@@ -153,8 +158,11 @@ function mtextHorizontalAlign(align?: number): CanvasTextAlign {
 }
 
 function verticalTextBaseline(align?: number): CanvasTextBaseline {
-  if (align === 4 || align === 5 || align === 6) return 'middle';
-  if (align === 1) return 'middle';
+  // DXF/DWG vertical justification:
+  // 0=Baseline, 1=Bottom, 2=Middle, 3=Top
+  // align value in our export is h_just (horizontal)
+  // For TEXT, align 4 = "Middle" (centered vertically and horizontally)
+  if (align === 4) return 'middle';
   return 'bottom';
 }
 
@@ -513,7 +521,11 @@ export function renderTexts(
       continue;
     }
     if (isMText && Number.isFinite(txt.rectWidth) && (txt.rectWidth ?? 0) > 0) {
-      richLines = wrapRichTextLines(ctx, richLines, (txt.rectWidth ?? 0) * vp.zoom, screenHeight);
+      // Apply widthFactor to the wrapping width so text wraps at the correct
+      // visual boundary. ctx.scale(widthFactor) later stretches glyphs, but
+      // measureText works in pre-scale space, so divide by widthFactor.
+      const wf = txt.widthFactor && txt.widthFactor > 0 ? txt.widthFactor : 1;
+      richLines = wrapRichTextLines(ctx, richLines, (txt.rectWidth ?? 0) * vp.zoom / wf, screenHeight);
     }
 
     const measuredLines = richLines.map((line) => {
@@ -538,7 +550,12 @@ export function renderTexts(
         } => !!run);
       const lineWidth = measuredRuns.reduce((sum, run, index) =>
         sum + run.width + (index + 1 < measuredRuns.length ? run.runHeight * 0.08 : 0), 0);
-      const lineHeight = screenHeight * lineMaxScale * 1.15;
+      // AutoCAD default line spacing factor is 1.167 (at least);
+      // if rectHeight is available, derive per-line spacing from it.
+      const lineSpacing = (isMText && Number.isFinite(txt.rectHeight) && (txt.rectHeight ?? 0) > 0 && measuredLines)
+        ? 1.167
+        : 1.15;
+      const lineHeight = screenHeight * lineMaxScale * lineSpacing;
       return { measuredRuns, lineWidth, lineHeight, indent: line.indent };
     }).filter((line) => line.measuredRuns.length > 0);
 

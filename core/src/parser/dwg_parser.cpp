@@ -287,6 +287,28 @@ bool is_annotation_world_point(double x, double y)
            std::abs(x) <= 1000000.0 && std::abs(y) <= 1000000.0;
 }
 
+float median_nearest_neighbor_distance(const std::vector<Vec3>& pts)
+{
+    if (pts.size() < 2) return 50.0f;
+    std::vector<float> nn_dists;
+    nn_dists.reserve(pts.size());
+    for (const Vec3& p : pts) {
+        float best = 1.0e9f;
+        for (const Vec3& q : pts) {
+            if (&p == &q) continue;
+            const float dx = p.x - q.x;
+            const float dy = p.y - q.y;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < best) best = d;
+        }
+        if (std::isfinite(best) && best < 1.0e8f) nn_dists.push_back(best);
+    }
+    if (nn_dists.empty()) return 50.0f;
+    const size_t mid = nn_dists.size() / 2;
+    std::nth_element(nn_dists.begin(), nn_dists.begin() + static_cast<std::ptrdiff_t>(mid), nn_dists.end());
+    return nn_dists[mid];
+}
+
 std::vector<Vec3> unique_annotation_world_points(
     const std::vector<std::pair<double, double>>& points,
     size_t limit)
@@ -320,6 +342,12 @@ std::vector<Vec3> select_annotation_leader_path(
     std::vector<Vec3> path;
     if (candidates.size() < 2) return path;
 
+    const float med_nn = median_nearest_neighbor_distance(candidates);
+    const float max_segment = std::clamp(med_nn * 50.0f, 2000.0f, 50000.0f);
+    const float min_ref = std::clamp(med_nn * 0.5f, 5.0f, 200.0f);
+    const float max_step_mult = 2.5f;
+    const float min_step_fallback = std::clamp(med_nn * 5.0f, 50.0f, 1000.0f);
+
     path.push_back(candidates[0]);
     float reference_len = 0.0f;
     for (size_t i = 1; i < candidates.size(); ++i) {
@@ -329,12 +357,12 @@ std::vector<Vec3> select_annotation_leader_path(
         const float dy = next.y - prev.y;
         const float len = std::sqrt(dx * dx + dy * dy);
         if (!std::isfinite(len) || len < 1.0f) continue;
-        if (len > 10000.0f) break;
+        if (len > max_segment) break;
 
-        if (reference_len <= 0.0f && len >= 20.0f) {
+        if (reference_len <= 0.0f && len >= min_ref) {
             reference_len = len;
         }
-        const float max_step = std::max(reference_len * 2.5f, 250.0f);
+        const float max_step = std::max(reference_len * max_step_mult, min_step_fallback);
         if (path.size() >= 2 && len > max_step) {
             break;
         }
@@ -356,6 +384,11 @@ bool select_annotation_callout_proxy(
     if (leader_path.size() < 2) return false;
 
     const std::vector<Vec3> candidates = unique_annotation_world_points(points, 64);
+
+    const float med_nn = median_nearest_neighbor_distance(candidates);
+    const float cluster_radius = std::clamp(med_nn * 2.5f, 15.0f, 200.0f);
+    const float leader_min_dist = std::clamp(med_nn * 3.0f, 30.0f, 300.0f);
+
     float best_score = -1.0f;
     Vec3 best_center = leader_path.front();
 
@@ -367,13 +400,11 @@ bool select_annotation_callout_proxy(
             const float dx = other.x - candidate.x;
             const float dy = other.y - candidate.y;
             const float dist = std::sqrt(dx * dx + dy * dy);
-            if (!std::isfinite(dist) || dist > 58.0f) continue;
+            if (!std::isfinite(dist) || dist > cluster_radius) continue;
             near_points.push_back(other);
             max_near_dist = std::max(max_near_dist, dist);
         }
 
-        // Mechanical callout bubbles tend to appear as a compact cluster of
-        // center/perimeter/landing points inside the custom object payload.
         if (near_points.size() < 3) continue;
 
         Vec3 center = candidate;
@@ -399,7 +430,7 @@ bool select_annotation_callout_proxy(
             const float dx = p.x - center.x;
             const float dy = p.y - center.y;
             const float dist = std::sqrt(dx * dx + dy * dy);
-            if (std::isfinite(dist) && dist > 70.0f) {
+            if (std::isfinite(dist) && dist > leader_min_dist) {
                 nearest_far = std::min(nearest_far, dist);
             }
         }
@@ -440,7 +471,7 @@ float datum_callout_radius(const Vec3& callout_point, const Vec3& target_point)
     if (!std::isfinite(len) || len <= 0.0f) {
         return 28.0f;
     }
-    return std::clamp(len * 0.06f, 18.0f, 42.0f);
+    return std::clamp(len * 0.08f, 12.0f, 60.0f);
 }
 
 std::vector<std::string> read_custom_t_strings(

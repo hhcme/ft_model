@@ -40,7 +40,20 @@ export function isVisible(
   );
 }
 
-/** Fit viewport to data using IQR-based outlier rejection. */
+/** Compute the percentile value from a sorted array. */
+function pct(sorted: number[], p: number): number {
+  return sorted[Math.min(Math.floor(sorted.length * p), sorted.length - 1)];
+}
+
+/**
+ * Adaptive percentile-based outlier-resistant fitView.
+ *
+ * Strategy: use density-weighted boundary expansion from the IQR core.
+ * 1. Start with the IQR core (Q25–Q75) as the central region.
+ * 2. Expand outward through Q10–Q90 and Q05–Q95, checking density continuity.
+ * 3. If a large gap appears (density drops sharply), stop expansion on that side.
+ * 4. Center on the IQR core's geometric center (robust to asymmetric outliers).
+ */
 export function getPreferredViewBounds(drawData: DrawData): Bounds | undefined {
   const active = drawData.views?.find((v) => v.id === drawData.activeViewId);
   const candidate = active?.presentationBounds ?? active?.bounds ??
@@ -108,49 +121,52 @@ export function fitViewToBounds(
   samplesY.sort((a, b) => a - b);
   const n = samplesX.length;
 
-  const q1x = samplesX[Math.floor(n * 0.25)];
-  const q3x = samplesX[Math.floor(n * 0.75)];
-  const q1y = samplesY[Math.floor(n * 0.25)];
-  const q3y = samplesY[Math.floor(n * 0.75)];
-  const q05x = samplesX[Math.floor(n * 0.05)];
-  const q95x = samplesX[Math.floor(n * 0.95)];
-  const q05y = samplesY[Math.floor(n * 0.05)];
-  const q95y = samplesY[Math.floor(n * 0.95)];
-  const q01x = samplesX[Math.floor(n * 0.01)];
-  const q99x = samplesX[Math.floor(n * 0.99)];
-  const q01y = samplesY[Math.floor(n * 0.01)];
-  const q99y = samplesY[Math.floor(n * 0.99)];
-  const medianX = samplesX[Math.floor(n * 0.5)];
-  const medianY = samplesY[Math.floor(n * 0.5)];
+  // Core percentiles
+  const q25x = pct(samplesX, 0.25), q75x = pct(samplesX, 0.75);
+  const q25y = pct(samplesY, 0.25), q75y = pct(samplesY, 0.75);
+  const q10x = pct(samplesX, 0.10), q90x = pct(samplesX, 0.90);
+  const q10y = pct(samplesY, 0.10), q90y = pct(samplesY, 0.90);
+  const q05x = pct(samplesX, 0.05), q95x = pct(samplesX, 0.95);
+  const q05y = pct(samplesY, 0.05), q95y = pct(samplesY, 0.95);
 
-  const iqrX = q3x - q1x;
-  const iqrY = q3y - q1y;
-  const splitX = iqrX > 0 && ((q1x - q05x) > Math.max(iqrX * 2.5, 1) ||
-    (q95x - q3x) > Math.max(iqrX * 2.5, 1));
-  const splitY = iqrY > 0 && ((q1y - q05y) > Math.max(iqrY * 2.5, 1) ||
-    (q95y - q3y) > Math.max(iqrY * 2.5, 1));
+  const iqrX = q75x - q25x;
+  const iqrY = q75y - q25y;
+  // Minimum gap to detect a density split (outlier boundary)
+  const minGapX = Math.max(iqrX * 1.5, 1);
+  const minGapY = Math.max(iqrY * 1.5, 1);
 
-  let minX = q1x - iqrX * 0.1;
-  let maxX = q3x + iqrX * 0.1;
-  let minY = q1y - iqrY * 0.1;
-  let maxY = q3y + iqrY * 0.1;
-  if (!splitX && !splitY) {
-    const broadW = q99x - q01x;
-    const broadH = q99y - q01y;
-    if (broadW > 0 && broadH > 0) {
-      minX = q01x - broadW * 0.02;
-      maxX = q99x + broadW * 0.02;
-      minY = q01y - broadH * 0.02;
-      maxY = q99y + broadH * 0.02;
-    }
-  }
+  // Adaptive expansion: start from IQR core, expand outward
+  // checking for density gaps at each expansion level.
+  let loX = q25x, hiX = q75x;
+  let loY = q25y, hiY = q75y;
 
-  const w = (maxX - minX) || 1;
-  const h = (maxY - minY) || 1;
+  // Expand to Q10–Q90 if no gap
+  if (q25x - q10x < minGapX) loX = q10x;
+  if (q90x - q75x < minGapX) hiX = q90x;
+  if (q25y - q10y < minGapY) loY = q10y;
+  if (q90y - q75y < minGapY) hiY = q90y;
+
+  // Expand to Q05–Q95 if no gap
+  if (loX === q10x && q10x - q05x < minGapX) loX = q05x;
+  if (hiX === q90x && q95x - q90x < minGapX) hiX = q95x;
+  if (loY === q10y && q10y - q05y < minGapY) loY = q05y;
+  if (hiY === q90y && q95y - q90y < minGapY) hiY = q95y;
+
+  // Add a small margin (5% of range) for visual breathing room
+  const rangeX = (hiX - loX) || 1;
+  const rangeY = (hiY - loY) || 1;
+
+  const w = rangeX * 1.1;
+  const h = rangeY * 1.1;
   const zoom = Math.min(
     (canvasWidth * 0.9) / w,
     (canvasHeight * 0.9) / h,
   );
 
-  return { centerX: medianX, centerY: medianY, zoom };
+  // Center on the IQR core (Q25+Q75)/2 — robust against asymmetric outliers
+  return {
+    centerX: (q25x + q75x) / 2,
+    centerY: (q25y + q75y) / 2,
+    zoom,
+  };
 }
