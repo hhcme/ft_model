@@ -464,8 +464,6 @@ void parse_mtext(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
         r.read_b();   // unknown_b0
     }
 
-    (void)rect_width;
-    (void)rect_height;
     (void)flow_dir;
     (void)zaz;
 
@@ -478,6 +476,12 @@ void parse_mtext(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     txt.height          = static_cast<float>(height);
     txt.rotation        = rotation;
     txt.width_factor    = 1.0f;
+    txt.rect_width      = std::isfinite(rect_width) && rect_width > 0.0
+                              ? static_cast<float>(rect_width)
+                              : 0.0f;
+    txt.rect_height     = std::isfinite(rect_height) && rect_height > 0.0
+                              ? static_cast<float>(rect_height)
+                              : 0.0f;
     txt.text            = std::move(text);
     txt.alignment       = static_cast<int32_t>(attachment);
 

@@ -4,6 +4,7 @@ const DB_NAME = 'cad-preview-cache';
 const STORE = 'drawings';
 const RECENT_KEY = 'cad-recent-files';
 const LAST_KEY = 'cad-last-file';
+const CACHE_SCHEMA_VERSION = 'dwg-fidelity-0.8.7';
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -18,7 +19,7 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function makeCacheKey(file: File): string {
-  return `${file.name}:${file.size}:${file.lastModified}`;
+  return `${CACHE_SCHEMA_VERSION}:${file.name}:${file.size}:${file.lastModified}`;
 }
 
 export async function saveCached(key: string, data: DrawData): Promise<void> {
@@ -76,7 +77,8 @@ export async function getFileBlob(key: string): Promise<Blob | null> {
 
 export function getRecentFiles(): RecentFile[] {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]') as RecentFile[];
+    return list.filter((r) => r.cacheKey.startsWith(`${CACHE_SCHEMA_VERSION}:`));
   } catch { return []; }
 }
 
@@ -96,5 +98,6 @@ export function removeRecentFile(cacheKey: string): void {
 }
 
 export function getLastCacheKey(): string | null {
-  return localStorage.getItem(LAST_KEY);
+  const key = localStorage.getItem(LAST_KEY);
+  return key && key.startsWith(`${CACHE_SCHEMA_VERSION}:`) ? key : null;
 }

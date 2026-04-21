@@ -164,6 +164,57 @@ std::vector<RawSmallIntCandidate> extract_small_int_candidates(const uint8_t* da
     return out;
 }
 
+std::vector<std::string> select_auxiliary_section_markers(
+    const std::vector<std::string>& strings,
+    size_t limit)
+{
+    std::vector<std::string> markers;
+    auto priority = [](const std::string& value) {
+        const std::string upper = uppercase_ascii(value);
+        if (upper.find("DATIDX") != std::string::npos) return 0;
+        if (upper.find("SEGIDX") != std::string::npos) return 1;
+        if (upper.find("PRVSAV") != std::string::npos) return 2;
+        if (upper.find("JARD") != std::string::npos) return 3;
+        if (upper.find("IDX") != std::string::npos) return 4;
+        return 5;
+    };
+
+    std::vector<std::string> candidates;
+    for (const std::string& value : strings) {
+        if (value.size() < 3 || value.size() > 48) continue;
+        if (priority(value) >= 5) continue;
+        std::string marker = value;
+        const std::string upper = uppercase_ascii(value);
+        if (upper.find("DATIDX") != std::string::npos) marker = "datidx";
+        else if (upper.find("SEGIDX") != std::string::npos) marker = "segidx";
+        else if (upper.find("PRVSAV") != std::string::npos) marker = "prvsav";
+        else if (upper.find("SCHIDX") != std::string::npos) marker = "schidx";
+        else if (upper.find("JARD") != std::string::npos) marker = "jard";
+        bool duplicate = false;
+        for (const std::string& existing : candidates) {
+            if (existing == marker) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            candidates.push_back(marker);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [&](const std::string& a, const std::string& b) {
+                  const int pa = priority(a);
+                  const int pb = priority(b);
+                  if (pa != pb) return pa < pb;
+                  return a < b;
+              });
+    for (const std::string& value : candidates) {
+        if (markers.size() >= limit) break;
+        markers.push_back(value);
+    }
+    return markers;
+}
+
 std::vector<RawPointCandidate> extract_plausible_raw_points_with_offsets(
     const uint8_t* data,
     size_t size,
@@ -296,6 +347,91 @@ std::vector<Vec3> select_annotation_leader_path(
     return path;
 }
 
+bool select_annotation_callout_proxy(
+    const std::vector<std::pair<double, double>>& points,
+    const std::vector<Vec3>& leader_path,
+    Vec3& callout_center,
+    Vec3& callout_target)
+{
+    if (leader_path.size() < 2) return false;
+
+    const std::vector<Vec3> candidates = unique_annotation_world_points(points, 64);
+    float best_score = -1.0f;
+    Vec3 best_center = leader_path.front();
+
+    for (const Vec3& candidate : candidates) {
+        std::vector<Vec3> near_points;
+        near_points.reserve(8);
+        float max_near_dist = 0.0f;
+        for (const Vec3& other : candidates) {
+            const float dx = other.x - candidate.x;
+            const float dy = other.y - candidate.y;
+            const float dist = std::sqrt(dx * dx + dy * dy);
+            if (!std::isfinite(dist) || dist > 58.0f) continue;
+            near_points.push_back(other);
+            max_near_dist = std::max(max_near_dist, dist);
+        }
+
+        // Mechanical callout bubbles tend to appear as a compact cluster of
+        // center/perimeter/landing points inside the custom object payload.
+        if (near_points.size() < 3) continue;
+
+        Vec3 center = candidate;
+        float best_center_balance = 1.0e9f;
+        for (const Vec3& possible_center : near_points) {
+            float balance = 0.0f;
+            for (const Vec3& p : near_points) {
+                const float dx = p.x - possible_center.x;
+                const float dy = p.y - possible_center.y;
+                const float dist = std::sqrt(dx * dx + dy * dy);
+                if (std::isfinite(dist)) {
+                    balance += dist;
+                }
+            }
+            if (balance < best_center_balance) {
+                best_center_balance = balance;
+                center = possible_center;
+            }
+        }
+
+        float nearest_far = 1.0e9f;
+        for (const Vec3& p : leader_path) {
+            const float dx = p.x - center.x;
+            const float dy = p.y - center.y;
+            const float dist = std::sqrt(dx * dx + dy * dy);
+            if (std::isfinite(dist) && dist > 70.0f) {
+                nearest_far = std::min(nearest_far, dist);
+            }
+        }
+        if (nearest_far == 1.0e9f) continue;
+
+        const float score =
+            static_cast<float>(near_points.size()) * 1000.0f -
+            max_near_dist * 8.0f -
+            nearest_far * 0.02f;
+        if (score > best_score) {
+            best_score = score;
+            best_center = center;
+        }
+    }
+
+    callout_center = best_score > 0.0f ? best_center : leader_path.front();
+
+    float best_target_dist = -1.0f;
+    callout_target = leader_path.size() > 1 ? leader_path[1] : leader_path.front();
+    for (const Vec3& p : leader_path) {
+        const float dx = p.x - callout_center.x;
+        const float dy = p.y - callout_center.y;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (std::isfinite(dist) && dist > best_target_dist) {
+            best_target_dist = dist;
+            callout_target = p;
+        }
+    }
+
+    return true;
+}
+
 float datum_callout_radius(const Vec3& callout_point, const Vec3& target_point)
 {
     const float dx = target_point.x - callout_point.x;
@@ -305,6 +441,40 @@ float datum_callout_radius(const Vec3& callout_point, const Vec3& target_point)
         return 28.0f;
     }
     return std::clamp(len * 0.06f, 18.0f, 42.0f);
+}
+
+std::vector<std::string> read_custom_t_strings(
+    const uint8_t* entity_data,
+    size_t entity_data_bytes,
+    size_t main_data_bits,
+    size_t start_bit,
+    size_t limit)
+{
+    std::vector<std::string> out;
+    if (!entity_data || entity_data_bytes == 0 || main_data_bits == 0 ||
+        start_bit >= main_data_bits) {
+        return out;
+    }
+
+    DwgBitReader probe(entity_data, entity_data_bytes);
+    probe.set_bit_limit(main_data_bits);
+    probe.setup_string_stream(static_cast<uint32_t>(main_data_bits));
+    probe.set_bit_offset(start_bit);
+
+    for (size_t i = 0; i < limit && !probe.has_error(); ++i) {
+        std::string value = probe.read_t();
+        if (probe.has_error()) break;
+        if (value.empty()) continue;
+        bool duplicate = false;
+        for (const std::string& existing : out) {
+            if (existing == value) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) out.push_back(std::move(value));
+    }
+    return out;
 }
 
 class SectionStringReader {
@@ -1298,6 +1468,21 @@ void DwgParser::record_auxiliary_section_diagnostics(SceneGraph& scene) const
         message += "' was decoded (";
         message += std::to_string(aux.data.size());
         message += " bytes) but is not yet semantically interpreted. This often carries AutoCAD Mechanical/associative drawing-view presentation data.";
+        const auto strings = extract_printable_strings(aux.data.data(), aux.data.size(), 64);
+        const auto markers = select_auxiliary_section_markers(strings, 8);
+        if (!markers.empty()) {
+            message += " Markers: ";
+            for (size_t i = 0; i < markers.size(); ++i) {
+                if (i > 0) message += ", ";
+                std::string marker = markers[i];
+                if (marker.size() > 32) {
+                    marker = marker.substr(0, 29) + "...";
+                }
+                message += "'";
+                message += marker;
+                message += "'";
+            }
+        }
 
         scene.add_diagnostic({
             is_prototype ? "dwg_acds_prototype_deferred" : "dwg_acds_section_deferred",
@@ -1307,16 +1492,24 @@ void DwgParser::record_auxiliary_section_diagnostics(SceneGraph& scene) const
         });
 
         if (dwg_debug_enabled() && !aux.data.empty()) {
-            const auto strings = extract_printable_strings(aux.data.data(), aux.data.size(), 8);
-            for (const auto& s : strings) {
+            const size_t string_limit = std::min<size_t>(strings.size(), 16);
+            for (size_t si = 0; si < string_limit; ++si) {
                 dwg_debug_log("[DWG] auxiliary '%s' string: %s\n",
-                              aux.name.c_str(), s.c_str());
+                              aux.name.c_str(), strings[si].c_str());
             }
 
             const auto points = extract_plausible_raw_points(aux.data.data(), aux.data.size(), 8);
             for (const auto& p : points) {
                 dwg_debug_log("[DWG] auxiliary '%s' point: %.6f, %.6f\n",
                               aux.name.c_str(), p.first, p.second);
+            }
+            const auto ints = extract_small_int_candidates(aux.data.data(), aux.data.size(), 16);
+            for (const auto& c : ints) {
+                dwg_debug_log("[DWG] auxiliary '%s' int: offset=%zu value=%u bytes=%u\n",
+                              aux.name.c_str(),
+                              c.offset,
+                              c.value,
+                              static_cast<unsigned>(c.bytes));
             }
         }
     }
@@ -1727,6 +1920,7 @@ bool is_graphic_entity(uint32_t obj_type)
         case 64:  // MLINESTYLE
         case 70:  // XRECORD
         case 74:  // PROXY_OBJECT
+        case 79:  // XRECORD/roundtrip dictionary record in modern DWGs
         case 82:  // LAYOUT
             return false;
 
@@ -1995,6 +2189,20 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     size_t custom_datum_target_label_proxies = 0;
     size_t custom_line_resource_refs = 0;
     size_t custom_line_resource_unresolved_refs = 0;
+    size_t custom_field_objects = 0;
+    size_t custom_field_strings = 0;
+    size_t custom_fieldlist_objects = 0;
+    size_t custom_mtext_context_objects = 0;
+    size_t custom_detail_style_objects = 0;
+    size_t custom_detail_custom_objects = 0;
+    std::unordered_set<uint64_t> custom_annotation_dictionary_refs;
+    std::unordered_set<uint64_t> custom_annotation_xrecord_refs;
+    std::unordered_set<uint64_t> custom_annotation_unresolved_refs;
+    std::unordered_map<uint64_t, std::vector<std::string>> dictionary_string_samples;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> dictionary_handle_refs;
+    std::unordered_map<uint64_t, std::vector<std::string>> xrecord_string_samples;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> xrecord_handle_refs;
+    std::vector<std::string> custom_field_string_samples;
     size_t recovered_object_offsets = 0;
     size_t unrecovered_object_offsets = 0;
     size_t object_recovery_scans = 0;
@@ -2019,7 +2227,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             case 42: case 43: case 48: case 49: case 50: case 51:
             case 52: case 53: case 54: case 55: case 56: case 57:
             case 58: case 59: case 60: case 61: case 62: case 64:
-            case 65: case 69: case 70: case 74: case 82:
+            case 65: case 69: case 70: case 74: case 79: case 82:
                 return true;
             default:
                 return m_sections.class_map.find(obj_type) != m_sections.class_map.end();
@@ -2513,6 +2721,29 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         auto class_name_for_handle = [&](uint64_t ref_handle) -> std::string {
             return class_name_for_object_type(object_type_for_handle(ref_handle));
         };
+        auto scan_handle_stream_refs = [&](int limit) {
+            std::vector<uint64_t> refs;
+            const size_t hs_bit_start = main_data_bits;
+            const size_t hs_bit_end = entity_bits;
+            const size_t hs_bits = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
+            if (hs_bits < 8 || (hs_bit_end + 7) / 8 > entity_data_bytes) {
+                return refs;
+            }
+
+            DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
+            hreader.set_bit_offset(hs_bit_start);
+            hreader.set_bit_limit(hs_bit_end);
+            for (int h_idx = 0; h_idx < limit && !hreader.has_error(); ++h_idx) {
+                auto href = hreader.read_h();
+                if (hreader.has_error()) break;
+                if (href.value == 0 && href.code == 0) continue;
+                const uint64_t abs_handle = resolve_handle_ref(handle, href);
+                if (abs_handle != 0) {
+                    refs.push_back(abs_handle);
+                }
+            }
+            return refs;
+        };
         const bool annotation_like_custom =
             !class_name_for_debug.empty() &&
             (contains_ascii_ci(class_name_for_debug, "LEADER") ||
@@ -2527,6 +2758,85 @@ Result DwgParser::parse_objects(SceneGraph& scene)
              contains_ascii_ci(class_name_for_debug, "VIEW") ||
              contains_ascii_ci(class_name_for_debug, "BALLOON") ||
              contains_ascii_ci(class_name_for_debug, "CALLOUT"));
+
+        const bool fieldlist_class =
+            contains_ascii_ci(class_name_for_debug, "FIELDLIST");
+        const bool field_class =
+            contains_ascii_ci(class_name_for_debug, "FIELD") && !fieldlist_class;
+        const bool mtext_context_class =
+            contains_ascii_ci(class_name_for_debug, "MTEXTOBJECTCONTEXTDATA") ||
+            contains_ascii_ci(class_name_for_debug, "CONTEXTDATA");
+        const bool detail_style_class =
+            contains_ascii_ci(class_name_for_debug, "DETAILVIEWSTYLE");
+        const bool detail_custom_class =
+            contains_ascii_ci(class_name_for_debug, "DETAIL") &&
+            !detail_style_class &&
+            !contains_ascii_ci(class_name_for_debug, "STANDARD");
+        if (fieldlist_class) {
+            custom_fieldlist_objects++;
+        } else if (field_class) {
+            custom_field_objects++;
+            const uint8_t* entity_data = obj_data + offset + ms_bytes + umc_bytes;
+            const std::vector<std::string> field_strings = read_custom_t_strings(
+                entity_data, entity_data_bytes, main_data_bits, reader.bit_offset(), 16);
+            custom_field_strings += field_strings.size();
+            for (const std::string& value : field_strings) {
+                if (custom_field_string_samples.size() >= 8) break;
+                bool duplicate = false;
+                for (const std::string& existing : custom_field_string_samples) {
+                    if (existing == value) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    custom_field_string_samples.push_back(value);
+                }
+            }
+        }
+        if (mtext_context_class) {
+            custom_mtext_context_objects++;
+        }
+        if (detail_style_class) {
+            custom_detail_style_objects++;
+        }
+        if (detail_custom_class) {
+            custom_detail_custom_objects++;
+        }
+
+        if (obj_type == 42 || obj_type == 43) {
+            const uint8_t* entity_data = obj_data + offset + ms_bytes + umc_bytes;
+            const std::vector<std::string> dict_strings = read_custom_t_strings(
+                entity_data, entity_data_bytes, main_data_bits, reader.bit_offset(), 12);
+            if (!dict_strings.empty()) {
+                dictionary_string_samples[handle] = dict_strings;
+            }
+            dictionary_handle_refs[handle] = scan_handle_stream_refs(48);
+        }
+        if (obj_type == 70 || obj_type == 79) {
+            const uint8_t* entity_data = obj_data + offset + ms_bytes + umc_bytes;
+            const std::vector<std::string> record_strings = read_custom_t_strings(
+                entity_data, entity_data_bytes, main_data_bits, reader.bit_offset(), 12);
+            if (!record_strings.empty()) {
+                xrecord_string_samples[handle] = record_strings;
+            }
+            xrecord_handle_refs[handle] = scan_handle_stream_refs(48);
+        }
+
+        if (annotation_like_custom || fieldlist_class || field_class ||
+            mtext_context_class || detail_style_class || detail_custom_class) {
+            for (uint64_t ref_handle : scan_handle_stream_refs(48)) {
+                const uint32_t ref_type = object_type_for_handle(ref_handle);
+                if (ref_type == 42 || ref_type == 43) {
+                    custom_annotation_dictionary_refs.insert(ref_handle);
+                } else if (ref_type == 70 || ref_type == 79) {
+                    custom_annotation_xrecord_refs.insert(ref_handle);
+                } else if (ref_type == 0) {
+                    custom_annotation_unresolved_refs.insert(ref_handle);
+                }
+            }
+        }
+
         const size_t custom_debug_limit =
             contains_ascii_ci(class_name_for_debug, "DATUMTARGET") ? 40u : 3u;
         if (dwg_debug_enabled() && annotation_like_custom &&
@@ -2608,6 +2918,20 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                                   short_strings[si].c_str());
                 }
                 dwg_debug_log("\n");
+
+                if (is_r2007_plus && main_data_bits > 0) {
+                    const std::vector<std::string> t_values = read_custom_t_strings(
+                        entity_data, entity_data_bytes, main_data_bits, reader.bit_offset(), 12);
+                    dwg_debug_log("[DWG] custom_t_strings class='%s' handle=%llu values=",
+                                  class_name_for_debug.c_str(),
+                                  static_cast<unsigned long long>(handle));
+                    for (size_t si = 0; si < t_values.size(); ++si) {
+                        dwg_debug_log("%s'%s'",
+                                      si == 0 ? "" : "|",
+                                      t_values[si].c_str());
+                    }
+                    dwg_debug_log("\n");
+                }
             }
         }
         if (dwg_debug_enabled() && annotation_like_custom) {
@@ -2739,10 +3063,31 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 extract_plausible_raw_points(entity_data, entity_data_bytes, 96);
             std::vector<Vec3> leader_path = select_annotation_leader_path(raw_points);
             if (leader_path.size() >= 2) {
-                for (size_t pi = 1; pi < leader_path.size(); ++pi) {
+                Vec3 callout_center = leader_path.front();
+                Vec3 callout_target = leader_path[1];
+                (void)select_annotation_callout_proxy(
+                    raw_points, leader_path, callout_center, callout_target);
+
+                std::vector<Vec3> visual_leader_path = leader_path;
+                size_t closest_to_callout = 0;
+                float closest_dist = 1.0e9f;
+                for (size_t i = 0; i < visual_leader_path.size(); ++i) {
+                    const float dx = visual_leader_path[i].x - callout_center.x;
+                    const float dy = visual_leader_path[i].y - callout_center.y;
+                    const float dist = std::sqrt(dx * dx + dy * dy);
+                    if (std::isfinite(dist) && dist < closest_dist) {
+                        closest_dist = dist;
+                        closest_to_callout = i;
+                    }
+                }
+                if (!visual_leader_path.empty()) {
+                    visual_leader_path[closest_to_callout] = callout_center;
+                }
+
+                for (size_t pi = 1; pi < visual_leader_path.size(); ++pi) {
                     LineEntity leader;
-                    leader.start = leader_path[pi - 1];
-                    leader.end = leader_path[pi];
+                    leader.start = visual_leader_path[pi - 1];
+                    leader.end = visual_leader_path[pi];
 
                     EntityHeader leader_hdr = entity_hdr;
                     leader_hdr.type = EntityType::Line;
@@ -2757,8 +3102,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 }
 
                 CircleEntity callout;
-                callout.center = leader_path.front();
-                callout.radius = datum_callout_radius(leader_path.front(), leader_path[1]);
+                callout.center = callout_center;
+                callout.radius = datum_callout_radius(callout_center, callout_target);
 
                 EntityHeader callout_hdr = entity_hdr;
                 callout_hdr.type = EntityType::Circle;
@@ -2772,11 +3117,16 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 scene.add_entity(std::move(callout_entity));
 
                 TextEntity callout_label;
-                callout_label.insertion_point = leader_path.front();
-                callout_label.height = std::max(8.0f, datum_callout_radius(leader_path.front(), leader_path[1]) * 0.9f);
+                callout_label.insertion_point = callout_center;
                 callout_label.width_factor = 1.0f;
                 callout_label.alignment = 1;
                 callout_label.text = std::to_string(custom_datum_target_proxies + 1);
+                const float label_scale =
+                    callout_label.text.size() > 1 ? 0.58f : 0.72f;
+                callout_label.height = std::clamp(
+                    callout.radius * label_scale,
+                    8.0f,
+                    22.0f);
 
                 EntityHeader label_hdr = entity_hdr;
                 label_hdr.type = EntityType::Text;
@@ -3178,6 +3528,124 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         dwg_debug_log("[DWG] object-map self mismatches: %zu\n",
                       primary_self_handle_mismatches);
     }
+    auto object_type_for_summary = [&](uint64_t h) -> uint32_t {
+        auto it = handle_object_types.find(h);
+        if (it != handle_object_types.end()) {
+            return it->second;
+        }
+        auto offset_it = m_sections.handle_map.find(h);
+        if (offset_it == m_sections.handle_map.end()) {
+            return 0;
+        }
+        ObjectRecord record;
+        if (!prepare_object_record(offset_it->second, record, false, false, nullptr)) {
+            return 0;
+        }
+        return record.obj_type;
+    };
+    auto class_name_for_summary = [&](uint32_t type) -> std::string {
+        auto it = m_sections.class_map.find(type);
+        if (it != m_sections.class_map.end()) {
+            return it->second.first;
+        }
+        return {};
+    };
+    {
+        std::vector<uint64_t> pending_dictionaries(
+            custom_annotation_dictionary_refs.begin(),
+            custom_annotation_dictionary_refs.end());
+        for (size_t qi = 0; qi < pending_dictionaries.size() && qi < 128; ++qi) {
+            const uint64_t dict_handle = pending_dictionaries[qi];
+            auto refs_it = dictionary_handle_refs.find(dict_handle);
+            if (refs_it == dictionary_handle_refs.end()) {
+                continue;
+            }
+            for (uint64_t ref : refs_it->second) {
+                const uint32_t ref_type = object_type_for_summary(ref);
+                if (ref_type == 42 || ref_type == 43) {
+                    if (custom_annotation_dictionary_refs.insert(ref).second) {
+                        pending_dictionaries.push_back(ref);
+                    }
+                } else if (ref_type == 70 || ref_type == 79) {
+                    custom_annotation_xrecord_refs.insert(ref);
+                }
+            }
+        }
+    }
+    if (dwg_debug_enabled() && !custom_annotation_dictionary_refs.empty()) {
+        std::vector<uint64_t> dictionary_refs(
+            custom_annotation_dictionary_refs.begin(),
+            custom_annotation_dictionary_refs.end());
+        std::sort(dictionary_refs.begin(), dictionary_refs.end());
+        const size_t dictionary_limit = std::min<size_t>(dictionary_refs.size(), 24);
+        for (size_t di = 0; di < dictionary_limit; ++di) {
+            const uint64_t dict_handle = dictionary_refs[di];
+            dwg_debug_log("[DWG] custom_dictionary handle=%llu strings=",
+                          static_cast<unsigned long long>(dict_handle));
+            auto strings_it = dictionary_string_samples.find(dict_handle);
+            if (strings_it != dictionary_string_samples.end()) {
+                const size_t string_limit = std::min<size_t>(strings_it->second.size(), 8);
+                for (size_t si = 0; si < string_limit; ++si) {
+                    dwg_debug_log("%s'%s'",
+                                  si == 0 ? "" : "|",
+                                  strings_it->second[si].c_str());
+                }
+            }
+            dwg_debug_log(" refs=");
+            auto refs_it = dictionary_handle_refs.find(dict_handle);
+            if (refs_it != dictionary_handle_refs.end()) {
+                const size_t ref_limit = std::min<size_t>(refs_it->second.size(), 16);
+                for (size_t ri = 0; ri < ref_limit; ++ri) {
+                    const uint64_t ref = refs_it->second[ri];
+                    const uint32_t ref_type = object_type_for_summary(ref);
+                    const std::string ref_class = class_name_for_summary(ref_type);
+                    dwg_debug_log("%s%llu(type=%u,class='%s')",
+                                  ri == 0 ? "" : "|",
+                                  static_cast<unsigned long long>(ref),
+                                  ref_type,
+                                  ref_class.c_str());
+                }
+            }
+            dwg_debug_log("\n");
+        }
+    }
+    if (dwg_debug_enabled() && !custom_annotation_xrecord_refs.empty()) {
+        std::vector<uint64_t> xrecord_refs(
+            custom_annotation_xrecord_refs.begin(),
+            custom_annotation_xrecord_refs.end());
+        std::sort(xrecord_refs.begin(), xrecord_refs.end());
+        const size_t xrecord_limit = std::min<size_t>(xrecord_refs.size(), 24);
+        for (size_t xi = 0; xi < xrecord_limit; ++xi) {
+            const uint64_t record_handle = xrecord_refs[xi];
+            dwg_debug_log("[DWG] custom_xrecord handle=%llu strings=",
+                          static_cast<unsigned long long>(record_handle));
+            auto strings_it = xrecord_string_samples.find(record_handle);
+            if (strings_it != xrecord_string_samples.end()) {
+                const size_t string_limit = std::min<size_t>(strings_it->second.size(), 8);
+                for (size_t si = 0; si < string_limit; ++si) {
+                    dwg_debug_log("%s'%s'",
+                                  si == 0 ? "" : "|",
+                                  strings_it->second[si].c_str());
+                }
+            }
+            dwg_debug_log(" refs=");
+            auto refs_it = xrecord_handle_refs.find(record_handle);
+            if (refs_it != xrecord_handle_refs.end()) {
+                const size_t ref_limit = std::min<size_t>(refs_it->second.size(), 16);
+                for (size_t ri = 0; ri < ref_limit; ++ri) {
+                    const uint64_t ref = refs_it->second[ri];
+                    const uint32_t ref_type = object_type_for_summary(ref);
+                    const std::string ref_class = class_name_for_summary(ref_type);
+                    dwg_debug_log("%s%llu(type=%u,class='%s')",
+                                  ri == 0 ? "" : "|",
+                                  static_cast<unsigned long long>(ref),
+                                  ref_type,
+                                  ref_class.c_str());
+                }
+            }
+            dwg_debug_log("\n");
+        }
+    }
     if (recovered_object_offsets > 0) {
         scene.add_diagnostic({
             "dwg_object_map_offset_recovered",
@@ -3238,6 +3706,149 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             "Parse gap",
             "AutoCAD Mechanical line resource objects referenced handles that are not resolved to known DWG objects yet.",
             static_cast<int32_t>(std::min<size_t>(custom_line_resource_unresolved_refs, 2147483647u)),
+        });
+    }
+    if (custom_field_objects > 0) {
+        std::string message = "DWG FIELD objects were decoded through the R2007+ string stream";
+        if (!custom_field_string_samples.empty()) {
+            message += "; samples: ";
+            for (size_t i = 0; i < custom_field_string_samples.size(); ++i) {
+                if (i > 0) message += ", ";
+                std::string sample = custom_field_string_samples[i];
+                if (sample.size() > 48) {
+                    sample = sample.substr(0, 45) + "...";
+                }
+                message += "'";
+                message += sample;
+                message += "'";
+            }
+        }
+        message += ". FIELD evaluation and Mechanical label binding are still pending.";
+        scene.add_diagnostic({
+            "custom_field_string_stream_decoded",
+            "Semantic gap",
+            message,
+            static_cast<int32_t>(std::min<size_t>(custom_field_objects, 2147483647u)),
+        });
+    }
+    if (custom_fieldlist_objects > 0 || custom_mtext_context_objects > 0) {
+        std::string message = "DWG FIELDLIST/MTEXT context objects were identified in the custom annotation handle graph.";
+        scene.add_diagnostic({
+            "custom_field_context_graph_identified",
+            "Handle resolution gap",
+            message,
+            static_cast<int32_t>(std::min<size_t>(
+                custom_fieldlist_objects + custom_mtext_context_objects,
+                2147483647u)),
+        });
+    }
+    if (!custom_annotation_dictionary_refs.empty() ||
+        !custom_annotation_xrecord_refs.empty()) {
+        size_t dictionaries_with_strings = 0;
+        std::vector<std::string> dictionary_samples;
+        for (uint64_t dict_handle : custom_annotation_dictionary_refs) {
+            auto sample_it = dictionary_string_samples.find(dict_handle);
+            if (sample_it != dictionary_string_samples.end() &&
+                !sample_it->second.empty()) {
+                dictionaries_with_strings++;
+                for (const std::string& value : sample_it->second) {
+                    if (dictionary_samples.size() >= 64) break;
+                    bool duplicate = false;
+                    for (const std::string& existing : dictionary_samples) {
+                        if (existing == value) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        dictionary_samples.push_back(value);
+                    }
+                }
+            }
+        }
+        auto sample_priority = [](const std::string& value) {
+            const std::string upper = uppercase_ascii(value);
+            if (upper.find("DETAILVIEW") != std::string::npos) return 0;
+            if (upper.find("FIELD") != std::string::npos) return 1;
+            if (upper.find("MTEXT") != std::string::npos ||
+                upper.find("CONTEXT") != std::string::npos) return 2;
+            if (upper.find("ANNOTATION") != std::string::npos ||
+                upper.find("SCALE") != std::string::npos) return 3;
+            if (upper.find("LAYOUT") != std::string::npos ||
+                upper.find("MLEADER") != std::string::npos) return 4;
+            return 5;
+        };
+        std::sort(dictionary_samples.begin(), dictionary_samples.end(),
+                  [&](const std::string& a, const std::string& b) {
+                      const int pa = sample_priority(a);
+                      const int pb = sample_priority(b);
+                      if (pa != pb) return pa < pb;
+                      return a < b;
+                  });
+
+        std::string message =
+            "Custom DWG annotation/detail objects reference DICTIONARY/XRECORD graph nodes";
+        message += " (dictionaries=";
+        message += std::to_string(custom_annotation_dictionary_refs.size());
+        message += ", xrecords=";
+        message += std::to_string(custom_annotation_xrecord_refs.size());
+        message += ")";
+        if (dictionaries_with_strings > 0) {
+            message += "; decoded dictionary string samples: ";
+            const size_t sample_limit = std::min<size_t>(dictionary_samples.size(), 6);
+            for (size_t i = 0; i < sample_limit; ++i) {
+                if (i > 0) message += ", ";
+                std::string sample = dictionary_samples[i];
+                if (sample.size() > 40) {
+                    sample = sample.substr(0, 37) + "...";
+                }
+                message += "'";
+                message += sample;
+                message += "'";
+            }
+        }
+        if (!custom_annotation_xrecord_refs.empty()) {
+            size_t xrecords_with_strings = 0;
+            for (uint64_t xrecord_handle : custom_annotation_xrecord_refs) {
+                auto sample_it = xrecord_string_samples.find(xrecord_handle);
+                if (sample_it != xrecord_string_samples.end() &&
+                    !sample_it->second.empty()) {
+                    xrecords_with_strings++;
+                }
+            }
+            if (xrecords_with_strings > 0) {
+                message += "; xrecords with decoded strings=";
+                message += std::to_string(xrecords_with_strings);
+            }
+        }
+        message += ". Native dictionary entry semantics are still pending.";
+        scene.add_diagnostic({
+            "custom_annotation_dictionary_graph_identified",
+            "Handle resolution gap",
+            message,
+            static_cast<int32_t>(std::min<size_t>(
+                custom_annotation_dictionary_refs.size() + custom_annotation_xrecord_refs.size(),
+                2147483647u)),
+        });
+    }
+    if (!custom_annotation_unresolved_refs.empty()) {
+        scene.add_diagnostic({
+            "custom_annotation_graph_unresolved_refs",
+            "Handle resolution gap",
+            "Custom DWG annotation/detail objects reference handles that do not resolve to known DWG objects yet.",
+            static_cast<int32_t>(std::min<size_t>(
+                custom_annotation_unresolved_refs.size(),
+                2147483647u)),
+        });
+    }
+    if (custom_detail_style_objects > 0 || custom_detail_custom_objects > 0) {
+        scene.add_diagnostic({
+            "mechanical_detail_view_graph_identified",
+            "Custom object semantic gap",
+            "AutoCAD Mechanical detail-view style/custom objects were identified; native crop/frame parameters still need semantic decoding, so visual detail frames may use fallback proxies.",
+            static_cast<int32_t>(std::min<size_t>(
+                custom_detail_style_objects + custom_detail_custom_objects,
+                2147483647u)),
         });
     }
     if (dwg_debug_enabled()) {

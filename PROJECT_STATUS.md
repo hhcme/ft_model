@@ -159,6 +159,10 @@ family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 
 - [x] `Drawing2.dwg` recognized as the Mechanical/Layout/Paper Space visual sentinel.
 - [x] Paper background, border candidates, presentation bounds, and diagnostics are present in the preview/export path.
+- [x] MTEXT `rectWidth` / `rectHeight` now flow through parser, SceneGraph bounds, export JSON, and Canvas rich-text wrapping.
+- [x] Canvas/preview MTEXT rendering handles inline color, height, underline, paragraph breaks, font family, bold/italic flags, stacked text fallback, `%%c`/`%%d`/`%%p`, and `\U+XXXX` Unicode escapes.
+- [x] `Drawing2.dwg` emits proxy Mechanical datum/callout leaders, yellow bubble circles, and deterministic ordinal label fallback with explicit diagnostics.
+- [x] `Drawing2.dwg` infers 6 Mechanical detail/source crop frame proxies from detail titles, boundary markers, and nearby visible geometry.
 - [ ] Native FIELD/FIELDLIST/ContextData and AutoCAD Mechanical annotation semantics are partial; yellow bubble ordinal fallback is allowed only as a visual fallback and is not golden data.
 - [ ] Layout viewport model view center/height/custom scale/twist/clip/frozen layers need complete parsing and export.
 - [ ] Leader/MLeader/Balloon/Callout/DIMSTYLE fidelity remains a primary 0.8.x gap.
@@ -215,8 +219,8 @@ family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 | Version family matrix | Partial | R2010 sentinel exists; R2000/R2004/R2007/R2013/R2018+ fixtures are currently missing or not cataloged. |
 | Binary infra diagnostics | Partial | String stream/CMC/CED are partly implemented; EED/XData/reactors/extension dictionary need fuller diagnostics. |
 | Layout/Paper Space | Partial | Presentation bounds and paper view path exist; full Layout/PLOTSETTINGS/Viewport semantics remain incomplete. |
-| Mechanical/custom objects | Partial | Proxy/fallback visuals are allowed for `Drawing2.dwg`; native FIELD/Mechanical semantic recovery remains incomplete. |
-| Plot appearance | Partial | Basic color/line/text display exists; CTB/STB, full lineweight/linetype, draw order, wipeout/mask need completion. |
+| Mechanical/custom objects | Partial | `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, FIELD/FIELDLIST/ContextData graph diagnostics, datum/callout proxy leaders/bubbles, and detail-frame proxies are present. Native Mechanical labels and full custom payload semantics remain incomplete. |
+| Plot appearance | Partial | Basic color/line/text display exists; MTEXT inline color/sizing/underline/font styling and CAD symbols render in Canvas. CTB/STB, full lineweight/linetype, draw order, wipeout/mask need completion. |
 | External dependencies | Missing | Xref, raster/image/OLE/PDF/DGN/DWF underlay, fonts, and missing dependency diagnostics need a cataloged pipeline. |
 
 ### DWG Progress Timeline
@@ -230,6 +234,8 @@ family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 | 2026-04-17 | 109,834 | 137,087 | 76 | 401,320 | DIMENSION rewrite + HATCH CMC fix |
 | 2026-04-17 | 109,834 | 136,567 | 76 | 399,927 | EED alignment fix + LWPOLYLINE extrusion fix |
 | 2026-04-18 | 109,834 | 136,567 | 76 | 399,927 | BLOCK tracking + INSERT handle stream + conditional block filtering |
+| 2026-04-21 | 109,834 | 103,471 | 230 | 390,508 | 0.8.x presentation pipeline, abnormal preview filtering, diagnostics, and big.dwg sentinel export |
+| 2026-04-21 | n/a | 26,163 | 20 | 392,570 | Drawing2 Mechanical datum/callout proxy, 6 detail-frame proxies, MTEXT rich text/export fields |
 
 ### Build Info
 
@@ -325,7 +331,7 @@ BLOCK_HEADER (type 49) stores truncated names for anonymous dimension blocks: `*
   - `test_data/text_entities.dxf` → `7 entities / 1 batch / 14 vertices / 7 texts`
 - DWG sentinel lower-bound:
   - `test_dwg/big.dwg` → at least `100,000 entities / 50 batches / 350,000 vertices / 5,000 texts`
-  - `test_dwg/Drawing2.dwg` → optional Layout/Paper Space visual sentinel; JSON must include diagnostics when full layout semantics are missing.
+  - `test_dwg/Drawing2.dwg` → Layout/Paper Space visual sentinel; current export baseline is about `26,163 entities / 20 batches / 392,570 vertices`, with 6 inferred Mechanical detail-frame proxies and diagnostics when native custom-object semantics are missing.
 
 ## Test Data
 

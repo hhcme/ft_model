@@ -148,8 +148,10 @@ Bounds3d entity_bounds_spline(const SplineEntity& spline) {
 
 Bounds3d entity_bounds_text(const TextEntity& text) {
     float half_h = text.height * 0.5f;
-    float approx_width = static_cast<float>(text.text.size()) * text.height *
-                         text.width_factor * 0.6f;
+    float approx_width = text.rect_width > 0.0f
+        ? text.rect_width
+        : static_cast<float>(text.text.size()) * text.height *
+              text.width_factor * 0.6f;
 
     float left = text.insertion_point.x;
     float bottom = text.insertion_point.y - half_h;

@@ -3,9 +3,14 @@ export interface RichTextRun {
   color?: [number, number, number];
   underline?: boolean;
   heightScale?: number;
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
 }
 
-export type RichTextLine = RichTextRun[];
+export type RichTextLine = RichTextRun[] & {
+  indent?: number;
+};
 
 const ACI_TABLE: [number, number, number][] = [
   [255,255,255],[255,0,0],[255,255,0],[0,255,0],[0,255,255],[0,0,255],
@@ -71,6 +76,24 @@ interface MTextState {
   color?: [number, number, number];
   underline: boolean;
   heightScale: number;
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
+}
+
+function parseFontSpec(spec: string): Pick<MTextState, 'fontFamily' | 'bold' | 'italic'> {
+  const parts = spec.split('|');
+  const name = parts[0]?.trim().replace(/^['"]|['"]$/g, '');
+  const parsed: Pick<MTextState, 'fontFamily' | 'bold' | 'italic'> = {};
+  if (!name || /[\\{};]/.test(name)) return parsed;
+  parsed.fontFamily = name;
+  for (const part of parts.slice(1)) {
+    const key = part.slice(0, 1).toLowerCase();
+    const value = part.slice(1);
+    if (key === 'b') parsed.bold = value === '1';
+    if (key === 'i') parsed.italic = value === '1';
+  }
+  return parsed;
 }
 
 function pushRun(
@@ -79,7 +102,13 @@ function pushRun(
   state: MTextState,
 ) {
   if (!text) return;
-  const parts = text.split('\n');
+  const normalized = text
+    .replace(/%%c/gi, 'Ø')
+    .replace(/%%d/gi, '°')
+    .replace(/%%p/gi, '±')
+    .replace(/\\U\+([0-9a-fA-F]{4})/g, (_, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)));
+  const parts = normalized.split('\n');
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i].replace(/^\s*[.·]\s*/, '');
     if (part) {
@@ -88,17 +117,25 @@ function pushRun(
         color: state.color,
         underline: state.underline,
         heightScale: state.heightScale,
+        fontFamily: state.fontFamily,
+        bold: state.bold,
+        italic: state.italic,
       });
     }
     if (i + 1 < parts.length) {
-      lines.push([]);
+      lines.push([] as RichTextLine);
     }
   }
 }
 
+function currentLine(lines: RichTextLine[]): RichTextLine {
+  if (lines.length === 0) lines.push([] as RichTextLine);
+  return lines[lines.length - 1];
+}
+
 /** Parse common MTEXT control codes into renderable runs. */
 export function parseRichMText(raw: string): RichTextLine[] {
-  const lines: RichTextLine[] = [[]];
+  const lines: RichTextLine[] = [[] as RichTextLine];
   let buffer = '';
   let state: MTextState = { underline: false, heightScale: 1 };
   const stack: MTextState[] = [];
@@ -128,9 +165,21 @@ export function parseRichMText(raw: string): RichTextLine[] {
     const code = raw[i + 1] ?? '';
     if (code === 'P') {
       flush();
-      lines.push([]);
+      lines.push([] as RichTextLine);
       i += 1;
       continue;
+    }
+    if (raw.slice(i, i + 3).toLowerCase() === '\\pi') {
+      const end = raw.indexOf(';', i + 3);
+      if (end !== -1) {
+        flush();
+        const indent = Number.parseFloat(raw.slice(i + 3, end));
+        if (Number.isFinite(indent)) {
+          currentLine(lines).indent = indent;
+        }
+        i = end;
+        continue;
+      }
     }
     if (code === 'L') {
       flush();
@@ -170,16 +219,18 @@ export function parseRichMText(raw: string): RichTextLine[] {
         continue;
       }
     }
-    if (code === 'f' || code === 'F' || code === 'W' ||
-        code === 'Q' || code === 'T' || code === 'A' || code === 'p') {
+    if (code === 'f' || code === 'F') {
       const end = raw.indexOf(';', i + 2);
       if (end !== -1) {
+        flush();
+        state = { ...state, ...parseFontSpec(raw.slice(i + 2, end)) };
         i = end;
         continue;
       }
     }
-    if (raw.slice(i, i + 3).toLowerCase() === '\\pi') {
-      const end = raw.indexOf(';', i + 3);
+    if (code === 'W' || code === 'Q' || code === 'T' ||
+        code === 'A' || code === 'p') {
+      const end = raw.indexOf(';', i + 2);
       if (end !== -1) {
         i = end;
         continue;
@@ -190,6 +241,17 @@ export function parseRichMText(raw: string): RichTextLine[] {
       i += 1;
       continue;
     }
+    if (code === 'S') {
+      const end = raw.indexOf(';', i + 2);
+      if (end !== -1) {
+        const stacked = raw.slice(i + 2, end)
+          .replace(/[\\^#]/g, '/')
+          .replace(/\/+/g, '/');
+        buffer += stacked;
+        i = end;
+        continue;
+      }
+    }
     if (code) {
       i += 1;
     }
@@ -197,7 +259,11 @@ export function parseRichMText(raw: string): RichTextLine[] {
   flush();
 
   return lines
-    .map((line) => line.filter((run) => run.text.trim().length > 0))
+    .map((line) => {
+      const filtered = line.filter((run) => run.text.trim().length > 0) as RichTextLine;
+      filtered.indent = line.indent;
+      return filtered;
+    })
     .filter((line) => line.length > 0);
 }
 
@@ -209,9 +275,15 @@ export function cleanMText(raw: string): string {
   t = t.replace(/\\pi-?\d+(?:\.\d+)?;/gi, '');
   t = t.replace(/\\[HWCQT][^;]*;/gi, '');
   t = t.replace(/\\[LlOoKk]/g, '');
+  t = t.replace(/\\S([^;]*);/g, (_, value: string) => value.replace(/[\\^#]/g, '/'));
   t = t.replace(/\{\\f[^;{}]*;/gi, '{');
   t = t.replace(/\{\\[^}]*\}/g, '');
   t = t.replace(/[{}]/g, '');
+  t = t.replace(/%%c/gi, 'Ø');
+  t = t.replace(/%%d/gi, '°');
+  t = t.replace(/%%p/gi, '±');
+  t = t.replace(/\\U\+([0-9a-fA-F]{4})/g, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)));
   return t
     .split('\n')
     .map((line) => line.replace(/^\s*[.·]\s*/, '').trim())

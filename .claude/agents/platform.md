@@ -48,7 +48,7 @@ type: agent
 13. **水印不是目标**：参考图水印不属于 DWG 渲染还原目标，不得驱动 UI 或解析逻辑
 14. **Paper mode**：仅 Layout/Paper Space 视图使用 paper background、plot window、border；model-only 图纸不得强制套纸张背景
 15. **Diagnostics 可见性**：DWG gaps、proxy/fallback、missing xref/image/font、plot-style deferred 等核心 diagnostics 应可在 UI 或调试面板查看
-16. **文本显示**：支持 MTEXT inline color/height/underline/paragraph/font fallback，中文、Unicode、`%%c`、`%%d`、`%%p` 等 CAD 符号不得直接露出乱码
+16. **文本显示**：支持 MTEXT inline color/height/underline/paragraph/font family/bold/italic fallback，中文、Unicode、`\U+XXXX`、`%%c`、`%%d`、`%%p` 等 CAD 符号不得直接露出乱码
 17. **图层状态**：off/frozen 默认隐藏，locked 仍显示；plot mode 可以处理 non-plottable layer，但 viewer mode 默认仍显示
 
 ### React + Ant Design Frontend (v0.6+)
@@ -73,6 +73,7 @@ type: agent
 - IndexedDB（`cad-preview-cache`）存储 DrawData + 原始文件 Blob（key 后缀 `:file`）
 - localStorage 存最近文件元数据，最多 10 条
 - 页面刷新自动恢复上次文件，重新解析直接从 IndexedDB 取 Blob
+- 修改前端渲染语义后必须 bump `CACHE_SCHEMA_VERSION`，避免旧 DrawData/渲染缓存掩盖 Drawing2/big.dwg 视觉变化。
 
 **组件设计原则**：
 1. **单一职责**：CadCanvas 只管 Canvas 渲染，不管数据加载；Toolbar 只管按钮

@@ -132,7 +132,7 @@ python3 -m http.server 8080
 - LOD: arc/circle segment count varies with zoom level via LodSelector.
 - Robust fitView must use finite exported/viewable geometry with outlier-resistant sampling. Layout/Paper Space priority rules below override raw model-space bounds.
 - Text rendering: Canvas `fillText()` with proper world-to-screen transform, Y-flip, rotation, width scaling.
-- MTEXT formatting codes: strip `\P` → newline, remove `{\...}` style codes, remove stray braces.
+- MTEXT formatting/rendering must preserve rich text semantics where available: `\P`, inline color `\C`, height `\H`, underline `\L`, font family/bold/italic from `\f`, stacked text fallback, `\U+XXXX`, `%%c`, `%%d`, and `%%p`. Plain cleaning is only a fallback display path.
 
 ## DWG Viewer Fidelity Standard
 

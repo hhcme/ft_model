@@ -1,6 +1,6 @@
 import type { Batch, BatchBounds, Bounds, TextEntity, ViewDefinition, Viewport } from '../app/types';
 import { worldToScreen, getViewportWorldBounds } from './transforms';
-import { cleanMText, parseRichMText } from './textUtils';
+import { cleanMText, parseRichMText, type RichTextLine } from './textUtils';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -138,6 +138,98 @@ function isArtifactSegment(
     return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
   }
   return false;
+}
+
+function horizontalTextAlign(align?: number): CanvasTextAlign {
+  if (align === 2 || align === 3 || align === 6 || align === 9) return 'right';
+  if (align === 1 || align === 4 || align === 5 || align === 8) return 'center';
+  return 'left';
+}
+
+function mtextHorizontalAlign(align?: number): CanvasTextAlign {
+  if (align === 2 || align === 5 || align === 8) return 'center';
+  if (align === 3 || align === 6 || align === 9) return 'right';
+  return 'left';
+}
+
+function verticalTextBaseline(align?: number): CanvasTextBaseline {
+  if (align === 4 || align === 5 || align === 6) return 'middle';
+  if (align === 1) return 'middle';
+  return 'bottom';
+}
+
+function mtextVerticalOffset(align: number | undefined, totalHeight: number): number {
+  if (align === 4 || align === 5 || align === 6) return -totalHeight * 0.5;
+  if (align === 7 || align === 8 || align === 9) return -totalHeight;
+  return 0;
+}
+
+function canvasFont(
+  runHeight: number,
+  fontFamily?: string,
+  bold?: boolean,
+  italic?: boolean,
+): string {
+  const fallback = "-apple-system, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
+  const style = italic ? 'italic ' : '';
+  const weight = bold ? '700 ' : '';
+  if (!fontFamily) return `${style}${weight}${runHeight}px ${fallback}`;
+  const safeFamily = fontFamily.replace(/['"\\;]/g, '').trim();
+  if (!safeFamily) return `${style}${weight}${runHeight}px ${fallback}`;
+  return `${style}${weight}${runHeight}px '${safeFamily}', ${fallback}`;
+}
+
+function wrapRichTextLines(
+  ctx: Ctx,
+  lines: RichTextLine[],
+  maxWidth: number,
+  baseHeight: number,
+): RichTextLine[] {
+  if (!Number.isFinite(maxWidth) || maxWidth <= baseHeight * 2) return lines;
+  const wrapped: RichTextLine[] = [];
+
+  const measure = (run: RichTextLine[number], text: string) => {
+    const scale = Number.isFinite(run.heightScale) ? Math.max(0.12, Math.min(8, run.heightScale ?? 1)) : 1;
+    const runHeight = Math.max(3, baseHeight * scale);
+    ctx.font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
+    return { width: ctx.measureText(text).width, runHeight };
+  };
+
+  for (const line of lines) {
+    let current = [] as RichTextLine;
+    current.indent = line.indent;
+    let currentWidth = 0;
+    const indent = Number.isFinite(line.indent) ? Math.max(0, line.indent ?? 0) : 0;
+    const availableWidth = Math.max(baseHeight * 2, maxWidth - indent);
+
+    const pushCurrent = () => {
+      if (current.length > 0) {
+        wrapped.push(current);
+        current = [] as RichTextLine;
+        current.indent = line.indent;
+        currentWidth = 0;
+      }
+    };
+
+    for (const run of line) {
+      const tokens = run.text.split(/(\s+)/).filter((token) => token.length > 0);
+      for (const token of tokens) {
+        const isSpace = /^\s+$/.test(token);
+        if (isSpace && current.length === 0) continue;
+        const { width, runHeight } = measure(run, token);
+        const gap = current.length > 0 ? runHeight * 0.02 : 0;
+        if (!isSpace && current.length > 0 && currentWidth + gap + width > availableWidth) {
+          pushCurrent();
+        }
+        current.push({ ...run, text: token });
+        currentWidth += (currentWidth > 0 ? gap : 0) + width;
+      }
+    }
+    pushCurrent();
+    if (line.length === 0) wrapped.push([] as RichTextLine);
+  }
+
+  return wrapped.length > 0 ? wrapped : lines;
 }
 
 /** Draw paper background/plot window for layout views. */
@@ -404,8 +496,9 @@ export function renderTexts(
     ctx.translate(sx, sy);
     if (txt.rotation) ctx.rotate(-txt.rotation);
     ctx.scale(txt.widthFactor || 1, 1);
-    ctx.textAlign = txt.align === 1 ? 'center' : txt.align === 2 ? 'right' : 'left';
-    ctx.textBaseline = txt.align === 1 ? 'middle' : 'bottom';
+    const isMText = txt.kind === 'mtext';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = isMText ? 'top' : verticalTextBaseline(txt.align);
     let richLines = parseRichMText(txt.text);
     if (richLines.length === 0) {
       const clean = cleanMText(txt.text);
@@ -413,44 +506,72 @@ export function renderTexts(
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean)
-        .map((line) => [{ text: line }]);
+        .map((line) => [{ text: line }] as RichTextLine);
     }
     if (richLines.length === 0) {
       ctx.restore();
       continue;
     }
+    if (isMText && Number.isFinite(txt.rectWidth) && (txt.rectWidth ?? 0) > 0) {
+      richLines = wrapRichTextLines(ctx, richLines, (txt.rectWidth ?? 0) * vp.zoom, screenHeight);
+    }
 
-    let baselineY = 0;
-    for (let i = 0; i < richLines.length; i++) {
-      let x = 0;
+    const measuredLines = richLines.map((line) => {
       const lineMaxScale = Math.max(
         1,
-        ...richLines[i].map((run) => Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1),
+        ...line.map((run) => Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1),
       );
+      const measuredRuns = line
+        .map((run) => {
+          const runText = run.text.trim();
+          if (!runText) return null;
+          const runScale = Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1;
+          const runHeight = Math.max(3, screenHeight * Math.max(0.12, Math.min(8, runScale)));
+          ctx.font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
+          return { run, runText, runHeight, width: ctx.measureText(runText).width };
+        })
+        .filter((run): run is {
+          run: NonNullable<RichTextLine[number]>;
+          runText: string;
+          runHeight: number;
+          width: number;
+        } => !!run);
+      const lineWidth = measuredRuns.reduce((sum, run, index) =>
+        sum + run.width + (index + 1 < measuredRuns.length ? run.runHeight * 0.08 : 0), 0);
+      const lineHeight = screenHeight * lineMaxScale * 1.15;
+      return { measuredRuns, lineWidth, lineHeight, indent: line.indent };
+    }).filter((line) => line.measuredRuns.length > 0);
+
+    const totalHeight = measuredLines.reduce((sum, line) => sum + line.lineHeight, 0);
+    let baselineY = isMText ? mtextVerticalOffset(txt.align, totalHeight) : 0;
+    const align = isMText ? mtextHorizontalAlign(txt.align) : horizontalTextAlign(txt.align);
+    for (const line of measuredLines) {
       const y = baselineY;
-      for (const run of richLines[i]) {
-        const runText = run.text.trim();
-        if (!runText) continue;
-        const runScale = Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1;
-        const runHeight = Math.max(3, screenHeight * Math.max(0.12, Math.min(8, runScale)));
-        ctx.font = `${runHeight}px -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif`;
+      const indent = isMText && Number.isFinite(line.indent)
+        ? (line.indent ?? 0) * vp.zoom
+        : 0;
+      let x = align === 'center' ? -line.lineWidth * 0.5 : align === 'right' ? -line.lineWidth : 0;
+      x += indent;
+      for (let ri = 0; ri < line.measuredRuns.length; ri++) {
+        const { run, runText, runHeight, width: w } = line.measuredRuns[ri];
+        ctx.font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
         const [dr, dg, db] = adaptColor(...(run.color ?? txt.color), paperMode);
         ctx.fillStyle = `rgb(${dr},${dg},${db})`;
         ctx.fillText(runText, x, y);
-        const w = ctx.measureText(runText).width;
         if (run.underline) {
           ctx.save();
           ctx.strokeStyle = `rgb(${dr},${dg},${db})`;
           ctx.lineWidth = Math.max(1, runHeight * 0.035);
+          const underlineY = y + (isMText ? runHeight * 0.92 : runHeight * 0.08);
           ctx.beginPath();
-          ctx.moveTo(x, y + runHeight * 0.08);
-          ctx.lineTo(x + w, y + runHeight * 0.08);
+          ctx.moveTo(x, underlineY);
+          ctx.lineTo(x + w, underlineY);
           ctx.stroke();
           ctx.restore();
         }
-        x += w + runHeight * 0.08;
+        x += w + (ri + 1 < line.measuredRuns.length ? runHeight * 0.08 : 0);
       }
-      baselineY += screenHeight * lineMaxScale * 1.15;
+      baselineY += line.lineHeight;
     }
     ctx.restore();
   }

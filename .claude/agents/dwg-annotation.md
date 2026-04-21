@@ -21,7 +21,7 @@ type: agent
 ## Annotation Fidelity Rules
 
 - TEXT 必须保留 insertion point、alignment point、horizontal/vertical alignment、rotation、oblique、width factor、height、generation/mirror flags、OCS/extrusion、style reference。
-- MTEXT 必须保留 attachment、direction/x-axis、rect width/height、line spacing、inline color `\C`、height `\H`、underline `\L`、paragraph `\P`、font block `\f`、stacked/fraction fallback、brace scope。
+- MTEXT 必须保留 attachment、direction/x-axis、rect width/height、line spacing、inline color `\C`、height `\H`、underline `\L`、paragraph `\P`、font block `\f`、bold/italic、stacked/fraction fallback、brace scope。
 - Font 语义必须保留 TrueType font name、SHX font、bigfont。缺字体时用 deterministic fallback，并输出 diagnostics。
 - CAD 符号和中文必须正常显示：`%%c`、`%%d`、`%%p`、Unicode、中文、机械符号。
 - DIMENSION 优先使用 anonymous dimension block；缺失/未解析时才使用简化 fallback geometry，并 diagnostic。
@@ -35,6 +35,7 @@ type: agent
 - Proxy/custom annotation 不允许静默忽略；必须输出 class name、object count 和 gap category。
 - 恢复出的 proxy geometry/text 必须标记为 fallback，不得伪装成原生语义完成。
 - 黄色气泡 ordinal proxy 只能作为视觉 fallback；一旦解析出真实 FIELD/Mechanical label，必须优先用真实 label。proxy 编号不得成为 exact golden。
+- 当前 0.8.x 已能恢复 `ACMDATUMTARGET` 的 proxy leader/bubble 和 Drawing2 详图框 fallback，但真实两行气泡编号仍属于 FIELD/Mechanical custom payload gap。
 
 ## Scope
 
@@ -95,4 +96,4 @@ type: agent
 - DIMENSION 实体被正确 dispatch 且 `text` 字段非空。
 - `preview.html` 中能看到道路名称、建筑标注、尺寸标注等文字。
 - `Drawing2.dwg` 中 Detail A/B/C、Main Isometric View、Scale、机械说明、气泡编号和引线位置应接近 AutoCAD 预览。
-- `Drawing2.dwg` 的 Mechanical annotation diagnostics 能区分 native parsed、proxy fallback、deferred FIELD/ContextData。
+- `Drawing2.dwg` 当前应导出约 6 个 Mechanical detail/source crop frame proxies，并用 diagnostics 区分 native parsed、proxy fallback、deferred FIELD/ContextData。

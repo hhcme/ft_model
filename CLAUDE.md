@@ -138,7 +138,7 @@ python3 -m http.server 8080
 - LOD: arc/circle segment count varies with zoom level via LodSelector.
 - Robust fitView must use finite exported/viewable geometry with outlier-resistant sampling. Layout/Paper Space priority overrides raw model-space bounds.
 - Text rendering: Canvas `fillText()` with proper world-to-screen transform, Y-flip, rotation, width scaling.
-- MTEXT formatting codes: strip `\P` → newline, remove `{\...}` style codes, remove stray braces.
+- MTEXT formatting/rendering: preserve `rectWidth`/`rectHeight`, wrap rich text, and handle `\P`, inline color/height/underline/font family/bold/italic, stacked text fallback, `\U+XXXX`, and `%%c`/`%%d`/`%%p` CAD symbols.
 
 ## DWG Viewer Fidelity Rules
 
@@ -161,6 +161,7 @@ python3 -m http.server 8080
 - Proxy/custom objects must never be silently ignored. Recovered proxy geometry/text must be labeled as fallback and exported with diagnostics.
 - AutoCAD Mechanical objects are priority custom objects: `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, `ACMDETAIL*`, `ACMSECTION*`, `ACDBDETAILVIEWSTYLE`, `ACDBSECTIONVIEWSTYLE`, `FIELD`, `FIELDLIST`, `ACDB_MTEXTOBJECTCONTEXTDATA_CLASS`, and `AcDb:AcDsPrototype_*`.
 - Yellow bubble ordinal labels are visual fallback only. Native FIELD/Mechanical labels must replace them once decoded, and proxy labels must not become exact golden regression data.
+- Current 0.8.x Mechanical support includes proxy datum/callout leaders, yellow bubble circles/ordinal fallback, FIELD/FIELDLIST/ContextData diagnostics, and inferred detail/source crop frames for Drawing2-style files. Native two-line bubble labels remain a custom object semantic gap.
 - Keep WCS/UCS/OCS/DCS, Model Space, Paper Space, viewport scale, plot scale, INSUNITS, and annotation scale distinct.
 - Track fonts and annotation semantics: SHX, TrueType, bigfont, MTEXT formatting, DIMSTYLE, anonymous dimension blocks, Leader/MLeader, Balloon/Callout, FIELD/ContextData.
 - Track plot and external dependency gaps: CTB/STB, screening, draw order, wipeout/mask, xref, image/PDF/DGN/DWF underlay, OLE, missing fonts.
@@ -219,7 +220,7 @@ cd platforms/electron && npm run dev
 **缓存机制**：
 - IndexedDB（`cad-preview-cache`）存储解析后的 DrawData + 原始文件 Blob
 - localStorage 存储最近文件元数据（名称、大小、实体数、cacheKey），最多 10 条
-- CacheKey 格式：`${file.name}:${file.size}:${file.lastModified}`
+- CacheKey includes a schema prefix plus `${file.name}:${file.size}:${file.lastModified}`; bump `CACHE_SCHEMA_VERSION` whenever DrawData/rendering semantics change.
 - 页面刷新自动恢复上次打开的文件
 - 重新解析：从 IndexedDB 取出原始 Blob 重新发给 /parse，无需重新选文件
 - 从最近文件切换也会更新"上次打开"记录

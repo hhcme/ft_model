@@ -423,7 +423,8 @@ void DxfEntitiesReader::parse_mtext(DxfTokenizer& tokenizer, SceneGraph& scene) 
             case 3:  extra_text.append(gv.value); break;  // Additional text lines
             case 1:  data.text               = gv.value; break;  // Last portion
             case 50: data.rotation           = math::radians(gv.as_float()); break;
-            case 41: data.width_factor       = gv.as_float(); break;
+            case 41: data.rect_width         = gv.as_float(); break;
+            case 46: data.rect_height        = gv.as_float(); break;
             case 71: data.alignment          = gv.as_int(); break;
             case 8:  layer_name              = gv.value; break;
             default: read_entity_header_field(hdr, gv); break;

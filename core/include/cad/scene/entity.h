@@ -114,6 +114,8 @@ struct TextEntity {
     float height = 0.0f;
     float rotation = 0.0f;            // radians
     float width_factor = 1.0f;
+    float rect_width = 0.0f;          // MTEXT reference rectangle width, 0 when absent
+    float rect_height = 0.0f;         // MTEXT reference rectangle height, 0 when absent
     std::string text;
     int32_t text_style_index = 0;
     int32_t alignment = 0;            // 0=left, 1=center, 2=right, etc.

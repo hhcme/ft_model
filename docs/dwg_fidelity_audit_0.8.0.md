@@ -33,8 +33,8 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | Default view prioritizes Layout/Plot Window, drawing border, viewport content, model bounds, then raw bounds | Partial | `presentation_bounds()` and JSON `presentationBounds/views` exist. Missing full layout semantics still require finite-geometry fallback diagnostics. |
 | Layout Viewport clipping, scale, model content, per-viewport frozen layers | Partial | Data fields and JSON/frontend consumption exist. Native DWG viewport clip/scale/layer-freeze decoding remains incomplete. |
 | Drawing border/title block should drive sheet fitting when available | Partial | Presentation view support exists. Native paper-space border/title-block semantics and robust detection remain View gaps. |
-| Mechanical drawing visual acceptance includes border, views, dimensions, leaders, balloons, text readability | Partial | `Drawing2.dwg` is the visual sentinel. TEXT/MTEXT and proxy Mechanical annotations exist; native Mechanical/FIELD/AcDs semantics remain Custom object semantic gaps. |
-| AutoCAD Mechanical custom object handling | Partial | `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, detail-frame proxy, and `AcDsPrototype` diagnostics exist. Native labels, full FIELD/ContextData graph, and detail/section object semantics remain incomplete. |
+| Mechanical drawing visual acceptance includes border, views, dimensions, leaders, balloons, text readability | Partial | `Drawing2.dwg` is the visual sentinel. TEXT/MTEXT rich rendering, proxy Mechanical leaders/bubbles, and 6 inferred detail/source crop frame proxies exist. Native Mechanical/FIELD/AcDs semantics remain Custom object semantic gaps. |
+| AutoCAD Mechanical custom object handling | Partial | `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, FIELD/FIELDLIST/MTEXT context graph diagnostics, detail-frame proxy, and `AcDsPrototype` diagnostics exist. Native bubble labels, full FIELD/ContextData graph resolution, and detail/section object semantics remain incomplete. |
 | Yellow bubble ordinal proxy policy | Implemented | Ordinal labels are allowed only as visual fallback and are diagnosed as proxy semantics, not golden native labels. |
 | Layer/color semantics, TrueColor, ACI, ByLayer, ByBlock | Partial | TrueColor/ACI/ByLayer and some ByBlock propagation exist. Nested inheritance and plot-style effects need more fixtures. |
 | Linetype and lineweight | Partial | SceneGraph/JSON can carry linetype/lineweight; Canvas applies simple dash/width when available. DWG LTYPE mapping and complex linetypes are incomplete. |
@@ -42,7 +42,7 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | Wipeout/mask | Missing | Reported in diagnostics. No first-class Wipeout entity or mask pipeline exists yet. |
 | Hatch/fill appearance | Partial | Solid/polygonal hatch rendering exists. Pattern/gradient fidelity remains incomplete. |
 | Plot style / CTB / STB / screening | Deferred | Reported as Plot appearance gap. Full CTB/STB evaluation is outside current implementation. |
-| Text style, font, SHX/bigfont/TrueType | Partial | Text style indices and MTEXT formatting support exist. SHX/bigfont/font fallback diagnostics remain incomplete. |
+| Text style, font, SHX/bigfont/TrueType | Partial | Text style indices, MTEXT rect width/height, rich wrapping, inline color/height/underline/paragraph/font family/bold/italic, CAD symbols, and `\U+XXXX` display exist. SHX/bigfont/font fallback diagnostics remain incomplete. |
 | Dimension style, Leader/MLeader, annotation scale | Partial | Simplified dimensions and proxy leaders exist. DIMSTYLE, MLeader, balloon/callout native semantics remain incomplete. |
 | OCS/UCS/DCS/viewport coordinate semantics | Partial | Several entity OCS fixes exist. Full UCS/DCS/viewport twist/clip semantics remain incomplete. |
 | Xref/image/OLE/underlay external dependencies | Missing | Must be diagnosed as External dependency gaps when encountered. No full rendering path yet. |
@@ -71,7 +71,7 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | `test_data/insert_blocks.dxf` | DXF | Synthetic INSERT/block | Exact | Transform and block rendering baseline. |
 | `test_data/text_entities.dxf` | DXF | Synthetic text | Exact | TEXT/MTEXT export/render baseline. |
 | `test_dwg/big.dwg` | R2010/AC1024 | Large site/masterplan | Data + visual sentinel | Large-file parsing, abnormal entity filtering, finite bounds, lower-bound counts. |
-| `test_dwg/Drawing2.dwg` | Unknown until cataloged | Mechanical/Layout | Visual + diagnostics sentinel | Paper/layout, drawing border, Mechanical annotations, leaders, balloons, detail frames. |
+| `test_dwg/Drawing2.dwg` | Unknown until cataloged | Mechanical/Layout | Visual + diagnostics sentinel | Paper/layout, drawing border, Mechanical annotations, leaders, balloons, detail frames. Current 0.8.x data baseline: about 26,163 entities, 20 batches, 392,570 vertices, and 6 inferred detail-frame proxies. |
 | `test_dwg/zj-02-00-1.dwg` | Unknown | Unclassified | Catalog candidate | Record version/domain/diagnostics before making it a gate. |
 | `test_dwg/新块.dwg` | Unknown | Block/unclassified | Catalog candidate | Record version/domain/diagnostics before making it a gate. |
 

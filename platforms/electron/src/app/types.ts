@@ -24,11 +24,14 @@ export interface TextEntity {
   color: [number, number, number];
   layerName?: string;
   widthFactor?: number;
+  rectWidth?: number;
+  rectHeight?: number;
   space?: 'model' | 'paper' | 'unknown';
   layoutId?: number;
   viewportId?: number;
   styleName?: string;
   styleIndex?: number;
+  kind?: 'text' | 'mtext' | 'dimension';
   align?: number;
 }
 

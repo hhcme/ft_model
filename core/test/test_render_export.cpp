@@ -1084,6 +1084,8 @@ int main(int argc, char** argv) {
         float height;
         float rotation;
         float width_factor;
+        float rect_width = 0.0f;
+        float rect_height = 0.0f;
         std::string text;
         uint8_t r, g, b;
         int32_t layer_index;
@@ -1093,6 +1095,7 @@ int main(int argc, char** argv) {
         int32_t viewport_index = -1;
         int32_t style_index = -1;
         int32_t alignment = 0;
+        const char* kind = "text";
     };
     std::vector<TextEntry> text_entries;
 
@@ -1150,6 +1153,12 @@ int main(int argc, char** argv) {
                 entry.height = te->height;
                 entry.rotation = te->rotation;
                 entry.width_factor = (te->width_factor > 0.0f) ? te->width_factor : 1.0f;
+                entry.rect_width = (te->rect_width > 0.0f && std::isfinite(te->rect_width))
+                    ? te->rect_width
+                    : 0.0f;
+                entry.rect_height = (te->rect_height > 0.0f && std::isfinite(te->rect_height))
+                    ? te->rect_height
+                    : 0.0f;
                 entry.text = te->text;
                 entry.layer_index = entity.header.layer_index;
                 entry.space = entity.header.space;
@@ -1157,6 +1166,7 @@ int main(int argc, char** argv) {
                 entry.viewport_index = entity.header.viewport_index;
                 entry.style_index = te->text_style_index;
                 entry.alignment = te->alignment;
+                entry.kind = (entity.type() == EntityType::MText) ? "mtext" : "text";
 
                 // Resolve color
                 Color text_color;
@@ -1200,6 +1210,7 @@ int main(int argc, char** argv) {
                 entry.rotation = dim->rotation;
                 entry.width_factor = 1.0f;
                 entry.text = dim->text;
+                entry.kind = "dimension";
                 entry.layer_index = entity.header.layer_index;
                 entry.space = entity.header.space;
                 entry.layout_index = entity.header.layout_index;
@@ -1269,17 +1280,37 @@ int main(int argc, char** argv) {
             return static_cast<int32_t>((batch.sort_key.key >> 48) & 0xFFFF);
         };
 
-        size_t added = 0;
+        std::vector<const TextEntry*> detail_titles;
         for (const auto& text : text_entries) {
-            if (!is_detail_view_title(text.text)) continue;
+            if (is_detail_view_title(text.text) &&
+                std::isfinite(text.x) && std::isfinite(text.y)) {
+                detail_titles.push_back(&text);
+            }
+        }
+
+        size_t added = 0;
+        for (const auto* text_ptr : detail_titles) {
+            const auto& text = *text_ptr;
             if (!std::isfinite(text.x) || !std::isfinite(text.y)) continue;
 
-            std::vector<float> xs;
-            std::vector<float> ys;
-            size_t point_count = 0;
-            const float half_x = std::max(1200.0f, text.height * 34.0f);
-            const float min_y = text.y + std::max(80.0f, text.height * 1.5f);
-            const float max_y = text.y + std::max(1700.0f, text.height * 40.0f);
+            std::vector<std::pair<float, float>> candidate_points;
+            const float half_x = std::max(1700.0f, text.height * 42.0f);
+            const float min_y = text.y + std::max(60.0f, text.height * 1.2f);
+            const float max_y = text.y + std::max(1250.0f, text.height * 30.0f);
+            float left_partition = text.x - half_x;
+            float right_partition = text.x + half_x;
+            const float same_row_threshold = std::max(650.0f, text.height * 15.0f);
+            for (const TextEntry* other_ptr : detail_titles) {
+                if (other_ptr == text_ptr) continue;
+                const auto& other = *other_ptr;
+                if (std::abs(other.y - text.y) > same_row_threshold) continue;
+                const float divider = (other.x + text.x) * 0.5f;
+                if (other.x < text.x) {
+                    left_partition = std::max(left_partition, divider);
+                } else {
+                    right_partition = std::min(right_partition, divider);
+                }
+            }
 
             for (const auto& batch : batches) {
                 const int32_t li = batch_layer_index(batch);
@@ -1291,7 +1322,10 @@ int main(int argc, char** argv) {
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 }
                 if (layer_lower.find("symbol") != std::string::npos ||
-                    layer_lower.rfind("am_", 0) == 0) {
+                    layer_lower.find("leader") != std::string::npos ||
+                    layer_lower.find("note") != std::string::npos ||
+                    layer_lower.find("text") != std::string::npos ||
+                    layer_lower.find("dim") != std::string::npos) {
                     continue;
                 }
 
@@ -1301,14 +1335,67 @@ int main(int argc, char** argv) {
                     const float y = vd[i + 1];
                     if (!is_export_coord(x, y)) continue;
                     if (std::abs(x - text.x) > half_x) continue;
+                    if (x < left_partition || x > right_partition) continue;
                     if (y < min_y || y > max_y) continue;
-                    xs.push_back(x);
-                    ys.push_back(y);
-                    point_count++;
+                    candidate_points.push_back({x, y});
                 }
             }
 
-            if (point_count < 30 || xs.empty() || ys.empty()) continue;
+            if (candidate_points.size() < 30) continue;
+
+            // Native Mechanical detail-view metadata is still pending, so this
+            // fallback must avoid one large "near the title" box. Split nearby
+            // visible geometry into horizontal clusters and frame the cluster
+            // most associated with the Detail A/B/C title.
+            std::vector<float> sorted_xs;
+            sorted_xs.reserve(candidate_points.size());
+            for (const auto& point : candidate_points) sorted_xs.push_back(point.first);
+            std::sort(sorted_xs.begin(), sorted_xs.end());
+
+            struct XCluster {
+                float min_x = 0.0f;
+                float max_x = 0.0f;
+                size_t count = 0;
+            };
+            std::vector<XCluster> clusters;
+            const float cluster_gap = std::max(220.0f, text.height * 5.0f);
+            XCluster current{sorted_xs.front(), sorted_xs.front(), 0};
+            for (float x : sorted_xs) {
+                if (x - current.max_x > cluster_gap && current.count > 0) {
+                    clusters.push_back(current);
+                    current = XCluster{x, x, 0};
+                }
+                current.max_x = x;
+                current.count++;
+            }
+            if (current.count > 0) clusters.push_back(current);
+
+            bool has_cluster = false;
+            XCluster selected_cluster;
+            float best_score = 0.0f;
+            for (const XCluster& cluster : clusters) {
+                if (cluster.count < 30) continue;
+                const float center_x = (cluster.min_x + cluster.max_x) * 0.5f;
+                const float score = std::abs(center_x - text.x) -
+                                    static_cast<float>(std::min<size_t>(cluster.count, 500)) * 0.3f;
+                if (!has_cluster || score < best_score) {
+                    has_cluster = true;
+                    selected_cluster = cluster;
+                    best_score = score;
+                }
+            }
+            if (!has_cluster) continue;
+
+            std::vector<float> xs;
+            std::vector<float> ys;
+            for (const auto& point : candidate_points) {
+                if (point.first < selected_cluster.min_x || point.first > selected_cluster.max_x) {
+                    continue;
+                }
+                xs.push_back(point.first);
+                ys.push_back(point.second);
+            }
+            if (xs.size() < 30 || ys.size() < 30) continue;
             std::sort(xs.begin(), xs.end());
             std::sort(ys.begin(), ys.end());
             auto percentile = [](const std::vector<float>& values, float p) {
@@ -1320,15 +1407,15 @@ int main(int argc, char** argv) {
             };
 
             RenderBounds content;
-            content.expand(percentile(xs, 0.02f), percentile(ys, 0.02f));
-            content.expand(percentile(xs, 0.98f), percentile(ys, 0.98f));
+            content.expand(percentile(xs, 0.005f), percentile(ys, 0.005f));
+            content.expand(percentile(xs, 0.995f), percentile(ys, 0.995f));
             const float w = content.max_x - content.min_x;
             const float h = content.max_y - content.min_y;
             if (!std::isfinite(w) || !std::isfinite(h) || w < 250.0f || h < 180.0f) {
                 continue;
             }
 
-            const float pad = std::clamp(std::max(w, h) * 0.06f, 45.0f, 140.0f);
+            const float pad = std::clamp(std::max(w, h) * 0.055f, 45.0f, 140.0f);
             content = expand_bounds(content, 0.0f);
             content.min_x -= pad;
             content.max_x += pad;
@@ -1369,31 +1456,317 @@ int main(int argc, char** argv) {
             RenderBatch frame;
             frame.sort_key = RenderKey::make(
                 static_cast<uint16_t>(detail_layer_index),
-                static_cast<uint8_t>(PrimitiveTopology::LineStrip),
+                static_cast<uint8_t>(PrimitiveTopology::LineList),
                 0,
                 static_cast<uint8_t>(EntityType::Polyline),
                 0x00ffffu);
-            frame.topology = PrimitiveTopology::LineStrip;
+            frame.topology = PrimitiveTopology::LineList;
             frame.color = layers[static_cast<size_t>(detail_layer_index)].color;
             frame.line_width = std::max(0.07f, layers[static_cast<size_t>(detail_layer_index)].lineweight);
             frame.space = DrawingSpace::ModelSpace;
-            frame.entity_starts.push_back(0);
             frame.vertex_data = {
-                content.min_x, content.min_y,
-                content.max_x, content.min_y,
-                content.max_x, content.max_y,
-                content.min_x, content.max_y,
-                content.min_x, content.min_y,
+                content.min_x, content.min_y, content.max_x, content.min_y,
+                content.max_x, content.min_y, content.max_x, content.max_y,
+                content.max_x, content.max_y, content.min_x, content.max_y,
+                content.min_x, content.max_y, content.min_x, content.min_y,
             };
             batches.push_back(std::move(frame));
             added++;
+        }
+
+        auto is_boundary_marker = [&](const TextEntry& text) {
+            if (text.layer_index != detail_layer_index) return false;
+            std::string normalized = text.text;
+            normalized.erase(std::remove_if(normalized.begin(), normalized.end(),
+                                            [](unsigned char c) { return std::isspace(c); }),
+                             normalized.end());
+            if (normalized.empty() || normalized.size() > 2) return false;
+            for (char ch : normalized) {
+                if (!std::isalpha(static_cast<unsigned char>(ch))) return false;
+            }
+            return true;
+        };
+
+        auto overlaps_existing_detail_frame = [&](const RenderBounds& content) {
+            const float w = content.max_x - content.min_x;
+            const float h = content.max_y - content.min_y;
+            for (const auto& batch : batches) {
+                if (batch_layer_index(batch) != detail_layer_index) continue;
+                if (batch.topology != PrimitiveTopology::LineList ||
+                    batch.vertex_data.size() != 16) {
+                    continue;
+                }
+                const RenderBounds existing = batch_render_bounds(batch);
+                if (existing.empty) continue;
+                const float existing_w = existing.max_x - existing.min_x;
+                const float existing_h = existing.max_y - existing.min_y;
+                if (existing_w < 120.0f || existing_h < 80.0f) continue;
+                const float ix0 = std::max(existing.min_x, content.min_x);
+                const float iy0 = std::max(existing.min_y, content.min_y);
+                const float ix1 = std::min(existing.max_x, content.max_x);
+                const float iy1 = std::min(existing.max_y, content.max_y);
+                const float intersection =
+                    std::max(0.0f, ix1 - ix0) * std::max(0.0f, iy1 - iy0);
+                const float min_area = std::max(1.0f, std::min(existing_w * existing_h, w * h));
+                if (intersection / min_area > 0.45f) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        auto append_detail_frame = [&](const RenderBounds& content) {
+            RenderBatch frame;
+            frame.sort_key = RenderKey::make(
+                static_cast<uint16_t>(detail_layer_index),
+                static_cast<uint8_t>(PrimitiveTopology::LineList),
+                0,
+                static_cast<uint8_t>(EntityType::Polyline),
+                0x00ffffu);
+            frame.topology = PrimitiveTopology::LineList;
+            frame.color = layers[static_cast<size_t>(detail_layer_index)].color;
+            frame.line_width = std::max(0.07f, layers[static_cast<size_t>(detail_layer_index)].lineweight);
+            frame.space = DrawingSpace::ModelSpace;
+            frame.vertex_data = {
+                content.min_x, content.min_y, content.max_x, content.min_y,
+                content.max_x, content.min_y, content.max_x, content.max_y,
+                content.max_x, content.max_y, content.min_x, content.max_y,
+                content.min_x, content.max_y, content.min_x, content.min_y,
+            };
+            batches.push_back(std::move(frame));
+            added++;
+        };
+
+        for (const auto& marker : text_entries) {
+            if (!is_boundary_marker(marker) ||
+                !std::isfinite(marker.x) || !std::isfinite(marker.y)) {
+                continue;
+            }
+
+            std::vector<std::pair<float, float>> candidate_points;
+            const float half_x = std::max(1050.0f, marker.height * 17.0f);
+            const float min_y = marker.y - std::max(1550.0f, marker.height * 22.0f);
+            const float max_y = marker.y - std::max(45.0f, marker.height * 0.6f);
+
+            for (const auto& batch : batches) {
+                const int32_t li = batch_layer_index(batch);
+                if (li == detail_layer_index) continue;
+                std::string layer_lower;
+                if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
+                    layer_lower = layers[static_cast<size_t>(li)].name;
+                    std::transform(layer_lower.begin(), layer_lower.end(), layer_lower.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                }
+                if (layer_lower.find("symbol") != std::string::npos ||
+                    layer_lower.find("leader") != std::string::npos ||
+                    layer_lower.find("note") != std::string::npos ||
+                    layer_lower.find("text") != std::string::npos ||
+                    layer_lower.find("dim") != std::string::npos) {
+                    continue;
+                }
+
+                const auto& vd = batch.vertex_data;
+                for (size_t i = 0; i + 1 < vd.size(); i += 2) {
+                    const float x = vd[i];
+                    const float y = vd[i + 1];
+                    if (!is_export_coord(x, y)) continue;
+                    if (std::abs(x - marker.x) > half_x) continue;
+                    if (y < min_y || y > max_y) continue;
+                    candidate_points.push_back({x, y});
+                }
+            }
+            if (candidate_points.size() < 25) continue;
+
+            std::vector<float> sorted_xs;
+            sorted_xs.reserve(candidate_points.size());
+            for (const auto& point : candidate_points) sorted_xs.push_back(point.first);
+            std::sort(sorted_xs.begin(), sorted_xs.end());
+            struct MarkerCluster {
+                float min_x = 0.0f;
+                float max_x = 0.0f;
+                size_t count = 0;
+            };
+            std::vector<MarkerCluster> clusters;
+            const float cluster_gap = std::max(180.0f, marker.height * 3.2f);
+            MarkerCluster current{sorted_xs.front(), sorted_xs.front(), 0};
+            for (float x : sorted_xs) {
+                if (x - current.max_x > cluster_gap && current.count > 0) {
+                    clusters.push_back(current);
+                    current = MarkerCluster{x, x, 0};
+                }
+                current.max_x = x;
+                current.count++;
+            }
+            if (current.count > 0) clusters.push_back(current);
+
+            bool has_cluster = false;
+            MarkerCluster selected_cluster;
+            float best_score = 0.0f;
+            for (const MarkerCluster& cluster : clusters) {
+                if (cluster.count < 20) continue;
+                const float center_x = (cluster.min_x + cluster.max_x) * 0.5f;
+                const float score = std::abs(center_x - marker.x) -
+                                    static_cast<float>(std::min<size_t>(cluster.count, 420)) * 0.25f;
+                if (!has_cluster || score < best_score) {
+                    has_cluster = true;
+                    selected_cluster = cluster;
+                    best_score = score;
+                }
+            }
+            if (!has_cluster) continue;
+
+            std::vector<std::pair<float, float>> selected_points;
+            for (const auto& point : candidate_points) {
+                if (point.first < selected_cluster.min_x ||
+                    point.first > selected_cluster.max_x) {
+                    continue;
+                }
+                selected_points.push_back(point);
+            }
+            if (selected_points.size() < 25) continue;
+
+            struct MarkerYCluster {
+                float min_y = 0.0f;
+                float max_y = 0.0f;
+                size_t count = 0;
+            };
+            std::vector<float> sorted_ys_for_clusters;
+            sorted_ys_for_clusters.reserve(selected_points.size());
+            for (const auto& point : selected_points) {
+                sorted_ys_for_clusters.push_back(point.second);
+            }
+            std::sort(sorted_ys_for_clusters.begin(), sorted_ys_for_clusters.end());
+
+            std::vector<MarkerYCluster> y_clusters;
+            const float y_cluster_gap = std::max(180.0f, marker.height * 3.0f);
+            MarkerYCluster current_y{
+                sorted_ys_for_clusters.front(),
+                sorted_ys_for_clusters.front(),
+                0,
+            };
+            for (float y : sorted_ys_for_clusters) {
+                if (y - current_y.max_y > y_cluster_gap && current_y.count > 0) {
+                    y_clusters.push_back(current_y);
+                    current_y = MarkerYCluster{y, y, 0};
+                }
+                current_y.max_y = y;
+                current_y.count++;
+            }
+            if (current_y.count > 0) y_clusters.push_back(current_y);
+
+            bool has_y_cluster = false;
+            MarkerYCluster selected_y_cluster;
+            float best_y_score = 0.0f;
+            for (const MarkerYCluster& cluster : y_clusters) {
+                if (cluster.count < 18) continue;
+                const float vertical_gap = std::max(0.0f, marker.y - cluster.max_y);
+                const float cluster_h = cluster.max_y - cluster.min_y;
+                const float score =
+                    vertical_gap +
+                    cluster_h * 0.18f -
+                    static_cast<float>(std::min<size_t>(cluster.count, 260)) * 0.45f;
+                if (!has_y_cluster || score < best_y_score) {
+                    has_y_cluster = true;
+                    selected_y_cluster = cluster;
+                    best_y_score = score;
+                }
+            }
+            if (!has_y_cluster) continue;
+
+            std::vector<float> xs;
+            std::vector<float> ys;
+            for (const auto& point : selected_points) {
+                if (point.second < selected_y_cluster.min_y ||
+                    point.second > selected_y_cluster.max_y) {
+                    continue;
+                }
+                xs.push_back(point.first);
+                ys.push_back(point.second);
+            }
+            if (xs.size() < 25 || ys.size() < 25) continue;
+            std::sort(xs.begin(), xs.end());
+            std::sort(ys.begin(), ys.end());
+            auto percentile = [](const std::vector<float>& values, float p) {
+                if (values.empty()) return 0.0f;
+                const float clamped = std::clamp(p, 0.0f, 1.0f);
+                const size_t idx = static_cast<size_t>(
+                    std::floor(static_cast<float>(values.size() - 1) * clamped));
+                return values[idx];
+            };
+
+            const float local_frame_height = std::max(760.0f, marker.height * 12.0f);
+            const float selected_h = percentile(ys, 0.99f) - percentile(ys, 0.01f);
+            if (std::isfinite(selected_h) && selected_h > local_frame_height) {
+                const float upper_cut = percentile(ys, 0.99f) - local_frame_height;
+                std::vector<float> local_xs;
+                std::vector<float> local_ys;
+                for (const auto& point : selected_points) {
+                    if (point.first < selected_cluster.min_x ||
+                        point.first > selected_cluster.max_x ||
+                        point.second < upper_cut ||
+                        point.second < selected_y_cluster.min_y ||
+                        point.second > selected_y_cluster.max_y) {
+                        continue;
+                    }
+                    local_xs.push_back(point.first);
+                    local_ys.push_back(point.second);
+                }
+                if (local_xs.size() >= 20 && local_ys.size() >= 20) {
+                    xs = std::move(local_xs);
+                    ys = std::move(local_ys);
+                    std::sort(xs.begin(), xs.end());
+                    std::sort(ys.begin(), ys.end());
+                }
+            }
+
+            const float local_frame_width = std::max(1250.0f, marker.height * 18.0f);
+            const float selected_w = percentile(xs, 0.99f) - percentile(xs, 0.01f);
+            if (std::isfinite(selected_w) && selected_w > local_frame_width) {
+                const float left_cut = marker.x - local_frame_width * 0.5f;
+                const float right_cut = marker.x + local_frame_width * 0.5f;
+                const float y0 = percentile(ys, 0.005f);
+                const float y1 = percentile(ys, 0.995f);
+                std::vector<float> local_xs;
+                std::vector<float> local_ys;
+                for (const auto& point : selected_points) {
+                    if (point.first < left_cut || point.first > right_cut ||
+                        point.second < y0 || point.second > y1) {
+                        continue;
+                    }
+                    local_xs.push_back(point.first);
+                    local_ys.push_back(point.second);
+                }
+                if (local_xs.size() >= 20 && local_ys.size() >= 20) {
+                    xs = std::move(local_xs);
+                    ys = std::move(local_ys);
+                    std::sort(xs.begin(), xs.end());
+                    std::sort(ys.begin(), ys.end());
+                }
+            }
+
+            RenderBounds content;
+            content.expand(percentile(xs, 0.01f), percentile(ys, 0.01f));
+            content.expand(percentile(xs, 0.99f), percentile(ys, 0.99f));
+            const float w = content.max_x - content.min_x;
+            const float h = content.max_y - content.min_y;
+            if (!std::isfinite(w) || !std::isfinite(h) || w < 220.0f || h < 160.0f) {
+                continue;
+            }
+            const float pad = std::clamp(std::max(w, h) * 0.045f, 35.0f, 115.0f);
+            content.min_x -= pad;
+            content.max_x += pad;
+            content.min_y -= pad;
+            content.max_y += pad;
+
+            if (overlaps_existing_detail_frame(content)) continue;
+            append_detail_frame(content);
         }
 
         if (added > 0) {
             scene.add_diagnostic({
                 "mechanical_detail_view_frame_proxy",
                 "Render gap",
-                "Detail view boundary frames were inferred from DWG Mechanical detail titles and nearby visible geometry while native detail-view custom object semantics remain incomplete.",
+                "Detail view crop frame proxies were inferred from DWG Mechanical detail titles and nearby visible geometry while native detail-view custom object semantics remain incomplete.",
                 static_cast<int32_t>(std::min<size_t>(added, 2147483647u)),
             });
         }
@@ -1834,6 +2207,8 @@ int main(int argc, char** argv) {
             << ", \"height\": " << te.height
             << ", \"rotation\": " << te.rotation
             << ", \"widthFactor\": " << te.width_factor
+            << ", \"rectWidth\": " << te.rect_width
+            << ", \"rectHeight\": " << te.rect_height
             << ", \"text\": \"" << escape_json(te.text) << "\""
             << ", \"color\": [" << (int)te.r << "," << (int)te.g << "," << (int)te.b << "]"
             << ", \"layerIndex\": " << te.layer_index
@@ -1842,6 +2217,7 @@ int main(int argc, char** argv) {
             << ", \"layoutId\": " << te.layout_index
             << ", \"viewportId\": " << te.viewport_index
             << ", \"styleIndex\": " << te.style_index
+            << ", \"kind\": \"" << te.kind << "\""
             << ", \"align\": " << te.alignment << "}";
         if (ti + 1 < text_entries.size()) out << ",";
         out << "\n";

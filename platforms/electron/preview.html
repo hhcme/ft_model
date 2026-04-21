@@ -264,6 +264,284 @@ function screenToWorld(sx, sy) {
     return [wx, wy];
 }
 
+function aciColor(index) {
+    const table = {
+        1: [255, 0, 0],
+        2: [255, 255, 0],
+        3: [0, 255, 0],
+        4: [0, 255, 255],
+        5: [0, 0, 255],
+        6: [255, 0, 255],
+        7: [255, 255, 255],
+        8: [128, 128, 128],
+        9: [192, 192, 192],
+    };
+    return table[index];
+}
+
+function normalizeCadSymbols(text) {
+    return text
+        .replace(/%%c/gi, 'Ø')
+        .replace(/%%d/gi, '°')
+        .replace(/%%p/gi, '±')
+        .replace(/\\U\+([0-9a-fA-F]{4})/g, (_, hex) =>
+            String.fromCharCode(parseInt(hex, 16)));
+}
+
+function pushTextRun(lines, text, state) {
+    if (!text) return;
+    const parts = normalizeCadSymbols(text).split('\n');
+    for (let i = 0; i < parts.length; i++) {
+        const part = parts[i].replace(/^\s*[.·]\s*/, '');
+        if (part) {
+            lines[lines.length - 1].push({
+                text: part,
+                color: state.color,
+                underline: state.underline,
+                heightScale: state.heightScale,
+                fontFamily: state.fontFamily,
+                bold: state.bold,
+                italic: state.italic,
+            });
+        }
+        if (i + 1 < parts.length) lines.push([]);
+    }
+}
+
+function parseFontSpec(spec) {
+    const parts = String(spec || '').split('|');
+    const name = (parts[0] || '').trim().replace(/^['"]|['"]$/g, '');
+    const parsed = {};
+    if (!name || /[\\{};]/.test(name)) return parsed;
+    parsed.fontFamily = name;
+    for (const part of parts.slice(1)) {
+        const key = part.slice(0, 1).toLowerCase();
+        const value = part.slice(1);
+        if (key === 'b') parsed.bold = value === '1';
+        if (key === 'i') parsed.italic = value === '1';
+    }
+    return parsed;
+}
+
+function parseRichMText(raw) {
+    const lines = [[]];
+    const stack = [];
+    let state = { underline: false, heightScale: 1, color: null, fontFamily: null, bold: false, italic: false };
+    let buffer = '';
+    const flush = () => {
+        pushTextRun(lines, buffer, state);
+        buffer = '';
+    };
+
+    for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (ch === '{') {
+            flush();
+            stack.push({ ...state });
+            continue;
+        }
+        if (ch === '}') {
+            flush();
+            state = stack.pop() || { underline: false, heightScale: 1, color: null, fontFamily: null, bold: false, italic: false };
+            continue;
+        }
+        if (ch !== '\\') {
+            buffer += ch;
+            continue;
+        }
+
+        const code = raw[i + 1] || '';
+        if (code === 'P') {
+            flush();
+            lines.push([]);
+            i += 1;
+            continue;
+        }
+        if (raw.slice(i, i + 3).toLowerCase() === '\\pi') {
+            const end = raw.indexOf(';', i + 3);
+            if (end !== -1) {
+                flush();
+                const indent = parseFloat(raw.slice(i + 3, end));
+                if (Number.isFinite(indent)) {
+                    lines[lines.length - 1].indent = indent;
+                }
+                i = end;
+                continue;
+            }
+        }
+        if (code === 'L') {
+            flush();
+            state.underline = true;
+            i += 1;
+            continue;
+        }
+        if (code === 'l') {
+            flush();
+            state.underline = false;
+            i += 1;
+            continue;
+        }
+        if (code === 'C') {
+            const end = raw.indexOf(';', i + 2);
+            if (end !== -1) {
+                flush();
+                state.color = aciColor(parseInt(raw.slice(i + 2, end), 10)) || state.color;
+                i = end;
+                continue;
+            }
+        }
+        if (code === 'H') {
+            const end = raw.indexOf(';', i + 2);
+            if (end !== -1) {
+                flush();
+                const match = raw.slice(i + 2, end).match(/^-?\d+(?:\.\d+)?/);
+                if (match) {
+                    const scale = parseFloat(match[0]);
+                    if (Number.isFinite(scale) && scale > 0) state.heightScale = Math.max(0.12, Math.min(8, scale));
+                }
+                i = end;
+                continue;
+            }
+        }
+        if (code === 'f' || code === 'F') {
+            const end = raw.indexOf(';', i + 2);
+            if (end !== -1) {
+                flush();
+                state = { ...state, ...parseFontSpec(raw.slice(i + 2, end)) };
+                i = end;
+                continue;
+            }
+        }
+        if ('WQTAp'.includes(code)) {
+            const end = raw.indexOf(';', i + 2);
+            if (end !== -1) {
+                i = end;
+                continue;
+            }
+        }
+        if (code === 'S') {
+            const end = raw.indexOf(';', i + 2);
+            if (end !== -1) {
+                buffer += raw.slice(i + 2, end).replace(/[\\^#]/g, '/').replace(/\/+/g, '/');
+                i = end;
+                continue;
+            }
+        }
+        if (code === '~') {
+            buffer += ' ';
+            i += 1;
+            continue;
+        }
+        if (code) i += 1;
+    }
+    flush();
+
+    return lines
+        .map(line => {
+            const filtered = line.filter(run => run.text.trim().length > 0);
+            filtered.indent = line.indent;
+            return filtered;
+        })
+        .filter(line => line.length > 0);
+}
+
+function cleanMText(raw) {
+    return normalizeCadSymbols(raw)
+        .replace(/\\P/g, '\n')
+        .replace(/\\pi-?\d+(?:\.\d+)?;/gi, '')
+        .replace(/\\S([^;]*);/g, (_, value) => value.replace(/[\\^#]/g, '/'))
+        .replace(/\\[A-Za-z]+[^;\\{}]*;/g, '')
+        .replace(/\{\\f[^;{}]*;/gi, '{')
+        .replace(/\{\\[^}]*\}/g, '')
+        .replace(/[{}]/g, '')
+        .split('\n')
+        .map(line => line.replace(/^\s*[.·]\s*/, '').trim())
+        .filter(Boolean)
+        .join('\n');
+}
+
+function horizontalTextAlign(align) {
+    if ([2, 3, 6, 9].includes(align)) return 'right';
+    if ([1, 4, 5, 8].includes(align)) return 'center';
+    return 'left';
+}
+
+function mtextHorizontalAlign(align) {
+    if ([2, 5, 8].includes(align)) return 'center';
+    if ([3, 6, 9].includes(align)) return 'right';
+    return 'left';
+}
+
+function verticalTextBaseline(align) {
+    if ([1, 4, 5, 6].includes(align)) return 'middle';
+    return 'bottom';
+}
+
+function mtextVerticalOffset(align, totalHeight) {
+    if ([4, 5, 6].includes(align)) return -totalHeight * 0.5;
+    if ([7, 8, 9].includes(align)) return -totalHeight;
+    return 0;
+}
+
+function canvasTextFont(runHeight, fontFamily, bold, italic) {
+    const fallback = "-apple-system, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
+    const safeFamily = fontFamily ? String(fontFamily).replace(/['"\\;]/g, '').trim() : '';
+    const style = italic ? 'italic ' : '';
+    const weight = bold ? '700 ' : '';
+    return safeFamily
+        ? `${style}${weight}${runHeight}px '${safeFamily}', ${fallback}`
+        : `${style}${weight}${runHeight}px ${fallback}`;
+}
+
+function wrapRichTextLines(ctx, lines, maxWidth, baseHeight) {
+    if (!Number.isFinite(maxWidth) || maxWidth <= baseHeight * 2) return lines;
+    const wrapped = [];
+
+    const measure = (run, text) => {
+        const scale = Number.isFinite(run.heightScale)
+            ? Math.max(0.12, Math.min(8, run.heightScale || 1))
+            : 1;
+        const runHeight = Math.max(3, baseHeight * scale);
+        ctx.font = canvasTextFont(runHeight, run.fontFamily, run.bold, run.italic);
+        return { width: ctx.measureText(text).width, runHeight };
+    };
+
+    for (const line of lines) {
+        let current = [];
+        current.indent = line.indent;
+        let currentWidth = 0;
+        const indent = Number.isFinite(line.indent) ? Math.max(0, line.indent || 0) : 0;
+        const availableWidth = Math.max(baseHeight * 2, maxWidth - indent);
+        const pushCurrent = () => {
+            if (current.length > 0) {
+                wrapped.push(current);
+                current = [];
+                current.indent = line.indent;
+                currentWidth = 0;
+            }
+        };
+
+        for (const run of line) {
+            const tokens = run.text.split(/(\s+)/).filter(token => token.length > 0);
+            for (const token of tokens) {
+                const isSpace = /^\s+$/.test(token);
+                if (isSpace && current.length === 0) continue;
+                const { width, runHeight } = measure(run, token);
+                const gap = current.length > 0 ? runHeight * 0.02 : 0;
+                if (!isSpace && current.length > 0 && currentWidth + gap + width > availableWidth) {
+                    pushCurrent();
+                }
+                current.push({ ...run, text: token });
+                currentWidth += (currentWidth > 0 ? gap : 0) + width;
+            }
+        }
+        pushCurrent();
+        if (line.length === 0) wrapped.push([]);
+    }
+
+    return wrapped.length > 0 ? wrapped : lines;
+}
+
 // ============================================================
 // Fit view - find the densest cluster using vertex sampling
 // Uses percentile clipping (2%-98%) to ignore outlier coordinates common in CAD.
@@ -593,12 +871,16 @@ function renderFrame() {
             // Skip tiny text (less than 3 pixels)
             if (screenHeight < 3) continue;
 
-            // Strip MTEXT formatting codes: \P (newline), {\\...}, etc.
-            let cleanText = txt.text;
-            cleanText = cleanText.replace(/\\P/g, '\n');
-            cleanText = cleanText.replace(/\{\\[^}]*\}/g, '');
-            cleanText = cleanText.replace(/[{}]/g, '');
-            if (!cleanText) continue;
+            let richLines = parseRichMText(txt.text);
+            if (richLines.length === 0) {
+                const cleanText = cleanMText(txt.text);
+                richLines = cleanText
+                    .split('\n')
+                    .map(line => line.trim())
+                    .filter(Boolean)
+                    .map(line => [{ text: line, color: null, underline: false, heightScale: 1 }]);
+            }
+            if (richLines.length === 0) continue;
 
             const [r, g, b] = txt.color;
             let drawR = r, drawG = g, drawB = b;
@@ -609,25 +891,67 @@ function renderFrame() {
                 drawB = Math.max(b, 60);
             }
 
-            ctx.fillStyle = `rgb(${drawR},${drawG},${drawB})`;
-            ctx.font = `${screenHeight}px -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif`;
-            ctx.textBaseline = 'bottom';
-
+            ctx.save();
+            ctx.translate(sx, sy);
             if (txt.rotation !== 0) {
-                ctx.save();
-                ctx.translate(sx, sy);
                 // Negate rotation because screen Y is flipped
                 ctx.rotate(-txt.rotation);
-                ctx.scale(txt.widthFactor || 1, 1);
-                ctx.fillText(cleanText, 0, 0);
-                ctx.restore();
-            } else {
-                ctx.save();
-                ctx.translate(sx, sy);
-                ctx.scale(txt.widthFactor || 1, 1);
-                ctx.fillText(cleanText, 0, 0);
-                ctx.restore();
             }
+            ctx.scale(txt.widthFactor || 1, 1);
+            const isMText = txt.kind === 'mtext';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = isMText ? 'top' : verticalTextBaseline(txt.align);
+            if (isMText && Number.isFinite(txt.rectWidth) && txt.rectWidth > 0) {
+                richLines = wrapRichTextLines(ctx, richLines, txt.rectWidth * viewZoom, screenHeight);
+            }
+
+            const measuredLines = richLines.map(line => {
+                const measuredRuns = line
+                    .map(run => {
+                        const runText = run.text.trim();
+                        if (!runText) return null;
+                        const scale = Number.isFinite(run.heightScale) ? Math.max(0.12, Math.min(8, run.heightScale || 1)) : 1;
+                        const runHeight = Math.max(3, screenHeight * scale);
+                        ctx.font = canvasTextFont(runHeight, run.fontFamily, run.bold, run.italic);
+                        return { run, runText, runHeight, width: ctx.measureText(runText).width };
+                    })
+                    .filter(Boolean);
+                if (measuredRuns.length === 0) return null;
+                const lineHeight = Math.max(...measuredRuns.map(run => run.runHeight));
+                const lineWidth = measuredRuns.reduce((sum, run, idx) =>
+                    sum + run.width + (idx + 1 < measuredRuns.length ? run.runHeight * 0.08 : 0), 0);
+                return { measuredRuns, lineWidth, lineHeight: lineHeight * 1.15, indent: line.indent };
+            }).filter(Boolean);
+
+            const totalHeight = measuredLines.reduce((sum, line) => sum + line.lineHeight, 0);
+            const align = isMText ? mtextHorizontalAlign(txt.align) : horizontalTextAlign(txt.align);
+            let baselineY = isMText ? mtextVerticalOffset(txt.align, totalHeight) : 0;
+            for (const line of measuredLines) {
+                const indent = isMText && Number.isFinite(line.indent) ? line.indent * viewZoom : 0;
+                let x = align === 'center' ? -line.lineWidth * 0.5 : align === 'right' ? -line.lineWidth : 0;
+                x += indent;
+                for (let ri = 0; ri < line.measuredRuns.length; ri++) {
+                    const run = line.measuredRuns[ri];
+                    const color = run.run.color || [drawR, drawG, drawB];
+                    ctx.font = canvasTextFont(run.runHeight, run.run.fontFamily, run.run.bold, run.run.italic);
+                    ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+                    ctx.fillText(run.runText, x, baselineY);
+                    if (run.run.underline) {
+                        ctx.save();
+                        ctx.strokeStyle = ctx.fillStyle;
+                        ctx.lineWidth = Math.max(1, run.runHeight * 0.035);
+                        const underlineY = baselineY + (isMText ? run.runHeight * 0.92 : run.runHeight * 0.08);
+                        ctx.beginPath();
+                        ctx.moveTo(x, underlineY);
+                        ctx.lineTo(x + run.width, underlineY);
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+                    x += run.width + (ri + 1 < line.measuredRuns.length ? run.runHeight * 0.08 : 0);
+                }
+                baselineY += line.lineHeight;
+            }
+            ctx.restore();
         }
     }
 
