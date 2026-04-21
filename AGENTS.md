@@ -175,6 +175,12 @@ For each version family, document and verify: file header/AC code, section/page 
 
 DWG binary infrastructure belongs in the parser infrastructure layer. Entity parsers should consume correctly framed streams; they must not guess section, object, string, or handle boundaries.
 
+- 详细规范索引：
+  - 对象类型码和类映射：`docs/dwg_object_type_reference.md`
+  - 版本二进制差异（R2000→R2018）：`docs/dwg_version_deltas.md`
+  - Layout/字典/绘图对象布局：`docs/dwg_layout_objects.md`
+  - 外部依赖协议（Xref/IMAGE/WIPEOUT）：`docs/dwg_xref_external.md`
+  - 表对象字段规范和 Handle 协议：`.claude/agents/dwg-infra.md`
 - Header variables such as codepage, INSUNITS, LIMMIN/LIMMAX, EXTMIN/EXTMAX, and current model/layout hints must be preserved in SceneGraph metadata or exported diagnostics when available.
 - Section/page map parsing must validate boundaries, compressed size, decompressed size, and checksums/CRC when the version provides them.
 - Encrypted or compressed sections must be decoded centrally before entity parsing; entity parsers must not bypass infrastructure decoding.
