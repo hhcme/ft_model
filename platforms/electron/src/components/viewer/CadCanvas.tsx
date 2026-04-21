@@ -177,13 +177,15 @@ export default function CadCanvas({
       if (!drawData?.batches?.length) return;
 
       renderPaper(ctx, activeView, viewport);
-      renderBorder(ctx, activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds, viewport);
       const presentationBounds = activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds;
       const reliableSource = !activeView?.source || activeView.source === 'layout' ||
         activeView.source === 'vport' || activeView.source === 'paperSpaceFallback';
+      const outlierBounds = computeOutlierResistantBounds(drawData.batches, batchBounds);
+      const tightBounds = reliableSource ? presentationBounds : (outlierBounds ?? presentationBounds);
+      renderBorder(ctx, tightBounds, viewport);
       const artifactBounds = activeView?.source === 'vport' ? undefined
         : reliableSource ? presentationBounds
-        : computeOutlierResistantBounds(drawData.batches, batchBounds) ?? presentationBounds;
+        : outlierBounds ?? presentationBounds;
       withWorldClip(ctx, activeView?.clipBounds, viewport, () => {
         renderBatches(ctx, drawData.batches, batchBounds, viewport, layerVisible, activeView?.clipBounds, artifactBounds, paperMode);
 
