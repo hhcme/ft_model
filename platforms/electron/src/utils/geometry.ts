@@ -56,12 +56,19 @@ function pct(sorted: number[], p: number): number {
  */
 export function getPreferredViewBounds(drawData: DrawData): Bounds | undefined {
   const active = drawData.views?.find((v) => v.id === drawData.activeViewId);
-  const candidate = active?.presentationBounds ?? active?.bounds ??
-    drawData.presentationBounds ?? drawData.bounds;
-  if (candidate && !candidate.isEmpty &&
-      candidate.minX < candidate.maxX && candidate.minY < candidate.maxY &&
-      [candidate.minX, candidate.maxX, candidate.minY, candidate.maxY].every(Number.isFinite)) {
-    return candidate;
+  // For layout or viewport views with real presentation data, trust C++ bounds.
+  // For "finiteGeometryFallback" (raw model-space aggregation), prefer the
+  // front-end percentile fallback which handles asymmetric outliers better.
+  const isReliableSource = !active?.source || active.source === 'layout' ||
+    active.source === 'vport' || active.source === 'paperSpaceFallback';
+  if (isReliableSource) {
+    const candidate = active?.presentationBounds ?? active?.bounds ??
+      drawData.presentationBounds ?? drawData.bounds;
+    if (candidate && !candidate.isEmpty &&
+        candidate.minX < candidate.maxX && candidate.minY < candidate.maxY &&
+        [candidate.minX, candidate.maxX, candidate.minY, candidate.maxY].every(Number.isFinite)) {
+      return candidate;
+    }
   }
   return undefined;
 }

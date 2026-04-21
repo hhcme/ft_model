@@ -552,7 +552,7 @@ export function renderTexts(
         sum + run.width + (index + 1 < measuredRuns.length ? run.runHeight * 0.08 : 0), 0);
       // AutoCAD default line spacing factor is 1.167 (at least);
       // if rectHeight is available, derive per-line spacing from it.
-      const lineSpacing = (isMText && Number.isFinite(txt.rectHeight) && (txt.rectHeight ?? 0) > 0 && measuredLines)
+      const lineSpacing = (isMText && Number.isFinite(txt.rectHeight) && (txt.rectHeight ?? 0) > 0)
         ? 1.167
         : 1.15;
       const lineHeight = screenHeight * lineMaxScale * lineSpacing;

@@ -332,7 +332,7 @@ static bool is_abnormal_segment(float x0, float y0, float x1, float y1,
     const float diag = std::sqrt(w * w + h * h);
     if (!std::isfinite(diag) || diag <= 0.0f) return false;
 
-    const RenderBounds padded = expand_bounds(presentation, 0.08f);
+    const RenderBounds padded = expand_bounds(presentation, 0.12f);
     const bool intersects_presentation = segment_intersects_bounds(x0, y0, x1, y1, padded);
 
     const float dx = x1 - x0;
@@ -343,12 +343,12 @@ static bool is_abnormal_segment(float x0, float y0, float x1, float y1,
     const bool inside1 = point_in_bounds(x1, y1, padded);
     if (inside0 && inside1) return false;
     if (!intersects_presentation) {
-        return len > diag * 0.03f;
+        return len > diag * 0.05f;
     }
 
-    if (len > diag * 1.25f) return true;
-    if (len > diag * 0.45f) {
-        const RenderBounds far_pad = expand_bounds(presentation, 0.35f);
+    if (len > diag * 1.0f) return true;
+    if (len > diag * 0.5f) {
+        const RenderBounds far_pad = expand_bounds(presentation, 0.40f);
         return !point_in_bounds(x0, y0, far_pad) ||
                !point_in_bounds(x1, y1, far_pad);
     }
@@ -543,85 +543,49 @@ static RenderBounds adaptive_visible_bounds(const std::vector<BoundsPoint>& poin
         return values[idx];
     };
 
-    const float q01x = quantile(xs, 0.01f);
     const float q05x = quantile(xs, 0.05f);
-    const float q1x = quantile(xs, 0.25f);
-    const float q3x = quantile(xs, 0.75f);
+    const float q10x = quantile(xs, 0.10f);
+    const float q25x = quantile(xs, 0.25f);
+    const float q75x = quantile(xs, 0.75f);
+    const float q90x = quantile(xs, 0.90f);
     const float q95x = quantile(xs, 0.95f);
-    const float q99x = quantile(xs, 0.99f);
-    const float q01y = quantile(ys, 0.01f);
     const float q05y = quantile(ys, 0.05f);
-    const float q1y = quantile(ys, 0.25f);
-    const float q3y = quantile(ys, 0.75f);
+    const float q10y = quantile(ys, 0.10f);
+    const float q25y = quantile(ys, 0.25f);
+    const float q75y = quantile(ys, 0.75f);
+    const float q90y = quantile(ys, 0.90f);
     const float q95y = quantile(ys, 0.95f);
-    const float q99y = quantile(ys, 0.99f);
-    const float median_x = quantile(xs, 0.50f);
-    const float median_y = quantile(ys, 0.50f);
-    const float iqr_x = q3x - q1x;
-    const float iqr_y = q3y - q1y;
 
-    auto split_axis = [](float q05, float q1, float q3, float q95) {
-        const float iqr = q3 - q1;
-        if (!std::isfinite(iqr) || iqr <= 0.0f) return false;
-        const float threshold = std::max(iqr * 2.5f, 1.0f);
-        return (q1 - q05) > threshold || (q95 - q3) > threshold;
-    };
+    const float iqr_x = q75x - q25x;
+    const float iqr_y = q75y - q25y;
+    const float min_gap_x = std::max(iqr_x * 1.5f, 1.0f);
+    const float min_gap_y = std::max(iqr_y * 1.5f, 1.0f);
 
-    RenderBounds iqr_bounds;
-    if (std::isfinite(iqr_x) && iqr_x > 0.0f) {
-        iqr_bounds.expand(q1x - iqr_x * 0.1f, median_y);
-        iqr_bounds.expand(q3x + iqr_x * 0.1f, median_y);
-    } else {
-        iqr_bounds.expand(median_x - 0.5f, median_y);
-        iqr_bounds.expand(median_x + 0.5f, median_y);
-    }
-    if (std::isfinite(iqr_y) && iqr_y > 0.0f) {
-        iqr_bounds.expand(median_x, q1y - iqr_y * 0.1f);
-        iqr_bounds.expand(median_x, q3y + iqr_y * 0.1f);
-    } else {
-        iqr_bounds.expand(median_x, median_y - 0.5f);
-        iqr_bounds.expand(median_x, median_y + 0.5f);
-    }
+    // Adaptive expansion from IQR core, checking density gaps at each level.
+    float lo_x = q25x, hi_x = q75x;
+    float lo_y = q25y, hi_y = q75y;
 
-    RenderBounds broad_bounds;
-    const float broad_w = q99x - q01x;
-    const float broad_h = q99y - q01y;
-    if (std::isfinite(broad_w) && broad_w > 0.0f &&
-        std::isfinite(broad_h) && broad_h > 0.0f) {
-        broad_bounds.expand(q01x - broad_w * 0.02f, q01y - broad_h * 0.02f);
-        broad_bounds.expand(q99x + broad_w * 0.02f, q99y + broad_h * 0.02f);
-    }
-    if (broad_bounds.empty) return fallback;
+    if (q25x - q10x < min_gap_x) lo_x = q10x;
+    if (q90x - q75x < min_gap_x) hi_x = q90x;
+    if (q25y - q10y < min_gap_y) lo_y = q10y;
+    if (q90y - q75y < min_gap_y) hi_y = q90y;
 
-    const bool has_split_axis =
-        split_axis(q05x, q1x, q3x, q95x) ||
-        split_axis(q05y, q1y, q3y, q95y);
-    if (has_split_axis && !iqr_bounds.empty) {
-        const float iw = std::max(1.0f, iqr_bounds.max_x - iqr_bounds.min_x);
-        const float ih = std::max(1.0f, iqr_bounds.max_y - iqr_bounds.min_y);
-        const float bw = std::max(1.0f, broad_bounds.max_x - broad_bounds.min_x);
-        const float bh = std::max(1.0f, broad_bounds.max_y - broad_bounds.min_y);
-        const float broad_aspect = std::max(bw / bh, bh / bw);
-        const float area_ratio = (bw * bh) / std::max(1.0f, iw * ih);
-        // Multi-view mechanical drawings often have legitimate separated
-        // clusters inside one sheet. Keep the broad 1%-99% window when it is
-        // still sheet-shaped; use the IQR core only for extreme mixed extents
-        // such as model/paper coordinates several orders of magnitude apart.
-        if (broad_aspect > 20.0f || area_ratio > 20.0f) {
-            return iqr_bounds;
-        }
-    }
+    if (lo_x == q10x && q10x - q05x < min_gap_x) lo_x = q05x;
+    if (hi_x == q90x && q95x - q90x < min_gap_x) hi_x = q95x;
+    if (lo_y == q10y && q10y - q05y < min_gap_y) lo_y = q05y;
+    if (hi_y == q90y && q95y - q90y < min_gap_y) hi_y = q95y;
 
-    if (!fallback.empty) {
-        const float full_w = fallback.max_x - fallback.min_x;
-        const float full_h = fallback.max_y - fallback.min_y;
-        const float bw = broad_bounds.max_x - broad_bounds.min_x;
-        const float bh = broad_bounds.max_y - broad_bounds.min_y;
-        if (full_w <= bw * 1.5f && full_h <= bh * 1.5f) {
-            return fallback;
-        }
-    }
-    return broad_bounds;
+    const float range_x = (hi_x - lo_x) > 0 ? (hi_x - lo_x) : 1.0f;
+    const float range_y = (hi_y - lo_y) > 0 ? (hi_y - lo_y) : 1.0f;
+
+    RenderBounds result;
+    const float margin_x = range_x * 0.05f;
+    const float margin_y = range_y * 0.05f;
+    result.expand(lo_x - margin_x, lo_y - margin_y);
+    result.expand(hi_x + margin_x, hi_y + margin_y);
+
+    if (!result.empty) return result;
+    return fallback;
 }
 
 static RenderBounds bounds_for_entity_indices(
