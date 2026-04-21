@@ -126,10 +126,9 @@ function isArtifactSegment(
   const inside1 = pointInBounds(x1, y1, padded);
   if (inside0 && inside1) return false;
   if (!intersectsPresentation) {
-    // Both endpoints outside the padded presentation bounds and segment
-    // doesn't cross it. Only filter if the segment is significantly
-    // longer than the drawing extent (likely a flying line).
-    return len > diag * 0.05;
+    // Both endpoints outside the padded presentation bounds — always filter.
+    // These are scattered entities far from the main drawing area.
+    return true;
   }
 
   // One endpoint inside, one outside — typical flying-line pattern where
@@ -137,7 +136,7 @@ function isArtifactSegment(
   // Filter if the segment is much longer than the drawing diagonal.
   if (len > diag * 1.0) return true;
   if (len > diag * 0.5) {
-    const farPad = expandBounds(presentationBounds, 0.4);
+    const farPad = expandBounds(presentationBounds, 0.2);
     return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
   }
   return false;

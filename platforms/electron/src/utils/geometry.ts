@@ -142,14 +142,14 @@ export function computeOutlierResistantBounds(
   if (loY === q10y && q10y - q05y < minGapY) loY = q05y;
   if (hiY === q90y && q95y - q90y < minGapY) hiY = q95y;
 
-  // Expand by 50% on each side for artifact detection (needs wider than fitView)
+  // Expand by 20% on each side for artifact detection (wider than fitView margin)
   const rangeX = (hiX - loX) || 1;
   const rangeY = (hiY - loY) || 1;
   return {
-    minX: loX - rangeX * 0.5,
-    minY: loY - rangeY * 0.5,
-    maxX: hiX + rangeX * 0.5,
-    maxY: hiY + rangeY * 0.5,
+    minX: loX - rangeX * 0.2,
+    minY: loY - rangeY * 0.2,
+    maxX: hiX + rangeX * 0.2,
+    maxY: hiY + rangeY * 0.2,
     isEmpty: false,
   };
 }
