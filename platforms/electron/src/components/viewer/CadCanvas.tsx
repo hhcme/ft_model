@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
 import type { DrawData, Viewport, Measurement, MeasurePoint } from '../../app/types';
-import { computeBatchBounds } from '../../utils/geometry';
+import { computeBatchBounds, computeOutlierResistantBounds } from '../../utils/geometry';
 import {
   renderGrid,
   renderBatches,
@@ -179,7 +179,11 @@ export default function CadCanvas({
       renderPaper(ctx, activeView, viewport);
       renderBorder(ctx, activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds, viewport);
       const presentationBounds = activeView?.presentationBounds ?? drawData.presentationBounds ?? drawData.bounds;
-      const artifactBounds = activeView?.source === 'vport' ? undefined : presentationBounds;
+      const reliableSource = !activeView?.source || activeView.source === 'layout' ||
+        activeView.source === 'vport' || activeView.source === 'paperSpaceFallback';
+      const artifactBounds = activeView?.source === 'vport' ? undefined
+        : reliableSource ? presentationBounds
+        : computeOutlierResistantBounds(drawData.batches, batchBounds) ?? presentationBounds;
       withWorldClip(ctx, activeView?.clipBounds, viewport, () => {
         renderBatches(ctx, drawData.batches, batchBounds, viewport, layerVisible, activeView?.clipBounds, artifactBounds, paperMode);
 
