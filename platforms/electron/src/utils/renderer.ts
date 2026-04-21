@@ -219,7 +219,13 @@ function wrapRichTextLines(
     };
 
     for (const run of line) {
-      const tokens = run.text.split(/(\s+)/).filter((token) => token.length > 0);
+      // Split into tokens: whitespace-delimited for Latin, per-character for CJK.
+      // CJK Unified Ideographs: U+4E00–U+9FFF, CJK Extension A: U+3400–U+4DBF,
+      // fullwidth forms: U+FF00–U+FFEF, CJK punct: U+3000–U+303F.
+      const isCJK = /[㐀-鿿＀-￯　-〿]/.test(run.text);
+      const tokens = isCJK
+        ? run.text.split('').filter((t) => t.length > 0)
+        : run.text.split(/(\s+)/).filter((token) => token.length > 0);
       for (const token of tokens) {
         const isSpace = /^\s+$/.test(token);
         if (isSpace && current.length === 0) continue;
