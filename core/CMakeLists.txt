@@ -40,7 +40,10 @@ target_include_directories(cad_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(cad_core PUBLIC)
+# iconv for CJK string encoding conversion (GBK/Shift-JIS → UTF-8)
+if(APPLE)
+    target_link_libraries(cad_core PUBLIC iconv)
+endif()
 
 target_compile_definitions(cad_core
     PUBLIC

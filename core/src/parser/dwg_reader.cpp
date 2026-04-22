@@ -7,9 +7,76 @@
 #include <cstring>
 #include <limits>
 
+#ifdef __has_include
+#if __has_include(<iconv.h>)
+#include <iconv.h>
+#define HAS_ICONV 1
+#endif
+#endif
+
 namespace cad {
 
 namespace {
+
+#ifdef HAS_ICONV
+std::string convert_encoding(const std::string& raw, const char* from_encoding) {
+    if (raw.empty()) return raw;
+    // Quick check: if all ASCII, no conversion needed
+    bool has_high = false;
+    for (unsigned char c : raw) {
+        if (c >= 0x80) { has_high = true; break; }
+    }
+    if (!has_high) return raw;
+
+    iconv_t cd = iconv_open("UTF-8", from_encoding);
+    if (cd == (iconv_t)-1) return raw;
+
+    char* in_buf = const_cast<char*>(raw.data());
+    size_t in_left = raw.size();
+    std::string out;
+    out.reserve(raw.size() * 2);
+    char out_buf[256];
+    while (in_left > 0) {
+        char* out_ptr = out_buf;
+        size_t out_left = sizeof(out_buf);
+        size_t rc = iconv(cd, &in_buf, &in_left, &out_ptr, &out_left);
+        out.append(out_buf, out_ptr - out_buf);
+        if (rc == (size_t)-1 && errno != E2BIG) break;
+    }
+    iconv_close(cd);
+    return out;
+}
+#endif
+
+// Convert a raw byte string that may contain CJK (GBK) characters to UTF-8.
+// Falls back to Latin-1→UTF-8 conversion if iconv is not available.
+std::string tv_to_utf8(const std::string& raw) {
+    if (raw.empty()) return raw;
+#ifdef HAS_ICONV
+    // Detect if string has GBK double-byte sequences
+    bool looks_like_gbk = false;
+    for (size_t i = 0; i + 1 < raw.size(); ++i) {
+        uint8_t b = static_cast<uint8_t>(raw[i]);
+        uint8_t b2 = static_cast<uint8_t>(raw[i + 1]);
+        if (b >= 0x81 && b <= 0xFE && b2 >= 0x40 && b2 <= 0xFE) {
+            looks_like_gbk = true;
+            break;
+        }
+    }
+    if (looks_like_gbk) {
+        return convert_encoding(raw, "GBK");
+    }
+    // Check for Latin-1 high bytes
+    bool has_high = false;
+    for (unsigned char c : raw) {
+        if (c >= 0x80) { has_high = true; break; }
+    }
+    if (has_high) {
+        return convert_encoding(raw, "ISO-8859-1");
+    }
+#endif
+    return raw;
+}
 
 bool dwg_debug_enabled()
 {
@@ -433,7 +500,7 @@ std::string DwgBitReader::read_tv()
         }
     }
 
-    return result;
+    return tv_to_utf8(result);
 }
 
 std::string DwgBitReader::read_tu()
