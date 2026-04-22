@@ -658,6 +658,31 @@ function isVisibleInViewport(bb, vp) {
              bb.maxY < vp.minY || bb.minY > vp.maxY);
 }
 
+function textApproxBounds(txt) {
+    const height = Number.isFinite(txt.height) && txt.height > 0 ? txt.height : 1;
+    const widthFactor = Number.isFinite(txt.widthFactor) && txt.widthFactor > 0 ? txt.widthFactor : 1;
+    const plain = String(txt.text || '')
+        .replace(/\\P/g, '\n')
+        .replace(/\\[A-Za-z]+[^;\\{}]*;/g, '')
+        .replace(/[{}]/g, '');
+    const lines = plain.split('\n');
+    const maxChars = Math.max(1, ...lines.map(line => line.trim().length));
+    const lineCount = Math.max(1, lines.length);
+    const width = Number.isFinite(txt.rectWidth) && txt.rectWidth > 0
+        ? txt.rectWidth
+        : maxChars * height * widthFactor * 0.65;
+    const blockHeight = Number.isFinite(txt.rectHeight) && txt.rectHeight > 0
+        ? txt.rectHeight
+        : lineCount * height * 1.2;
+    const pad = height * 0.5;
+    return {
+        minX: txt.x - pad,
+        maxX: txt.x + Math.max(width, height) + pad,
+        minY: txt.y - blockHeight - pad,
+        maxY: txt.y + height + pad,
+    };
+}
+
 // ============================================================
 // Grid drawing
 // ============================================================
@@ -859,17 +884,28 @@ function renderFrame() {
 
     // Render text entities
     if (drawData.texts && drawData.texts.length > 0) {
+        const textVp = getViewportWorldBounds();
         for (const txt of drawData.texts) {
             // Layer visibility check
             if (txt.layerName && layerVisibleMap.has(txt.layerName) && !layerVisibleMap.get(txt.layerName)) continue;
 
+            const approxBounds = textApproxBounds(txt);
+            if (!isVisibleInViewport(approxBounds, textVp)) continue;
+
             const [sx, sy] = worldToScreen(txt.x, txt.y);
             // Skip if off-screen
-            if (sx < -500 || sx > canvas.width + 500 || sy < -500 || sy > canvas.height + 500) continue;
+            const screenPad = Math.max(500, Math.max(
+                approxBounds.maxX - approxBounds.minX,
+                approxBounds.maxY - approxBounds.minY,
+            ) * viewZoom);
+            if (sx < -screenPad || sx > canvas.width + screenPad ||
+                sy < -screenPad || sy > canvas.height + screenPad) continue;
 
             const screenHeight = txt.height * viewZoom;
-            // Skip tiny text (less than 3 pixels)
-            if (screenHeight < 3) continue;
+            // CAD overview sheets contain meaningful labels that can project
+            // to only 1-2 screen pixels at fit zoom. Keep them and render with
+            // the minimum Canvas font below; skip only sub-pixel noise.
+            if (screenHeight < 0.35) continue;
 
             let richLines = parseRichMText(txt.text);
             if (richLines.length === 0) {
@@ -1215,8 +1251,8 @@ function buildLayerPanel() {
         const name = layer.name;
         layerMetaMap.set(name, layer);
 
-        // Default: frozen layers hidden, all others visible
-        const visible = !layer.frozen;
+        // Default: frozen/off layers hidden, all others visible
+        const visible = !layer.frozen && !layer.off;
         layerVisibleMap.set(name, visible);
 
         addLayerRow(layer, visible);

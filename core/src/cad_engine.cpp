@@ -189,7 +189,7 @@ std::vector<LayerInfo> CadEngine::get_layers() const {
         LayerInfo info;
         info.name = layer.name;
         info.color = layer.color;
-        info.is_visible = !layer.is_off;
+        info.is_visible = !layer.is_off && !layer.is_frozen;
         info.is_frozen = layer.is_frozen;
         info.is_locked = layer.is_locked;
 

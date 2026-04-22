@@ -55,6 +55,498 @@ bool contains_ascii_ci(const std::string& text, const char* needle)
     return uppercase_ascii(text).find(uppercase_ascii(needle ? needle : "")) != std::string::npos;
 }
 
+uint64_t read_u64_le(const uint8_t* data)
+{
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value |= static_cast<uint64_t>(data[i]) << (i * 8);
+    }
+    return value;
+}
+
+int64_t read_i64_le(const uint8_t* data)
+{
+    return static_cast<int64_t>(read_u64_le(data));
+}
+
+const char* version_family_name(DwgVersion version)
+{
+    switch (version) {
+        case DwgVersion::R2000: return "R2000/AC1015";
+        case DwgVersion::R2004: return "R2004/AC1018";
+        case DwgVersion::R2007: return "R2007/AC1021";
+        case DwgVersion::R2010: return "R2010/AC1024";
+        case DwgVersion::R2013: return "R2013/AC1027";
+        case DwgVersion::R2018: return "R2018+/AC1032";
+        default: return "Unknown";
+    }
+}
+
+struct R2007HeaderData {
+    uint64_t header_size = 0;
+    uint64_t file_size = 0;
+    uint64_t pages_map_correction_factor = 0;
+    uint64_t pages_map_offset = 0;
+    uint64_t pages_map_id = 0;
+    uint64_t pages_map_size_compressed = 0;
+    uint64_t pages_map_size_uncompressed = 0;
+    uint64_t pages_amount = 0;
+    uint64_t pages_max_id = 0;
+    uint64_t sections_amount = 0;
+    uint64_t sections_map_size_compressed = 0;
+    uint64_t sections_map_id = 0;
+    uint64_t sections_map_size_uncompressed = 0;
+    uint64_t sections_map_correction_factor = 0;
+    uint64_t stream_version = 0;
+};
+
+struct R2007PageRecord {
+    int64_t id = 0;
+    uint64_t size = 0;
+    uint64_t offset = 0;
+};
+
+struct R2007SectionRecord {
+    uint64_t data_size = 0;
+    uint64_t max_size = 0;
+    uint64_t encryption = 0;
+    uint64_t hash_code = 0;
+    uint64_t encoding = 0;
+    uint64_t num_pages = 0;
+    std::string name;
+
+    struct Page {
+        uint64_t data_offset = 0;
+        uint64_t page_size = 0;
+        int64_t page_id = 0;
+        uint64_t uncompressed_size = 0;
+        uint64_t compressed_size = 0;
+        uint64_t checksum = 0;
+        uint64_t crc = 0;
+    };
+    std::vector<Page> pages;
+};
+
+// R21 literal copy helpers — match libredwg copy_bytes_2/copy_bytes_3/copy_16
+// These perform byte-reversal for 2-byte and 3-byte copies, and 8-byte-half
+// swap for 16-byte copies, exactly as libredwg's decode_r2007.c does.
+static inline void r21_copy_1(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    *dst++ = *(src + offset);
+}
+static inline void r21_copy_2(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    dst[0] = *(src + offset + 1);
+    dst[1] = *(src + offset);
+    dst += 2;
+}
+static inline void r21_copy_3(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    dst[0] = *(src + offset + 2);
+    dst[1] = *(src + offset + 1);
+    dst[2] = *(src + offset);
+    dst += 3;
+}
+static inline void r21_copy_4(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    std::memcpy(dst, src + offset, 4);
+    dst += 4;
+}
+static inline void r21_copy_8(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    std::memcpy(dst, src + offset, 8);
+    dst += 8;
+}
+static inline void r21_copy_16(uint8_t*& dst, const uint8_t* src, int offset)
+{
+    std::memcpy(dst, src + offset + 8, 8);
+    std::memcpy(dst + 8, src + offset, 8);
+    dst += 16;
+}
+
+// Copy literal bytes from src to dst, matching libredwg copy_compressed_bytes.
+// length must be 1..32.  dst is advanced by length.
+static void r21_copy_compressed_bytes(uint8_t*& dst, const uint8_t* src, int length)
+{
+    while (length >= 32) {
+        r21_copy_16(dst, src, 16);
+        r21_copy_16(dst, src, 0);
+        src += 32;
+        length -= 32;
+    }
+    switch (length) {
+        case 0: break;
+        case 1: r21_copy_1(dst, src, 0); break;
+        case 2: r21_copy_2(dst, src, 0); break;
+        case 3: r21_copy_3(dst, src, 0); break;
+        case 4: r21_copy_4(dst, src, 0); break;
+        case 5: r21_copy_1(dst, src, 4); r21_copy_4(dst, src, 0); break;
+        case 6: r21_copy_1(dst, src, 5); r21_copy_4(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 7: r21_copy_2(dst, src, 5); r21_copy_4(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 8: r21_copy_8(dst, src, 0); break;
+        case 9: r21_copy_1(dst, src, 8); r21_copy_8(dst, src, 0); break;
+        case 10: r21_copy_1(dst, src, 9); r21_copy_8(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 11: r21_copy_2(dst, src, 9); r21_copy_8(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 12: r21_copy_4(dst, src, 8); r21_copy_8(dst, src, 0); break;
+        case 13: r21_copy_1(dst, src, 12); r21_copy_4(dst, src, 8); r21_copy_8(dst, src, 0); break;
+        case 14: r21_copy_1(dst, src, 13); r21_copy_4(dst, src, 9); r21_copy_8(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 15: r21_copy_2(dst, src, 13); r21_copy_4(dst, src, 9); r21_copy_8(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 16: r21_copy_16(dst, src, 0); break;
+        case 17: r21_copy_8(dst, src, 9); r21_copy_1(dst, src, 8); r21_copy_8(dst, src, 0); break;
+        case 18: r21_copy_1(dst, src, 17); r21_copy_16(dst, src, 1); r21_copy_1(dst, src, 0); break;
+        case 19: r21_copy_3(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 20: r21_copy_4(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 21: r21_copy_1(dst, src, 20); r21_copy_4(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 22: r21_copy_2(dst, src, 20); r21_copy_4(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 23: r21_copy_3(dst, src, 20); r21_copy_4(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 24: r21_copy_8(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 25: r21_copy_8(dst, src, 17); r21_copy_1(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 26: r21_copy_1(dst, src, 25); r21_copy_8(dst, src, 17); r21_copy_1(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 27: r21_copy_2(dst, src, 25); r21_copy_8(dst, src, 17); r21_copy_1(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 28: r21_copy_4(dst, src, 24); r21_copy_8(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 29: r21_copy_1(dst, src, 28); r21_copy_4(dst, src, 24); r21_copy_8(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 30: r21_copy_2(dst, src, 28); r21_copy_4(dst, src, 24); r21_copy_8(dst, src, 16); r21_copy_16(dst, src, 0); break;
+        case 31: r21_copy_1(dst, src, 30); r21_copy_4(dst, src, 26); r21_copy_8(dst, src, 18); r21_copy_16(dst, src, 2); r21_copy_2(dst, src, 0); break;
+        default: break; // length >= 32 handled by while loop
+    }
+}
+
+std::vector<uint8_t> r21_decompress(const uint8_t* src, size_t src_size, size_t out_size)
+{
+    std::vector<uint8_t> out;
+    if (!src || src_size == 0 || out_size == 0) return out;
+    out.reserve(out_size);
+
+    size_t i = 0;
+    auto read = [&]() -> uint8_t {
+        return i < src_size ? src[i++] : 0;
+    };
+    auto read_literal_length = [&](uint8_t op) {
+        size_t length = static_cast<size_t>(op) + 8;
+        if (length == 0x17) {
+            uint32_t n = read();
+            length += n;
+            if (n == 0xff) {
+                do {
+                    if (i + 1 >= src_size) break;
+                    n = static_cast<uint32_t>(src[i]) |
+                        (static_cast<uint32_t>(src[i + 1]) << 8);
+                    i += 2;
+                    length += n;
+                } while (n == 0xffff);
+            }
+        }
+        return length;
+    };
+    auto copy_literal = [&](size_t length) {
+        while (length >= 32 && i + 32 <= src_size && out.size() + 32 <= out_size) {
+            const size_t old_size = out.size();
+            out.resize(old_size + 32);
+            uint8_t* dst_ptr = out.data() + old_size;
+            r21_copy_compressed_bytes(dst_ptr, src + i, 32);
+            i += 32;
+            length -= 32;
+        }
+        if (length > 0 && length < 32 && i + length <= src_size && out.size() + length <= out_size) {
+            const size_t old_size = out.size();
+            out.resize(old_size + length);
+            uint8_t* dst_ptr = out.data() + old_size;
+            r21_copy_compressed_bytes(dst_ptr, src + i, static_cast<int>(length));
+            i += length;
+        } else if (length > 0) {
+            i = std::min(src_size, i + length);
+        }
+    };
+    auto read_instructions = [&](uint8_t& op, uint32_t& source_offset, uint32_t& length) {
+        switch (op >> 4) {
+            case 0:
+                length = (op & 0x0f) + 0x13;
+                source_offset = read();
+                op = read();
+                length = ((op >> 3) & 0x10) + length;
+                source_offset = ((op & 0x78) << 5) + 1 + source_offset;
+                break;
+            case 1:
+                length = (op & 0x0f) + 3;
+                source_offset = read();
+                op = read();
+                source_offset = ((op & 0xf8) << 5) + 1 + source_offset;
+                break;
+            case 2:
+                source_offset = read();
+                source_offset |= static_cast<uint32_t>(read()) << 8;
+                length = op & 7;
+                if ((op & 8) == 0) {
+                    op = read();
+                    length = (op & 0xf8) + length;
+                } else {
+                    source_offset++;
+                    length = (static_cast<uint32_t>(read()) << 3) + length;
+                    op = read();
+                    length = (((op & 0xf8) << 8) + length) + 0x100;
+                }
+                break;
+            default:
+                length = op >> 4;
+                source_offset = op & 15;
+                op = read();
+                source_offset = (((op & 0xf8) << 1) + source_offset) + 1;
+                break;
+        }
+    };
+    auto copy_backref = [&](uint32_t source_offset, uint32_t length) {
+        for (uint32_t n = 0; n < length && out.size() < out_size; ++n) {
+            if (source_offset == 0 || source_offset > out.size()) {
+                out.push_back(0);
+            } else {
+                out.push_back(out[out.size() - source_offset]);
+            }
+        }
+    };
+
+    uint8_t op = read();
+    size_t literal_length = 0;
+    if ((op >> 4) == 2 && i + 2 < src_size) {
+        i += 2;
+        literal_length = read() & 7;
+    }
+
+    while (i < src_size && out.size() < out_size) {
+        if (literal_length == 0) {
+            literal_length = read_literal_length(op);
+        }
+        copy_literal(literal_length);
+        literal_length = 0;
+        if (i >= src_size || out.size() >= out_size) break;
+
+        op = read();
+        uint32_t source_offset = 0;
+        uint32_t length = 0;
+        read_instructions(op, source_offset, length);
+        while (true) {
+            copy_backref(source_offset, length);
+            if (out.size() >= out_size) break;
+            literal_length = op & 7;
+            if (literal_length != 0 || i >= src_size) break;
+            op = read();
+            if ((op >> 4) == 0) break;
+            if ((op >> 4) == 15) op &= 15;
+            read_instructions(op, source_offset, length);
+        }
+    }
+
+    if (out.size() < out_size) out.resize(out_size, 0);
+    return out;
+}
+
+std::vector<uint8_t> r2007_take_system_data_no_correction(const uint8_t* encoded,
+                                                          size_t encoded_size,
+                                                          size_t factor,
+                                                          size_t data_bytes_per_block)
+{
+    std::vector<uint8_t> decoded;
+    if (!encoded || factor == 0 || data_bytes_per_block == 0) return decoded;
+    decoded.reserve(factor * data_bytes_per_block);
+    for (size_t block = 0; block < factor; ++block) {
+        std::vector<uint8_t> codeword;
+        codeword.reserve(255);
+        for (size_t i = 0; i < 255; ++i) {
+            const size_t source = factor * i + block;
+            if (source >= encoded_size) break;
+            codeword.push_back(encoded[source]);
+        }
+        const size_t take = std::min(data_bytes_per_block, codeword.size());
+        decoded.insert(decoded.end(), codeword.begin(), codeword.begin() + static_cast<std::ptrdiff_t>(take));
+    }
+    return decoded;
+}
+
+size_t align_up(size_t value, size_t alignment)
+{
+    if (alignment == 0) return value;
+    return ((value + alignment - 1) / alignment) * alignment;
+}
+
+size_t r2007_system_page_size(size_t uncompressed_size)
+{
+    if (uncompressed_size == 0) return 0x400;
+    const size_t blocks = (uncompressed_size * 2 + 238) / 239;
+    return std::max<size_t>(0x400, align_up(blocks * 255, 0x20));
+}
+
+std::vector<uint8_t> r2007_decode_system_page_no_correction(const uint8_t* encoded,
+                                                            size_t available_size,
+                                                            size_t compressed_size,
+                                                            size_t uncompressed_size,
+                                                            size_t correction_factor)
+{
+    if (!encoded || compressed_size == 0 || uncompressed_size == 0) return {};
+
+    const size_t page_size =
+        std::min(available_size, r2007_system_page_size(uncompressed_size));
+    if (page_size == 0) return {};
+
+    size_t interleave_blocks = page_size / 255;
+    if (correction_factor > 0) {
+        const size_t pre_rs_bytes = align_up(compressed_size, 8) * correction_factor;
+        interleave_blocks = std::max<size_t>(1, (pre_rs_bytes + 238) / 239);
+        if (interleave_blocks * 255 > page_size) {
+            interleave_blocks = std::max<size_t>(1, page_size / 255);
+        }
+    }
+
+    auto system_data = r2007_take_system_data_no_correction(
+        encoded, page_size, interleave_blocks, 239);
+    if (system_data.size() < compressed_size) return {};
+
+    return r21_decompress(system_data.data(), compressed_size, uncompressed_size);
+}
+
+std::vector<uint8_t> r2007_decode_data_page_no_correction(const uint8_t* encoded,
+                                                          size_t encoded_size,
+                                                          size_t compressed_size,
+                                                          size_t uncompressed_size,
+                                                          uint64_t section_encoding,
+                                                          bool force_non_interleaved,
+                                                          size_t compressed_prefix_skip = 0)
+{
+    if (!encoded || encoded_size == 0 || compressed_size == 0 || uncompressed_size == 0) {
+        return {};
+    }
+
+    std::vector<uint8_t> page_data;
+    const size_t block_count = encoded_size / 255;
+    if (section_encoding == 4 && block_count > 0 && !force_non_interleaved) {
+        page_data = r2007_take_system_data_no_correction(encoded, encoded_size, block_count, 251);
+    } else {
+        const size_t data_bytes = block_count > 0
+            ? std::min(encoded_size, block_count * 251)
+            : encoded_size;
+        page_data.assign(encoded, encoded + static_cast<std::ptrdiff_t>(data_bytes));
+    }
+
+    if (page_data.size() < compressed_size || compressed_prefix_skip >= compressed_size) {
+        return {};
+    }
+    if (compressed_size >= uncompressed_size) {
+        if (compressed_prefix_skip >= uncompressed_size) return {};
+        return std::vector<uint8_t>(
+            page_data.begin() + static_cast<std::ptrdiff_t>(compressed_prefix_skip),
+            page_data.begin() + static_cast<std::ptrdiff_t>(uncompressed_size));
+    }
+    return r21_decompress(page_data.data() + compressed_prefix_skip,
+                          compressed_size - compressed_prefix_skip,
+                          uncompressed_size);
+}
+
+bool r2007_classes_page_plausible(const std::vector<uint8_t>& data)
+{
+    static constexpr uint8_t kClassesSentinel[] = {
+        0x8D, 0xA1, 0xC4, 0xB8, 0xC4, 0xA9, 0xF8, 0xC5,
+        0xC0, 0xDC, 0xF4, 0x5F, 0xE7, 0xCF, 0xB6, 0x8A,
+    };
+    return data.size() >= sizeof(kClassesSentinel) &&
+           std::equal(std::begin(kClassesSentinel),
+                      std::end(kClassesSentinel),
+                      data.begin());
+}
+
+bool r2007_classes_page_has_split_initial_literal(const std::vector<uint8_t>& data)
+{
+    static constexpr uint8_t kClassesSentinel[] = {
+        0x8D, 0xA1, 0xC4, 0xB8, 0xC4, 0xA9, 0xF8, 0xC5,
+        0xC0, 0xDC, 0xF4, 0x5F, 0xE7, 0xCF, 0xB6, 0x8A,
+    };
+    return data.size() >= sizeof(kClassesSentinel) &&
+           std::equal(std::begin(kClassesSentinel) + 8,
+                      std::end(kClassesSentinel),
+                      data.begin()) &&
+           std::equal(std::begin(kClassesSentinel),
+                      std::begin(kClassesSentinel) + 8,
+                      data.begin() + 8);
+}
+
+void r2007_repair_split_classes_literal(std::vector<uint8_t>& data)
+{
+    if (!r2007_classes_page_has_split_initial_literal(data)) return;
+    std::rotate(data.begin(), data.begin() + 8, data.begin() + 16);
+}
+
+bool r2007_handles_page_plausible(const std::vector<uint8_t>& data)
+{
+    if (data.size() < 2) return false;
+    const uint16_t section_size = (static_cast<uint16_t>(data[0]) << 8) |
+                                  static_cast<uint16_t>(data[1]);
+    return section_size > 0 && section_size <= 2040;
+}
+
+int64_t r2007_handles_page_score(const std::vector<uint8_t>& data)
+{
+    if (data.size() < 2) return 0;
+    size_t off = 0;
+    int64_t score = 0;
+    size_t total_entries = 0;
+    for (size_t section = 0; section < 8 && off + 2 <= data.size(); ++section) {
+        const size_t section_start = off;
+        const uint16_t section_size = (static_cast<uint16_t>(data[off]) << 8) |
+                                      static_cast<uint16_t>(data[off + 1]);
+        if (section_size <= 2 || section_size > 2040) break;
+        const size_t section_data_end = section_start + section_size;
+        if (section_data_end > data.size()) break;
+        off += 2;
+        uint64_t handle_acc = 0;
+        int64_t offset_acc = 0;
+        size_t entries = 0;
+        size_t plausible_entries = 0;
+        size_t negative_offsets = 0;
+        size_t huge_handle_jumps = 0;
+        size_t huge_offset_jumps = 0;
+        size_t duplicate_offsets = 0;
+        int64_t previous_offset = -1;
+        while (off < section_data_end && entries < 256) {
+            size_t before = off;
+            const uint32_t handle_delta =
+                DwgParser::read_modular_char(data.data(), data.size(), off);
+            if (off <= before || off >= section_data_end) break;
+            before = off;
+            const int32_t offset_delta =
+                DwgParser::read_modular_char_signed(data.data(), data.size(), off);
+            if (off <= before || off > section_data_end) break;
+            handle_acc += handle_delta;
+            offset_acc += offset_delta;
+            if (offset_acc < 0) {
+                negative_offsets++;
+            } else if (offset_acc < 500000000) {
+                plausible_entries++;
+                if (previous_offset >= 0 && offset_acc == previous_offset) {
+                    duplicate_offsets++;
+                }
+                previous_offset = offset_acc;
+            }
+            if (handle_delta > 1000000) {
+                huge_handle_jumps++;
+            }
+            if (std::llabs(static_cast<long long>(offset_delta)) > 2000000) {
+                huge_offset_jumps++;
+            }
+            entries++;
+        }
+        if (entries == 0) break;
+        total_entries += entries;
+        score += static_cast<int64_t>(plausible_entries) * 8;
+        score += static_cast<int64_t>(entries) / 8;
+        score -= static_cast<int64_t>(negative_offsets) * 10;
+        score -= static_cast<int64_t>(huge_handle_jumps) * 12;
+        score -= static_cast<int64_t>(huge_offset_jumps) * 8;
+        score -= static_cast<int64_t>(duplicate_offsets) * 4;
+        off = section_data_end + 2;
+    }
+    if (total_entries == 0) {
+        return std::numeric_limits<int64_t>::min() / 4;
+    }
+    return score;
+}
+
 std::vector<std::string> extract_printable_strings(const uint8_t* data,
                                                    size_t size,
                                                    size_t limit,
@@ -134,6 +626,73 @@ struct RawSmallIntCandidate {
     uint8_t bytes = 0;
 };
 
+struct TextMarkerCandidate {
+    size_t offset = 0;
+    std::string text;
+    const char* encoding = "ascii";
+};
+
+std::vector<TextMarkerCandidate> find_text_markers(const uint8_t* data,
+                                                   size_t size,
+                                                   const std::vector<std::string>& needles,
+                                                   size_t limit)
+{
+    std::vector<TextMarkerCandidate> out;
+    auto push_unique = [&](size_t offset, const std::string& text, const char* encoding) {
+        if (out.size() >= limit) return;
+        for (const auto& existing : out) {
+            if (existing.offset == offset && existing.text == text) {
+                return;
+            }
+        }
+        out.push_back({offset, text, encoding});
+    };
+
+    for (const std::string& needle : needles) {
+        if (needle.empty()) continue;
+
+        for (size_t i = 0; i + needle.size() <= size && out.size() < limit; ++i) {
+            if (std::memcmp(data + i, needle.data(), needle.size()) == 0) {
+                push_unique(i, needle, "ascii");
+            }
+        }
+
+        std::vector<uint8_t> utf16;
+        utf16.reserve(needle.size() * 2);
+        for (char c : needle) {
+            utf16.push_back(static_cast<uint8_t>(c));
+            utf16.push_back(0);
+        }
+        for (size_t i = 0; i + utf16.size() <= size && out.size() < limit; ++i) {
+            if (std::memcmp(data + i, utf16.data(), utf16.size()) == 0) {
+                push_unique(i, needle, "utf16le");
+            }
+        }
+    }
+
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return a.offset < b.offset;
+    });
+    return out;
+}
+
+std::string format_text_marker_sample(const std::vector<TextMarkerCandidate>& markers,
+                                      size_t limit)
+{
+    std::string out;
+    const size_t count = std::min(markers.size(), limit);
+    for (size_t i = 0; i < count; ++i) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s%s@0x%zx/%s",
+                      i == 0 ? "" : ",",
+                      markers[i].text.c_str(),
+                      markers[i].offset,
+                      markers[i].encoding);
+        out += buf;
+    }
+    return out;
+}
+
 std::vector<RawSmallIntCandidate> extract_small_int_candidates(const uint8_t* data,
                                                                size_t size,
                                                                size_t limit)
@@ -160,6 +719,18 @@ std::vector<RawSmallIntCandidate> extract_small_int_candidates(const uint8_t* da
                              (static_cast<uint32_t>(data[i + 2]) << 16) |
                              (static_cast<uint32_t>(data[i + 3]) << 24);
         push_unique(i, v32, 4);
+    }
+    return out;
+}
+
+std::string format_offset_sample(const std::vector<size_t>& offsets, size_t limit)
+{
+    std::string out;
+    const size_t count = std::min(offsets.size(), limit);
+    for (size_t i = 0; i < count; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%s0x%zx", i == 0 ? "" : ",", offsets[i]);
+        out += buf;
     }
     return out;
 }
@@ -654,9 +1225,74 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
 
     r = read_version(data, size);
     if (!r) return r;
+    scene.drawing_info().acad_version = version_family_name(m_version);
+
+    if (m_version == DwgVersion::R2000) {
+        scene.add_diagnostic({
+            "dwg_r2000_container_deferred",
+            "Version gap",
+            "R2000/AC1015 uses legacy flat sections that are not yet decoded by this parser.",
+            1,
+            version_family_name(m_version),
+            "File container",
+        });
+        return Result::success();
+    }
+
+    if (m_version == DwgVersion::R2007) {
+        r = read_r2007_container(data, size, scene);
+        if (!r) return r;
+
+        r = parse_header_variables(scene);
+        if (!r) return r;
+
+        r = parse_classes(scene);
+        if (!r) return r;
+
+        record_auxiliary_section_diagnostics(scene);
+
+        r = parse_object_map(data, size);
+        if (!r) return r;
+
+        r = parse_objects(scene);
+        if (!r) return r;
+
+        if (scene.total_entity_count() > 0 && scene.layers().empty()) {
+            Layer layer;
+            layer.name = "0";
+            scene.add_layer(std::move(layer));
+            scene.add_diagnostic({
+                "dwg_default_layer_synthesized",
+                "Semantic gap",
+                "DWG entities were decoded but no LAYER table entries were recovered; synthesized default layer 0 for stable rendering and layer metadata.",
+                1,
+                version_family_name(m_version),
+                "LAYER",
+            });
+        }
+
+        return Result::success();
+    }
 
     r = decrypt_r2004_header(data, size);
     if (!r) return r;
+
+    const bool plausible_r2004_style_header =
+        m_file_header.header_size == 108 &&
+        m_file_header.section_map_address > 0 &&
+        m_file_header.section_map_address + 0x100u + 20u <= size &&
+        m_file_header.numsections < 100000u;
+    if (!plausible_r2004_style_header) {
+        scene.add_diagnostic({
+            "dwg_container_header_invalid",
+            "Object framing gap",
+            "DWG section-page header metadata failed boundary validation before section decoding.",
+            1,
+            version_family_name(m_version),
+            "File container",
+        });
+        return Result::success();
+    }
 
     r = read_section_page_map(data, size);
     if (!r) return r;
@@ -684,6 +1320,20 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
 
     r = parse_objects(scene);
     if (!r) return r;
+
+    if (scene.total_entity_count() > 0 && scene.layers().empty()) {
+        Layer layer;
+        layer.name = "0";
+        scene.add_layer(std::move(layer));
+        scene.add_diagnostic({
+            "dwg_default_layer_synthesized",
+            "Semantic gap",
+            "DWG entities were decoded but no LAYER table entries were recovered; synthesized default layer 0 for stable rendering and layer metadata.",
+            1,
+            version_family_name(m_version),
+            "LAYER",
+        });
+    }
 
     return Result::success();
 }
@@ -713,6 +1363,618 @@ Result DwgParser::read_version(const uint8_t* data, size_t size)
     }
 
     dwg_debug_log("[DWG] version=%s (enum=%d)\n", ver, static_cast<int>(m_version));
+    return Result::success();
+}
+
+// ============================================================
+// read_r2007_container — AC1021/R21 container reader
+//
+// R2007 uses a 0x80 metadata prefix, a 0x400 R21 file header, and R21
+// compressed system pages for page/section maps. The file header page is
+// Reed-Solomon interleaved; for valid files, the original systematic bytes are
+// the first 239 bytes of each deinterleaved codeword. We currently do not
+// perform error correction, so damaged headers remain diagnostic gaps.
+// ============================================================
+
+Result DwgParser::read_r2007_container(const uint8_t* data,
+                                       size_t size,
+                                       SceneGraph& scene)
+{
+    if (!data || size < 0x80 + 0x400) {
+        return Result::error(ErrorCode::InvalidFormat,
+                             "DWG data too small for R2007 container");
+    }
+
+    auto add_gap = [&](const std::string& code,
+                       const std::string& category,
+                       const std::string& message,
+                       int32_t count = 1,
+                       const std::string& object_family = "File container") {
+        scene.add_diagnostic({
+            code,
+            category,
+            message,
+            count,
+            version_family_name(m_version),
+            object_family,
+            0,
+            "R2007 container",
+        });
+    };
+
+    const auto header_system_bytes =
+        r2007_take_system_data_no_correction(data + 0x80, 0x3d8, 3, 239);
+    if (header_system_bytes.size() < 0x20) {
+        add_gap("dwg_r2007_header_decode_failed",
+                "Version gap",
+                "R2007 file header systematic bytes could not be recovered from the interleaved header page.");
+        return Result::success();
+    }
+
+    const int32_t compressed_header_size =
+        static_cast<int32_t>(read_le32(header_system_bytes.data(), 0x18));
+    const size_t header_payload_size = (compressed_header_size < 0)
+        ? static_cast<size_t>(-compressed_header_size)
+        : static_cast<size_t>(compressed_header_size);
+    if (header_payload_size == 0 || 0x20 + header_payload_size > header_system_bytes.size()) {
+        add_gap("dwg_r2007_header_decode_failed",
+                "Version gap",
+                "R2007 file header payload length is outside the decoded header page.");
+        return Result::success();
+    }
+
+    std::vector<uint8_t> file_header = (compressed_header_size > 0)
+        ? r21_decompress(header_system_bytes.data() + 0x20, header_payload_size, 0x110)
+        : std::vector<uint8_t>(header_system_bytes.begin() + 0x20,
+                               header_system_bytes.begin() + 0x20 +
+                                   static_cast<std::ptrdiff_t>(header_payload_size));
+    if (file_header.size() < 0x110) {
+        add_gap("dwg_r2007_header_decode_failed",
+                "Version gap",
+                "R2007 file header R21 decompression did not produce the expected 0x110 bytes.");
+        return Result::success();
+    }
+
+    R2007HeaderData header;
+    header.header_size = read_u64_le(file_header.data() + 0x00);
+    header.file_size = read_u64_le(file_header.data() + 0x08);
+    header.pages_map_correction_factor = read_u64_le(file_header.data() + 0x18);
+    header.pages_map_offset = read_u64_le(file_header.data() + 0x38);
+    header.pages_map_id = read_u64_le(file_header.data() + 0x40);
+    header.pages_map_size_compressed = read_u64_le(file_header.data() + 0x50);
+    header.pages_map_size_uncompressed = read_u64_le(file_header.data() + 0x58);
+    header.pages_amount = read_u64_le(file_header.data() + 0x60);
+    header.pages_max_id = read_u64_le(file_header.data() + 0x68);
+    header.sections_amount = read_u64_le(file_header.data() + 0xA0);
+    header.sections_map_size_compressed = read_u64_le(file_header.data() + 0xB0);
+    header.sections_map_id = read_u64_le(file_header.data() + 0xC0);
+    header.sections_map_size_uncompressed = read_u64_le(file_header.data() + 0xC8);
+    header.sections_map_correction_factor = read_u64_le(file_header.data() + 0xD8);
+    header.stream_version = read_u64_le(file_header.data() + 0xE8);
+
+    dwg_debug_log("[DWG] R2007 header: file=%llu pages_map_off=0x%llx "
+                  "pages_map_id=%llu pages=%llu max_id=%llu sections=%llu "
+                  "section_map_id=%llu pm_comp=%llu pm_un=%llu pm_corr=%llu "
+                  "sm_comp=%llu sm_un=%llu sm_corr=%llu\n",
+                  static_cast<unsigned long long>(header.file_size),
+                  static_cast<unsigned long long>(header.pages_map_offset + 0x480),
+                  static_cast<unsigned long long>(header.pages_map_id),
+                  static_cast<unsigned long long>(header.pages_amount),
+                  static_cast<unsigned long long>(header.pages_max_id),
+                  static_cast<unsigned long long>(header.sections_amount),
+                  static_cast<unsigned long long>(header.sections_map_id),
+                  static_cast<unsigned long long>(header.pages_map_size_compressed),
+                  static_cast<unsigned long long>(header.pages_map_size_uncompressed),
+                  static_cast<unsigned long long>(header.pages_map_correction_factor),
+                  static_cast<unsigned long long>(header.sections_map_size_compressed),
+                  static_cast<unsigned long long>(header.sections_map_size_uncompressed),
+                  static_cast<unsigned long long>(header.sections_map_correction_factor));
+
+    if (header.header_size != 0x70 || header.pages_map_size_compressed == 0 ||
+        header.pages_map_size_uncompressed == 0 || header.sections_map_size_compressed == 0 ||
+        header.sections_map_size_uncompressed == 0) {
+        add_gap("dwg_r2007_header_decode_failed",
+                "Version gap",
+                "R2007 file header decoded, but required page/section map fields were missing or implausible.");
+        return Result::success();
+    }
+
+    const uint64_t pages_map_file_offset = header.pages_map_offset + 0x480;
+    const size_t pages_map_page_size =
+        r2007_system_page_size(static_cast<size_t>(header.pages_map_size_uncompressed));
+    if (pages_map_file_offset + pages_map_page_size > size) {
+        add_gap("dwg_r2007_page_map_out_of_bounds",
+                "Version gap",
+                "R2007 page map points outside the file stream.");
+        return Result::success();
+    }
+
+    const auto pages_map_data = r2007_decode_system_page_no_correction(
+        data + static_cast<size_t>(pages_map_file_offset),
+        size - static_cast<size_t>(pages_map_file_offset),
+        static_cast<size_t>(header.pages_map_size_compressed),
+        static_cast<size_t>(header.pages_map_size_uncompressed),
+        static_cast<size_t>(header.pages_map_correction_factor));
+    dwg_debug_log("[DWG] R2007 page map decoded bytes=%zu\n", pages_map_data.size());
+
+    if (pages_map_data.empty()) {
+        add_gap("dwg_r2007_page_map_decode_failed",
+                "Version gap",
+                "R2007 system page decode for the page map did not produce usable data.");
+        return Result::success();
+    }
+
+    std::unordered_map<uint64_t, R2007PageRecord> pages;
+    uint64_t running_offset = 0;
+    for (size_t off = 0; off + 16 <= pages_map_data.size(); off += 16) {
+        const int64_t page_size = read_i64_le(pages_map_data.data() + off);
+        const int64_t page_id = read_i64_le(pages_map_data.data() + off + 8);
+        if (page_size <= 0 || page_id == 0) {
+            running_offset += page_size > 0 ? static_cast<uint64_t>(page_size) : 0;
+            continue;
+        }
+        pages[static_cast<uint64_t>(std::llabs(page_id))] = {
+            page_id,
+            static_cast<uint64_t>(page_size),
+            running_offset,
+        };
+        running_offset += static_cast<uint64_t>(page_size);
+        if (pages.size() <= 32) {
+            dwg_debug_log("[DWG] R2007 page id=%lld size=%lld offset=0x%llx\n",
+                          static_cast<long long>(page_id),
+                          static_cast<long long>(page_size),
+                          static_cast<unsigned long long>(running_offset - static_cast<uint64_t>(page_size)));
+        }
+    }
+
+    auto section_map_page = pages.find(header.sections_map_id);
+    if (section_map_page == pages.end()) {
+        add_gap("dwg_r2007_section_map_missing",
+                "Version gap",
+                "R2007 page map decoded, but the section map page id was not present.");
+        return Result::success();
+    }
+    const size_t sections_map_page_size =
+        r2007_system_page_size(static_cast<size_t>(header.sections_map_size_uncompressed));
+    dwg_debug_log("[DWG] R2007 section map page record id=%lld size=%llu rel_off=0x%llx expected_sys_page=%zu\n",
+                  static_cast<long long>(section_map_page->second.id),
+                  static_cast<unsigned long long>(section_map_page->second.size),
+                  static_cast<unsigned long long>(section_map_page->second.offset),
+                  sections_map_page_size);
+    const uint64_t section_map_file_offset = section_map_page->second.offset + 0x480;
+    if (section_map_file_offset + sections_map_page_size > size) {
+        add_gap("dwg_r2007_section_map_out_of_bounds",
+                "Version gap",
+                "R2007 section map page points outside the file stream.");
+        return Result::success();
+    }
+
+    const auto section_map_data = r2007_decode_system_page_no_correction(
+        data + static_cast<size_t>(section_map_file_offset),
+        size - static_cast<size_t>(section_map_file_offset),
+        static_cast<size_t>(header.sections_map_size_compressed),
+        static_cast<size_t>(header.sections_map_size_uncompressed),
+        static_cast<size_t>(header.sections_map_correction_factor));
+    dwg_debug_log("[DWG] R2007 section map page offset=0x%llx decoded bytes=%zu first=%02x %02x %02x %02x\n",
+                  static_cast<unsigned long long>(section_map_file_offset),
+                  section_map_data.size(),
+                  section_map_data.empty() ? 0 : section_map_data[0],
+                  section_map_data.size() > 1 ? section_map_data[1] : 0,
+                  section_map_data.size() > 2 ? section_map_data[2] : 0,
+                  section_map_data.size() > 3 ? section_map_data[3] : 0);
+
+    std::vector<R2007SectionRecord> sections;
+    for (size_t off = 0; off + 64 <= section_map_data.size();) {
+        R2007SectionRecord section;
+        section.data_size = read_u64_le(section_map_data.data() + off + 0x00);
+        section.max_size = read_u64_le(section_map_data.data() + off + 0x08);
+        section.encryption = read_u64_le(section_map_data.data() + off + 0x10);
+        section.hash_code = read_u64_le(section_map_data.data() + off + 0x18);
+        const uint64_t name_length = read_u64_le(section_map_data.data() + off + 0x20);
+        section.encoding = read_u64_le(section_map_data.data() + off + 0x30);
+        section.num_pages = read_u64_le(section_map_data.data() + off + 0x38);
+        dwg_debug_log("[DWG] R2007 section candidate off=%zu data=%llu max=%llu name_len=%llu enc=%llu pages=%llu\n",
+                      off,
+                      static_cast<unsigned long long>(section.data_size),
+                      static_cast<unsigned long long>(section.max_size),
+                      static_cast<unsigned long long>(name_length),
+                      static_cast<unsigned long long>(section.encoding),
+                      static_cast<unsigned long long>(section.num_pages));
+        off += 0x40;
+        if (name_length > 2048 || off + name_length > section_map_data.size()) {
+            dwg_debug_log("[DWG] R2007 section map stop: invalid name length=%llu off=%zu size=%zu\n",
+                          static_cast<unsigned long long>(name_length),
+                          off,
+                          section_map_data.size());
+            break;
+        }
+        if (name_length > 0) {
+            const size_t name_end = off + static_cast<size_t>(name_length);
+            for (; off + 1 < name_end && off + 1 < section_map_data.size(); off += 2) {
+                const uint16_t ch = static_cast<uint16_t>(section_map_data[off]) |
+                                    (static_cast<uint16_t>(section_map_data[off + 1]) << 8);
+                if (ch < 0x80) {
+                    section.name.push_back(static_cast<char>(ch));
+                }
+            }
+            off = name_end;
+        }
+        if (section.num_pages > 100000 ||
+            off + section.num_pages * 56 > section_map_data.size()) {
+            dwg_debug_log("[DWG] R2007 section map stop: invalid page count=%llu off=%zu size=%zu\n",
+                          static_cast<unsigned long long>(section.num_pages),
+                          off,
+                          section_map_data.size());
+            break;
+        }
+        for (uint64_t p = 0; p < section.num_pages; ++p) {
+            R2007SectionRecord::Page page;
+            page.data_offset = read_u64_le(section_map_data.data() + off + 0x00);
+            page.page_size = read_u64_le(section_map_data.data() + off + 0x08);
+            page.page_id = read_i64_le(section_map_data.data() + off + 0x10);
+            page.uncompressed_size = read_u64_le(section_map_data.data() + off + 0x18);
+            page.compressed_size = read_u64_le(section_map_data.data() + off + 0x20);
+            page.checksum = read_u64_le(section_map_data.data() + off + 0x28);
+            page.crc = read_u64_le(section_map_data.data() + off + 0x30);
+            section.pages.push_back(page);
+            off += 56;
+            if ((section.name.find("AcDb:") != std::string::npos ||
+                 section.name.empty()) && p < 4) {
+                dwg_debug_log("[DWG] R2007 section page name='%s' page=%llu id=%lld data_off=%llu page_size=%llu uncomp=%llu comp=%llu\n",
+                              section.name.c_str(),
+                              static_cast<unsigned long long>(p),
+                              static_cast<long long>(page.page_id),
+                              static_cast<unsigned long long>(page.data_offset),
+                              static_cast<unsigned long long>(page.page_size),
+                              static_cast<unsigned long long>(page.uncompressed_size),
+                              static_cast<unsigned long long>(page.compressed_size));
+            }
+        }
+        if (!section.name.empty()) {
+            dwg_debug_log("[DWG] R2007 section '%s' size=%llu pages=%llu enc=%llu max=%llu\n",
+                          section.name.c_str(),
+                          static_cast<unsigned long long>(section.data_size),
+                          static_cast<unsigned long long>(section.num_pages),
+                          static_cast<unsigned long long>(section.encoding),
+                          static_cast<unsigned long long>(section.max_size));
+            sections.push_back(std::move(section));
+        }
+    }
+
+    dwg_debug_log("[DWG] R2007 sections decoded: %zu\n", sections.size());
+    if (sections.empty()) {
+        add_gap("dwg_r2007_section_map_decode_failed",
+                "Version gap",
+                "R2007 section map decompressed, but no section descriptors were decoded.");
+        return Result::success();
+    }
+
+    m_sections = DwgFileSections{};
+    auto decode_section = [&](const R2007SectionRecord& section) {
+        std::vector<uint8_t> assembled;
+        if (section.data_size > 0 && section.data_size < (1ull << 34)) {
+            assembled.resize(static_cast<size_t>(section.data_size), 0);
+        }
+        for (const auto& page : section.pages) {
+            const auto page_it = pages.find(static_cast<uint64_t>(std::llabs(page.page_id)));
+            if (page_it == pages.end()) continue;
+            const uint64_t file_offset = page_it->second.offset + 0x480;
+            const size_t encoded_size = static_cast<size_t>(page_it->second.size);
+            const size_t compressed_size = static_cast<size_t>(
+                page.compressed_size ? page.compressed_size : encoded_size);
+            if (file_offset + encoded_size > size || encoded_size == 0 || compressed_size == 0) continue;
+            if (section.name.find("AcDb:Handles") != std::string::npos ||
+                section.name.find("AcDb:Classes") != std::string::npos ||
+                section.name.find("AcDb:Header") != std::string::npos) {
+                dwg_debug_log("[DWG] R2007 decode section '%s' page_id=%lld file_off=0x%llx encoded=%zu comp=%zu uncomp=%llu encoding=%llu\n",
+                              section.name.c_str(),
+                              static_cast<long long>(page.page_id),
+                              static_cast<unsigned long long>(file_offset),
+                              encoded_size,
+                              compressed_size,
+                              static_cast<unsigned long long>(page.uncompressed_size),
+                              static_cast<unsigned long long>(section.encoding));
+            }
+            std::vector<uint8_t> page_data;
+            if (page.uncompressed_size > 0 &&
+                (section.encoding == 1 || section.encoding == 4)) {
+                // DEBUG: print deinterleaved data for Handles
+                if (section.name.find("AcDb:Handles") != std::string::npos && dwg_debug_enabled()) {
+                    const size_t dbg_block_count = encoded_size / 255;
+                    auto dbg_deinterleaved = r2007_take_system_data_no_correction(
+                        data + static_cast<size_t>(file_offset), encoded_size, dbg_block_count, 251);
+                    dwg_debug_log("[DWG] R2007 Handles deinterleaved first 20: ");
+                    for (size_t dbg_i = 0; dbg_i < 20 && dbg_i < dbg_deinterleaved.size(); ++dbg_i) {
+                        dwg_debug_log("%02x ", dbg_deinterleaved[dbg_i]);
+                    }
+                    dwg_debug_log("\n");
+                }
+                page_data = r2007_decode_data_page_no_correction(
+                    data + static_cast<size_t>(file_offset),
+                    encoded_size,
+                    compressed_size,
+                    static_cast<size_t>(page.uncompressed_size),
+                    section.encoding,
+                    false);
+                std::vector<uint8_t> skip_crc_page_data;
+                std::vector<uint8_t> skip_crc9_page_data;
+                if (section.encoding == 4 && compressed_size > 8 &&
+                    compressed_size < static_cast<size_t>(page.uncompressed_size) &&
+                    (section.name.find("AcDb:AcDbObjects") != std::string::npos ||
+                     section.name.find("AcDb:Handles") != std::string::npos ||
+                     section.name.find("AcDb:Classes") != std::string::npos ||
+                     section.name.find("AcDb:Header") != std::string::npos)) {
+                    skip_crc_page_data = r2007_decode_data_page_no_correction(
+                        data + static_cast<size_t>(file_offset),
+                        encoded_size,
+                        compressed_size,
+                        static_cast<size_t>(page.uncompressed_size),
+                        section.encoding,
+                        false,
+                        8);
+                    skip_crc9_page_data = r2007_decode_data_page_no_correction(
+                        data + static_cast<size_t>(file_offset),
+                        encoded_size,
+                        compressed_size,
+                        static_cast<size_t>(page.uncompressed_size),
+                        section.encoding,
+                        false,
+                        9);
+                    const bool normal_has_objects_marker =
+                        page_data.size() >= 12 &&
+                        page_data[8] == 0xCA && page_data[9] == 0x0D &&
+                        page_data[10] == 0x00 && page_data[11] == 0x00;
+                    const bool skip_has_objects_marker =
+                        skip_crc_page_data.size() >= 4 &&
+                        skip_crc_page_data[0] == 0xCA && skip_crc_page_data[1] == 0x0D &&
+                        skip_crc_page_data[2] == 0x00 && skip_crc_page_data[3] == 0x00;
+                    const bool skip9_has_objects_marker =
+                        skip_crc9_page_data.size() >= 4 &&
+                        skip_crc9_page_data[0] == 0xCA && skip_crc9_page_data[1] == 0x0D &&
+                        skip_crc9_page_data[2] == 0x00 && skip_crc9_page_data[3] == 0x00;
+                    const bool skip_has_classes_marker =
+                        r2007_classes_page_plausible(skip_crc_page_data) ||
+                        r2007_classes_page_has_split_initial_literal(skip_crc_page_data);
+                    const bool normal_has_classes_marker =
+                        r2007_classes_page_plausible(page_data) ||
+                        r2007_classes_page_has_split_initial_literal(page_data);
+                    if ((section.name.find("AcDb:AcDbObjects") != std::string::npos &&
+                         normal_has_objects_marker && skip_has_objects_marker) ||
+                        (section.name.find("AcDb:Classes") != std::string::npos &&
+                         !normal_has_classes_marker && skip_has_classes_marker)) {
+                        dwg_debug_log("[DWG] R2007 section '%s' page_id=%lld selected +8 compressed payload candidate\n",
+                                      section.name.c_str(),
+                                      static_cast<long long>(page.page_id));
+                        page_data = std::move(skip_crc_page_data);
+                    } else if (section.name.find("AcDb:AcDbObjects") != std::string::npos &&
+                               normal_has_objects_marker && skip9_has_objects_marker) {
+                        dwg_debug_log("[DWG] R2007 section '%s' page_id=%lld selected +9 compressed payload candidate\n",
+                                      section.name.c_str(),
+                                      static_cast<long long>(page.page_id));
+                        page_data = std::move(skip_crc9_page_data);
+                    } else if (dwg_debug_enabled() &&
+                               section.name.find("AcDb:AcDbObjects") != std::string::npos &&
+                               page.data_offset == 0) {
+                        dwg_debug_log("[DWG] R2007 AcDbObjects candidates normal=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x skip8=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                                      page_data.size() > 0 ? page_data[0] : 0,
+                                      page_data.size() > 1 ? page_data[1] : 0,
+                                      page_data.size() > 2 ? page_data[2] : 0,
+                                      page_data.size() > 3 ? page_data[3] : 0,
+                                      page_data.size() > 4 ? page_data[4] : 0,
+                                      page_data.size() > 5 ? page_data[5] : 0,
+                                      page_data.size() > 6 ? page_data[6] : 0,
+                                      page_data.size() > 7 ? page_data[7] : 0,
+                                      page_data.size() > 8 ? page_data[8] : 0,
+                                      page_data.size() > 9 ? page_data[9] : 0,
+                                      page_data.size() > 10 ? page_data[10] : 0,
+                                      page_data.size() > 11 ? page_data[11] : 0,
+                                      skip_crc_page_data.size() > 0 ? skip_crc_page_data[0] : 0,
+                                      skip_crc_page_data.size() > 1 ? skip_crc_page_data[1] : 0,
+                                      skip_crc_page_data.size() > 2 ? skip_crc_page_data[2] : 0,
+                                      skip_crc_page_data.size() > 3 ? skip_crc_page_data[3] : 0,
+                                      skip_crc_page_data.size() > 4 ? skip_crc_page_data[4] : 0,
+                                      skip_crc_page_data.size() > 5 ? skip_crc_page_data[5] : 0,
+                                      skip_crc_page_data.size() > 6 ? skip_crc_page_data[6] : 0,
+                                      skip_crc_page_data.size() > 7 ? skip_crc_page_data[7] : 0,
+                                      skip_crc_page_data.size() > 8 ? skip_crc_page_data[8] : 0,
+                                      skip_crc_page_data.size() > 9 ? skip_crc_page_data[9] : 0,
+                                      skip_crc_page_data.size() > 10 ? skip_crc_page_data[10] : 0,
+                                      skip_crc_page_data.size() > 11 ? skip_crc_page_data[11] : 0);
+                    }
+                }
+                if (section.encoding == 4 &&
+                    (section.name.find("AcDb:Handles") != std::string::npos ||
+                     section.name.find("AcDb:Classes") != std::string::npos)) {
+                    auto alt_page_data = r2007_decode_data_page_no_correction(
+                        data + static_cast<size_t>(file_offset),
+                        encoded_size,
+                        compressed_size,
+                        static_cast<size_t>(page.uncompressed_size),
+                        section.encoding,
+                        true);
+                    std::vector<uint8_t> best_handles_page_data;
+                    if (section.name.find("AcDb:Handles") != std::string::npos) {
+                        struct HandlesCandidate {
+                            std::vector<uint8_t>* data = nullptr;
+                            const char* label = "";
+                            int64_t score = 0;
+                        };
+                        std::vector<HandlesCandidate> candidates;
+                        candidates.push_back({&page_data, "primary", r2007_handles_page_score(page_data)});
+                        candidates.push_back({&alt_page_data, "non-interleaved", r2007_handles_page_score(alt_page_data)});
+                        if (!skip_crc_page_data.empty()) {
+                            candidates.push_back({&skip_crc_page_data, "+8", r2007_handles_page_score(skip_crc_page_data)});
+                        }
+                        if (!skip_crc9_page_data.empty()) {
+                            candidates.push_back({&skip_crc9_page_data, "+9", r2007_handles_page_score(skip_crc9_page_data)});
+                        }
+                        if (dwg_debug_enabled() && page.data_offset == 0) {
+                            std::string score_message = "[DWG] R2007 Handles candidate scores page_id=";
+                            score_message += std::to_string(page.page_id);
+                            for (const auto& candidate : candidates) {
+                                score_message += " ";
+                                score_message += candidate.label;
+                                score_message += "=";
+                                score_message += std::to_string(candidate.score);
+                            }
+                            score_message += "\n";
+                            dwg_debug_log("%s", score_message.c_str());
+                            for (const auto& candidate : candidates) {
+                                if (!candidate.data || candidate.data->empty()) continue;
+                                const auto& cd = *candidate.data;
+                                dwg_debug_log(
+                                    "[DWG] R2007 Handles candidate %s first=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x size=%zu\n",
+                                    candidate.label,
+                                    cd.size() > 0 ? cd[0] : 0,
+                                    cd.size() > 1 ? cd[1] : 0,
+                                    cd.size() > 2 ? cd[2] : 0,
+                                    cd.size() > 3 ? cd[3] : 0,
+                                    cd.size() > 4 ? cd[4] : 0,
+                                    cd.size() > 5 ? cd[5] : 0,
+                                    cd.size() > 6 ? cd[6] : 0,
+                                    cd.size() > 7 ? cd[7] : 0,
+                                    cd.size() > 8 ? cd[8] : 0,
+                                    cd.size() > 9 ? cd[9] : 0,
+                                    cd.size() > 10 ? cd[10] : 0,
+                                    cd.size() > 11 ? cd[11] : 0,
+                                    cd.size());
+                            }
+                        }
+                        auto best_it = std::max_element(
+                            candidates.begin(), candidates.end(),
+                            [](const HandlesCandidate& a, const HandlesCandidate& b) {
+                                return a.score < b.score;
+                            });
+                        if (best_it != candidates.end() && best_it->data &&
+                            best_it->data != &page_data && best_it->score > candidates.front().score) {
+                            dwg_debug_log("[DWG] R2007 Handles page_id=%lld selected %s candidate score=%lld primary_score=%lld\n",
+                                          static_cast<long long>(page.page_id),
+                                          best_it->label,
+                                          static_cast<long long>(best_it->score),
+                                          static_cast<long long>(candidates.front().score));
+                            best_handles_page_data = *best_it->data;
+                        }
+                    }
+                    const bool primary_ok =
+                        (section.name.find("AcDb:Handles") != std::string::npos &&
+                         r2007_handles_page_plausible(page_data)) ||
+                        (section.name.find("AcDb:Classes") != std::string::npos &&
+                         r2007_classes_page_plausible(page_data));
+                    const bool alt_ok =
+                        (section.name.find("AcDb:Handles") != std::string::npos &&
+                         r2007_handles_page_plausible(alt_page_data)) ||
+                        (section.name.find("AcDb:Classes") != std::string::npos &&
+                         r2007_classes_page_plausible(alt_page_data));
+                    if (!primary_ok && alt_ok) {
+                        dwg_debug_log("[DWG] R2007 section '%s' page_id=%lld selected non-interleaved data-page candidate\n",
+                                      section.name.c_str(),
+                                      static_cast<long long>(page.page_id));
+                        page_data = std::move(alt_page_data);
+                    } else if (!best_handles_page_data.empty()) {
+                        page_data = std::move(best_handles_page_data);
+                    } else if (section.name.find("AcDb:Classes") != std::string::npos &&
+                               r2007_classes_page_has_split_initial_literal(page_data)) {
+                        dwg_debug_log("[DWG] R2007 Classes page_id=%lld repaired split initial literal sentinel\n",
+                                      static_cast<long long>(page.page_id));
+                        r2007_repair_split_classes_literal(page_data);
+                    } else if (section.name.find("AcDb:Classes") != std::string::npos) {
+                        dwg_debug_log("[DWG] R2007 Classes candidate primary=%02x %02x %02x %02x alt=%02x %02x %02x %02x\n",
+                                      page_data.size() > 0 ? page_data[0] : 0,
+                                      page_data.size() > 1 ? page_data[1] : 0,
+                                      page_data.size() > 2 ? page_data[2] : 0,
+                                      page_data.size() > 3 ? page_data[3] : 0,
+                                      alt_page_data.size() > 0 ? alt_page_data[0] : 0,
+                                      alt_page_data.size() > 1 ? alt_page_data[1] : 0,
+                                      alt_page_data.size() > 2 ? alt_page_data[2] : 0,
+                                      alt_page_data.size() > 3 ? alt_page_data[3] : 0);
+                    } else if (section.name.find("AcDb:Handles") != std::string::npos && page.data_offset == 0) {
+                        dwg_debug_log("[DWG] R2007 Handles candidate primary=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x alt=%02x %02x %02x %02x\n",
+                                      page_data.size() > 0 ? page_data[0] : 0,
+                                      page_data.size() > 1 ? page_data[1] : 0,
+                                      page_data.size() > 2 ? page_data[2] : 0,
+                                      page_data.size() > 3 ? page_data[3] : 0,
+                                      page_data.size() > 4 ? page_data[4] : 0,
+                                      page_data.size() > 5 ? page_data[5] : 0,
+                                      page_data.size() > 6 ? page_data[6] : 0,
+                                      page_data.size() > 7 ? page_data[7] : 0,
+                                      page_data.size() > 8 ? page_data[8] : 0,
+                                      page_data.size() > 9 ? page_data[9] : 0,
+                                      page_data.size() > 10 ? page_data[10] : 0,
+                                      page_data.size() > 11 ? page_data[11] : 0,
+                                      page_data.size() > 12 ? page_data[12] : 0,
+                                      page_data.size() > 13 ? page_data[13] : 0,
+                                      page_data.size() > 14 ? page_data[14] : 0,
+                                      page_data.size() > 15 ? page_data[15] : 0,
+                                      alt_page_data.size() > 0 ? alt_page_data[0] : 0,
+                                      alt_page_data.size() > 1 ? alt_page_data[1] : 0,
+                                      alt_page_data.size() > 2 ? alt_page_data[2] : 0,
+                                      alt_page_data.size() > 3 ? alt_page_data[3] : 0);
+                    }
+                }
+            } else {
+                const size_t take = std::min<size_t>(encoded_size, page.page_size);
+                page_data.assign(data + static_cast<size_t>(file_offset),
+                                 data + static_cast<size_t>(file_offset) + take);
+            }
+            const size_t target = static_cast<size_t>(std::min<uint64_t>(page.data_offset, assembled.size()));
+            if (target + page_data.size() > assembled.size()) {
+                assembled.resize(target + page_data.size(), 0);
+            }
+            std::copy(page_data.begin(), page_data.end(), assembled.begin() + static_cast<std::ptrdiff_t>(target));
+            if (section.name.find("AcDbObjects") != std::string::npos ||
+                section.name.find("AcDb:AcDbObjects") != std::string::npos) {
+                m_sections.object_pages.emplace_back(target, page_data.size());
+            }
+        }
+        if (section.data_size > 0 && assembled.size() > section.data_size) {
+            assembled.resize(static_cast<size_t>(section.data_size));
+        }
+        return assembled;
+    };
+
+    for (const auto& section : sections) {
+        std::vector<uint8_t> decoded = decode_section(section);
+        if (section.name.find("AcDb:Header") != std::string::npos) {
+            m_sections.header_vars = std::move(decoded);
+        } else if (section.name.find("AcDb:Classes") != std::string::npos) {
+            m_sections.classes = std::move(decoded);
+        } else if (section.name.find("AcDb:Handles") != std::string::npos) {
+            m_sections.object_map = std::move(decoded);
+            m_sections.objmap_page_size = static_cast<uint32_t>(
+                std::min<uint64_t>(section.max_size, UINT32_MAX));
+        } else if (section.name.find("AcDb:AcDbObjects") != std::string::npos ||
+                   section.name.find("AcDbObjects") != std::string::npos) {
+            m_sections.object_data = std::move(decoded);
+            if (!section.pages.empty()) {
+                const auto page_it = pages.find(static_cast<uint64_t>(std::llabs(section.pages.front().page_id)));
+                if (page_it != pages.end()) {
+                    m_sections.object_data_file_offset = static_cast<size_t>(page_it->second.offset + 0x480);
+                }
+            }
+        } else if (!decoded.empty()) {
+            m_sections.auxiliary_sections.push_back({section.name, std::move(decoded)});
+        }
+    }
+
+    scene.add_diagnostic({
+        "dwg_r2007_container_decoded",
+        "Version gap",
+        "R2007/AC1021 R21 file header, page map, and section map were decoded without external conversion. Reed-Solomon error correction and encrypted section payloads remain provisional.",
+        static_cast<int32_t>(std::min<size_t>(sections.size(), 2147483647u)),
+        version_family_name(m_version),
+        "File container",
+        0,
+        "R2007 container",
+    });
+
+    if (m_sections.object_data.empty() || m_sections.object_map.empty()) {
+        add_gap("dwg_r2007_object_sections_missing",
+                "Version gap",
+                "R2007 container decoded, but AcDbObjects or AcDb:Handles section did not produce usable bytes.",
+                1,
+                "AcDbObjects/Handles");
+    }
+
     return Result::success();
 }
 
@@ -1467,6 +2729,13 @@ Result DwgParser::read_sections(const uint8_t* data, size_t size)
 
         dwg_debug_log("[DWG] object_data: %zu bytes (file_offset=%zu)\n",
                 m_sections.object_data.size(), m_sections.object_data_file_offset);
+        {
+            FILE* fobj = fopen("/tmp/dwg_object_data.bin", "wb");
+            if (fobj) {
+                fwrite(m_sections.object_data.data(), 1, m_sections.object_data.size(), fobj);
+                fclose(fobj);
+            }
+        }
     }
 
     for (auto* s : sec_auxiliary_list) {
@@ -1556,9 +2825,70 @@ Result DwgParser::parse_header_variables(SceneGraph& scene)
         return Result::success();
     }
 
-    // Header variables section contains drawing metadata.
-    // For now, we skip detailed parsing — extents come from entity bounds.
-    (void)scene;
+    scene.drawing_info().dwg_header_vars_bytes = m_sections.header_vars.size();
+    if (scene.drawing_info().acad_version.empty()) {
+        scene.drawing_info().acad_version = version_family_name(m_version);
+    }
+
+    // Header variables are version-ordered bit fields, not DXF group-code data.
+    // Until the exact per-family reader is complete, expose bounded probes as
+    // diagnostics so viewport/layout offset work can be verified against the
+    // binary data without using filename or coordinate special cases.
+    const auto strings = extract_printable_strings(
+        m_sections.header_vars.data(), m_sections.header_vars.size(), 12);
+    const auto points = extract_plausible_raw_points_with_offsets(
+        m_sections.header_vars.data(), m_sections.header_vars.size(), 10);
+
+    std::string message = "DWG Header Variables section was decoded (";
+    message += std::to_string(m_sections.header_vars.size());
+    message += " bytes), but the version-family ordered variable reader is incomplete.";
+    if (!points.empty()) {
+        message += " Raw double-pair probes: ";
+        const size_t n = std::min<size_t>(points.size(), 4);
+        for (size_t i = 0; i < n; ++i) {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%s0x%zx=(%.3f,%.3f)",
+                          i == 0 ? "" : ";",
+                          points[i].offset,
+                          points[i].x,
+                          points[i].y);
+            message += buf;
+        }
+        message += ".";
+    }
+    if (!strings.empty()) {
+        message += " Text probes: ";
+        const size_t n = std::min<size_t>(strings.size(), 4);
+        for (size_t i = 0; i < n; ++i) {
+            if (i > 0) message += "; ";
+            std::string s = strings[i];
+            if (s.size() > 32) {
+                s = s.substr(0, 29) + "...";
+            }
+            message += "'";
+            message += s;
+            message += "'";
+        }
+        message += ".";
+    }
+    scene.add_diagnostic({
+        "dwg_header_vars_reader_incomplete",
+        "Encoding gap",
+        message,
+        static_cast<int32_t>(std::min<size_t>(m_sections.header_vars.size(), 2147483647u)),
+        version_family_name(m_version),
+        "HEADER",
+    });
+
+    if (dwg_debug_enabled()) {
+        for (const auto& p : points) {
+            dwg_debug_log("[DWG] header_vars point: offset=0x%zx x=%.6f y=%.6f\n",
+                          p.offset, p.x, p.y);
+        }
+        for (const auto& s : strings) {
+            dwg_debug_log("[DWG] header_vars string: %s\n", s.c_str());
+        }
+    }
     return Result::success();
 }
 
@@ -1595,16 +2925,36 @@ Result DwgParser::parse_classes(SceneGraph& scene)
     uint32_t max_num = 0;
     size_t class_string_start = 0;
     if (m_version >= DwgVersion::R2004) {
+        if (dwg_debug_enabled() && data_size >= 32) {
+            std::string hex_dump = "[DWG] classes_raw: ";
+            for (size_t i = 0; i < 32 && i < data_size; ++i) {
+                char buf[4];
+                std::snprintf(buf, sizeof(buf), "%02x ", data[i]);
+                hex_dump += buf;
+            }
+            dwg_debug_log("%s\n", hex_dump.c_str());
+        }
         uint32_t data_area_size = reader.read_rl();
         (void)data_area_size;
-        (void)reader.read_rl();  // hsize
-        uint32_t bitsize = reader.read_rl();
+        uint32_t hsize = 0;
+        uint32_t bitsize = 0;
+        // Per libredwg read_2004_section_classes:
+        //   R2004:   RL size -> BS max_num -> RC -> RC -> B
+        //   R2007+:  RL size -> RL hsize -> RL bitsize -> BS max_num -> RC -> RC -> B
+        //   R2010+/maint_version>3 or R2018+: hsize is present.
+        // We do not track maint_version, so we use a simple version gate:
+        //   R2004 skips hsize/bitsize; R2007+ reads both.
+        if (m_version >= DwgVersion::R2007) {
+            hsize = reader.read_rl();
+            bitsize = reader.read_rl();
+        }
         max_num = reader.read_bs();
         (void)reader.read_raw_char();
         (void)reader.read_raw_char();
         (void)reader.read_b();
-        dwg_debug_log("[DWG] classes_header: data_size=%zu area=%u bits=%u max=%u pos=%zu\n",
-                      data_size, data_area_size, bitsize, max_num, reader.bit_offset());
+        dwg_debug_log("[DWG] classes_header: data_size=%zu area=%u hsize=%u bits=%u max=%u pos=%zu ver=%d\n",
+                      data_size, data_area_size, hsize, bitsize, max_num, reader.bit_offset(),
+                      static_cast<int>(m_version));
         if (!reader.has_error() && bitsize > 0 && bitsize <= data_size * 8) {
             reader.set_bit_limit(bitsize);
             auto looks_like_class_string_start = [&](size_t start) -> bool {
@@ -1691,12 +3041,21 @@ Result DwgParser::parse_classes(SceneGraph& scene)
         bool is_entity = false;
 
         if (m_version < DwgVersion::R2007) {
+            // R2004 class record format per libredwg:
+            //   BS(proxyflag) -> TV(appname) -> TV(cppname) -> TV(dxfname)
+            //   -> B(is_zombie) -> BS(item_class_id) -> BL(num_instances)
+            //   -> BS(dwg_version) -> BS(maint_version) -> BL(unknown) -> BL(unknown)
             proxy_flags = reader.read_bs();
-            dxf_name = reader.read_tv();
-            cpp_name = reader.read_tv();
             app_name = reader.read_tv();
-            uint16_t class_id = reader.read_bs();
-            is_entity = (class_id == 0x1F2);
+            cpp_name = reader.read_tv();
+            dxf_name = reader.read_tv();
+            is_entity = reader.read_b();
+            (void)reader.read_bs();   // item_class_id
+            (void)reader.read_bl();   // num_instances
+            (void)reader.read_bs();   // dwg_version
+            (void)reader.read_bs();   // maint_version
+            (void)reader.read_bl();   // unknown_1
+            (void)reader.read_bl();   // unknown_2
         } else {
             proxy_flags = reader.read_bs();
             if (class_string_start == 0) break;
@@ -1721,7 +3080,8 @@ Result DwgParser::parse_classes(SceneGraph& scene)
         (void)proxy_flags;
     }
 
-    dwg_debug_log("[DWG] classes: %zu entries parsed\n", m_sections.class_map.size());
+    const size_t parsed_class_records = m_sections.class_map.size();
+    dwg_debug_log("[DWG] classes: %zu entries parsed\n", parsed_class_records);
     if (m_version >= DwgVersion::R2004 && class_string_start != 0 &&
         m_sections.class_map.size() < 3) {
         SectionStringReader fallback(data, data_size, class_string_start);
@@ -1742,6 +3102,18 @@ Result DwgParser::parse_classes(SceneGraph& scene)
             "Parse gap",
             "DWG Classes Section is present but class records were not decoded; custom object names such as LAYOUT may be unavailable.",
             1,
+        });
+    } else if (m_version >= DwgVersion::R2004 && !m_sections.classes.empty() &&
+               parsed_class_records < 10 && m_sections.class_map.size() > parsed_class_records) {
+        scene.add_diagnostic({
+            "dwg_classes_partial_fallback",
+            "Object framing gap",
+            "DWG Classes Section records were only partially decoded; parser used the class string stream as a bounded fallback map. Custom object names are available, but class ids/entity flags may be provisional.",
+            static_cast<int32_t>(m_sections.class_map.size() - parsed_class_records),
+            version_family_name(m_version),
+            "Classes Section",
+            0,
+            "AcDb:Classes",
         });
     }
     return Result::success();
@@ -1773,6 +3145,16 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
     uint64_t total_objects = 0;
     uint64_t global_handle_acc = 0;
     int64_t global_offset_acc = 0;
+    uint64_t offsets_in_object_data_range = 0;
+    uint64_t offsets_negative = 0;
+    uint64_t offsets_out_of_object_data_range = 0;
+
+    // R2007 object data may start with a 4-byte RL marker (0xCA 0x0D 0x00 0x00).
+    // Offsets from the object map are relative to the start of the object_data
+    // buffer, which already includes this marker. Do NOT add a prefix offset.
+    // (Previous code incorrectly added +4 here, shifting all offsets past the
+    // first object and causing every parse to fail.)
+    size_t r2007_object_data_prefix = 0;
 
     auto add_offset_candidate = [&](uint64_t handle, int64_t offset) {
         if (handle == 0 || offset < 0) {
@@ -1780,15 +3162,29 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
         }
         auto& candidates = m_sections.handle_offset_candidates[handle];
         const size_t uoffset = static_cast<size_t>(offset);
-        if (std::find(candidates.begin(), candidates.end(), uoffset) == candidates.end()) {
-            candidates.push_back(uoffset);
+        auto push_candidate = [&](size_t candidate) {
+            if (std::find(candidates.begin(), candidates.end(), candidate) == candidates.end()) {
+                candidates.push_back(candidate);
+            }
+        };
+        push_candidate(uoffset);
+        // R2007 data pages may carry an 8-byte page/check prefix before the
+        // AcDbObjects logical payload. The primary 4-byte prefix is handled
+        // globally above (r2007_object_data_prefix); only keep secondary
+        // candidates for 8-byte prefix variants.
+        if (m_version == DwgVersion::R2007 &&
+            m_sections.object_data.size() >= 12 &&
+            m_sections.object_data[8] == 0xCA &&
+            m_sections.object_data[9] == 0x0D &&
+            m_sections.object_data[10] == 0x00 &&
+            m_sections.object_data[11] == 0x00) {
+            push_candidate(uoffset + 8);
+            push_candidate(uoffset + 12);
         }
         if (m_sections.object_data_file_offset > 0 &&
             uoffset >= m_sections.object_data_file_offset) {
             const size_t relative_offset = uoffset - m_sections.object_data_file_offset;
-            if (std::find(candidates.begin(), candidates.end(), relative_offset) == candidates.end()) {
-                candidates.push_back(relative_offset);
-            }
+            push_candidate(relative_offset);
         }
     };
 
@@ -1800,9 +3196,11 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
                                  static_cast<uint16_t>(data[off + 1]);
         off += 2;
 
-        if (section_size == 0 || section_size > 2040) {
+        const uint16_t max_object_map_section_size =
+            (m_version == DwgVersion::R2007) ? UINT16_MAX : 2040;
+        if (section_size == 0 || section_size > max_object_map_section_size) {
             // End marker or invalid size
-            if (section_size > 2040) {
+            if (section_size > max_object_map_section_size) {
                 dwg_debug_log("[DWG] WARNING: object_map section_size=%u too large at off=%zu\n",
                         section_size, section_start);
             }
@@ -1835,7 +3233,20 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
             global_handle_acc += static_cast<uint64_t>(handle_delta);
             global_offset_acc += offset_delta;
 
-            m_sections.handle_map[handle_acc] = static_cast<size_t>(offset_acc);
+            if (offset_acc < 0) {
+                offsets_negative++;
+            } else if (m_sections.object_data.empty() ||
+                       static_cast<size_t>(offset_acc) < m_sections.object_data.size()) {
+                offsets_in_object_data_range++;
+            } else {
+                offsets_out_of_object_data_range++;
+            }
+            // R2004 object-map offsets use per-section accumulators.
+            // global_offset_acc diverges rapidly (grows to ~100M for files with
+            // many sections) and must NOT be used as a primary offset.
+            // It is kept only as a recovery candidate.
+            int64_t effective_offset = offset_acc;
+            m_sections.handle_map[handle_acc] = static_cast<size_t>(effective_offset) + r2007_object_data_prefix;
             // Keep non-authoritative alternatives for recovery. Real R2004+
             // files in the wild differ on whether handle and address
             // accumulators reset at page/section boundaries. We retain the
@@ -1848,14 +3259,54 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
             total_objects++;
         }
 
+
         // Skip CRC (2 bytes, RS_BE) after the section data
         off = section_data_end + 2;
     }
 
+    // TEMP: dump object_map to file for analysis
+    {
+        FILE* fmap = fopen("/tmp/dwg_object_map.bin", "wb");
+        if (fmap) {
+            fwrite(data, 1, data_size, fmap);
+            fclose(fmap);
+        }
+    }
     dwg_debug_log("[DWG] object_map: %llu entries unique=%zu (data_size=%zu, final_off=%zu)\n",
             (unsigned long long)total_objects,
             m_sections.handle_map.size(),
             data_size, off);
+    dwg_debug_log("[DWG] object_map offsets: in_object_data=%llu negative=%llu out_of_range=%llu object_data_size=%zu\n",
+                  static_cast<unsigned long long>(offsets_in_object_data_range),
+                  static_cast<unsigned long long>(offsets_negative),
+                  static_cast<unsigned long long>(offsets_out_of_object_data_range),
+                  m_sections.object_data.size());
+    // Debug: dump first 20 handle/offset pairs
+    if (dwg_debug_enabled()) {
+        size_t debug_off = 0;
+        size_t debug_count = 0;
+        while (debug_off + 2 <= data_size && debug_count < 20) {
+            uint16_t ss = (static_cast<uint16_t>(data[debug_off]) << 8) |
+                          static_cast<uint16_t>(data[debug_off + 1]);
+            debug_off += 2;
+            if (ss == 0 || ss > 2040) break;
+            size_t ss_end = debug_off - 2 + ss;
+            if (ss_end > data_size) break;
+            uint64_t ha = 0;
+            int64_t oa = 0;
+            while (debug_off < ss_end && debug_count < 20) {
+                uint32_t hd = read_modular_char(data, data_size, debug_off);
+                if (debug_off >= ss_end) break;
+                int32_t od = read_modular_char_signed(data, data_size, debug_off);
+                ha += hd;
+                oa += od;
+                dwg_debug_log("[DWG] object_map pair %zu: handle=%llu offset=%lld\n",
+                              debug_count, (unsigned long long)ha, (long long)oa);
+                debug_count++;
+            }
+            debug_off = ss_end + 2;
+        }
+    }
     return Result::success();
 }
 
@@ -1988,8 +3439,8 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
     double plot_origin_x = 0.0;
     double plot_origin_y = 0.0;
     r.read_2d_point(plot_origin_x, plot_origin_y);
-    (void)r.read_bs();      // plotsettings.plot_paper_unit
-    (void)r.read_bs();      // plotsettings.plot_rotation_mode
+    const uint16_t plot_paper_unit = r.read_bs();
+    const uint16_t plot_rotation_mode = r.read_bs();
     (void)r.read_bs();      // plotsettings.plot_type
     double win_ll_x = 0.0;
     double win_ll_y = 0.0;
@@ -1997,11 +3448,11 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
     double win_ur_y = 0.0;
     r.read_2d_point(win_ll_x, win_ll_y);
     r.read_2d_point(win_ur_x, win_ur_y);
-    (void)r.read_bd();      // plotsettings.paper_units
-    (void)r.read_bd();      // plotsettings.drawing_units
+    const double paper_units = r.read_bd();
+    const double drawing_units = r.read_bd();
     (void)r.read_t();       // plotsettings.stylesheet
     (void)r.read_bs();      // plotsettings.std_scale_type
-    (void)r.read_bd();      // plotsettings.std_scale_factor
+    const double std_scale_factor = r.read_bd();
     double image_origin_x = 0.0;
     double image_origin_y = 0.0;
     r.read_2d_point(image_origin_x, image_origin_y);
@@ -2014,22 +3465,31 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
     Layout layout;
     layout.name = r.read_t();
     (void)r.read_bs();      // tab_order
-    (void)r.read_bs();      // layout_flags
-    double ignored_z = 0.0;
-    r.read_3d_point(ignored_z, ignored_z, ignored_z);  // INSBASE
+    const uint16_t layout_flags = r.read_bs();
+    double insbase_x = 0.0;
+    double insbase_y = 0.0;
+    double insbase_z = 0.0;
+    r.read_3d_point(insbase_x, insbase_y, insbase_z);  // INSBASE
     double lim_min_x = 0.0;
     double lim_min_y = 0.0;
     double lim_max_x = 0.0;
     double lim_max_y = 0.0;
     read_2rd(r, lim_min_x, lim_min_y);
     read_2rd(r, lim_max_x, lim_max_y);
+    double ignored_z = 0.0;
     r.read_3d_point(ignored_z, ignored_z, ignored_z);  // UCSORG
     r.read_3d_point(ignored_z, ignored_z, ignored_z);  // UCSXDIR
     r.read_3d_point(ignored_z, ignored_z, ignored_z);  // UCSYDIR
     (void)r.read_bd();      // ucs_elevation
     (void)r.read_bs();      // UCSORTHOVIEW
-    r.read_3d_point(ignored_z, ignored_z, ignored_z);  // EXTMIN
-    r.read_3d_point(ignored_z, ignored_z, ignored_z);  // EXTMAX
+    double ext_min_x = 0.0;
+    double ext_min_y = 0.0;
+    double ext_min_z = 0.0;
+    double ext_max_x = 0.0;
+    double ext_max_y = 0.0;
+    double ext_max_z = 0.0;
+    r.read_3d_point(ext_min_x, ext_min_y, ext_min_z);  // EXTMIN
+    r.read_3d_point(ext_max_x, ext_max_y, ext_max_z);  // EXTMAX
     if (version >= DwgVersion::R2004) {
         (void)r.read_bl();  // num_viewports
     }
@@ -2040,6 +3500,23 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
 
     if (layout.name.empty()) {
         layout.name = "Layout";
+    }
+    layout.plot_origin = Vec3{static_cast<float>(plot_origin_x),
+                              static_cast<float>(plot_origin_y), 0.0f};
+    layout.plot_rotation = static_cast<int32_t>(plot_rotation_mode);
+    layout.paper_units = static_cast<int32_t>(plot_paper_unit);
+    if (std::isfinite(std_scale_factor) && std_scale_factor > 0.0) {
+        layout.plot_scale = static_cast<float>(std_scale_factor);
+    } else if (std::isfinite(paper_units) && std::isfinite(drawing_units) &&
+               paper_units > 0.0 && drawing_units > 0.0) {
+        layout.plot_scale = static_cast<float>(drawing_units / paper_units);
+    }
+    layout.is_active = (layout_flags & 0x01u) != 0;
+    layout.is_current = (layout_flags & 0x02u) != 0;
+    if (std::isfinite(insbase_x) && std::isfinite(insbase_y) && std::isfinite(insbase_z)) {
+        layout.insertion_base = Vec3{static_cast<float>(insbase_x),
+                                     static_cast<float>(insbase_y),
+                                     static_cast<float>(insbase_z)};
     }
     std::string upper = layout.name;
     for (char& c : upper) {
@@ -2068,8 +3545,24 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
         layout.plot_window.expand(Vec3{static_cast<float>(win_ll_x), static_cast<float>(win_ll_y), 0.0f});
         layout.plot_window.expand(Vec3{static_cast<float>(win_ur_x), static_cast<float>(win_ur_y), 0.0f});
     }
+    if (std::isfinite(lim_min_x) && std::isfinite(lim_min_y) &&
+        std::isfinite(lim_max_x) && std::isfinite(lim_max_y) &&
+        lim_max_x > lim_min_x && lim_max_y > lim_min_y) {
+        layout.limits.expand(Vec3{static_cast<float>(lim_min_x), static_cast<float>(lim_min_y), 0.0f});
+        layout.limits.expand(Vec3{static_cast<float>(lim_max_x), static_cast<float>(lim_max_y), 0.0f});
+    }
+    if (std::isfinite(ext_min_x) && std::isfinite(ext_min_y) && std::isfinite(ext_min_z) &&
+        std::isfinite(ext_max_x) && std::isfinite(ext_max_y) && std::isfinite(ext_max_z) &&
+        ext_max_x > ext_min_x && ext_max_y > ext_min_y) {
+        layout.extents.expand(Vec3{static_cast<float>(ext_min_x),
+                                   static_cast<float>(ext_min_y),
+                                   static_cast<float>(ext_min_z)});
+        layout.extents.expand(Vec3{static_cast<float>(ext_max_x),
+                                   static_cast<float>(ext_max_y),
+                                   static_cast<float>(ext_max_z)});
+    }
 
-    dwg_debug_log("[DWG] layout parsed name='%s' model=%u paper=(%.3f,%.3f) margins=(%.3f,%.3f,%.3f,%.3f) window=(%.3f,%.3f)-(%.3f,%.3f) limits=(%.3f,%.3f)-(%.3f,%.3f)\n",
+    dwg_debug_log("[DWG] layout parsed name='%s' model=%u paper=(%.3f,%.3f) margins=(%.3f,%.3f,%.3f,%.3f) window=(%.3f,%.3f)-(%.3f,%.3f) limits=(%.3f,%.3f)-(%.3f,%.3f) ext=(%.3f,%.3f)-(%.3f,%.3f) insbase=(%.3f,%.3f,%.3f)\n",
                   layout.name.c_str(),
                   layout.is_model_layout ? 1u : 0u,
                   paper_width,
@@ -2085,7 +3578,14 @@ int32_t parse_layout_object(DwgBitReader& reader, SceneGraph& scene, DwgVersion 
                   lim_min_x,
                   lim_min_y,
                   lim_max_x,
-                  lim_max_y);
+                  lim_max_y,
+                  ext_min_x,
+                  ext_min_y,
+                  ext_max_x,
+                  ext_max_y,
+                  insbase_x,
+                  insbase_y,
+                  insbase_z);
 
     return scene.add_layout(std::move(layout));
 }
@@ -2173,6 +3673,17 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
             uint32_t ot = is_r2010_plus ? r.read_bot() : r.read_bs();
             if (r.has_error() || ot != target_type) continue;
+            if (!is_r2010_plus && m_version >= DwgVersion::R2004) {
+                const uint32_t object_end_bit = r.read_rl();
+                if (r.has_error() || object_end_bit == 0 || object_end_bit > edb * 8) {
+                    continue;
+                }
+                mdb = object_end_bit;
+                r.set_bit_limit(mdb);
+                if (is_r2007_plus) {
+                    r.setup_string_stream(static_cast<uint32_t>(mdb));
+                }
+            }
 
             // Skip common object header: handle (H) + EED loop + reactors + flags
             (void)r.read_h();  // object handle
@@ -2198,14 +3709,126 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             }
         }
     };
+    // Declare early so BLOCK_HEADER pre-scan can populate it.
+    std::unordered_map<uint64_t, std::string> block_names_from_entities;
     prescan_table_type(57); // LTYPE
     prescan_table_type(51); // LAYER
-    dwg_debug_log("[DWG] Pre-scan: %zu layer handles, %zu linetype handles loaded\n",
-            m_layer_handle_to_index.size(), m_linetype_handle_to_index.size());
+    // Pre-scan BLOCK_HEADER (type 49) to populate block names before
+    // the main loop encounters BLOCK entities that need name lookups.
+    // parse_dwg_table_object doesn't handle type 49, so we do it here.
+    {
+        size_t prescan_block_names = 0;
+        size_t prescan_reverse_maps = 0;
+        for (const auto& [bh_handle, bh_offset] : m_sections.handle_map) {
+            if (bh_offset >= obj_data_size) continue;
+            DwgBitReader ms_r(obj_data + bh_offset, obj_data_size - bh_offset);
+            uint32_t esz = ms_r.read_modular_short();
+            if (ms_r.has_error() || esz == 0 || esz > obj_data_size - bh_offset) continue;
+            ms_r.align_to_byte();
+            size_t msb = ms_r.bit_offset() / 8;
+
+            size_t umcb = 0;
+            if (is_r2010_plus) {
+                const uint8_t* up = obj_data + bh_offset + msb;
+                size_t uavail = obj_data_size - bh_offset - msb;
+                for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail; ++i) {
+                    umcb = static_cast<size_t>(i) + 1;
+                    if ((up[i] & 0x80) == 0) break;
+                }
+            }
+
+            size_t edb = static_cast<size_t>(esz);
+            if (bh_offset + msb + umcb + edb > obj_data_size) continue;
+
+            DwgBitReader r(obj_data + bh_offset + msb + umcb, edb);
+            size_t mdb = edb * 8;
+            if (is_r2010_plus) {
+                // Read UMC for handle stream size
+                uint32_t hss = 0;
+                const uint8_t* up2 = obj_data + bh_offset + msb;
+                size_t uavail2 = obj_data_size - bh_offset - msb;
+                for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail2; ++i) {
+                    hss = (hss << 7) | (up2[i] & 0x7F);
+                    if ((up2[i] & 0x80) == 0) break;
+                }
+                if (hss <= edb * 8) mdb = edb * 8 - hss;
+            }
+            r.set_bit_limit(mdb);
+            if (is_r2007_plus && mdb > 0) r.setup_string_stream(static_cast<uint32_t>(mdb));
+
+            uint32_t ot = is_r2010_plus ? r.read_bot() : r.read_bs();
+            if (r.has_error() || ot != 49) continue;
+            if (!is_r2010_plus && m_version >= DwgVersion::R2004) {
+                uint32_t object_end_bit = r.read_rl();
+                if (r.has_error() || object_end_bit == 0 || object_end_bit > edb * 8) continue;
+                mdb = object_end_bit;
+                r.set_bit_limit(mdb);
+                if (is_r2007_plus) r.setup_string_stream(static_cast<uint32_t>(mdb));
+            }
+            // Skip common object header: handle + EED
+            (void)r.read_h();
+            uint16_t eed_sz = 0;
+            while (!r.has_error()) {
+                eed_sz = r.read_bs();
+                if (eed_sz == 0) break;
+                (void)r.read_h();
+                size_t skip = static_cast<size_t>(eed_sz) * 8;
+                if (r.bit_offset() + skip <= r.bit_limit()) {
+                    r.set_bit_offset(r.bit_offset() + skip);
+                } else break;
+            }
+            (void)r.read_bl();  // num_reactors
+            (void)r.read_b();   // is_xdic_missing
+
+            // BLOCK_HEADER specific: T(name) + BS(is_xref_resolved) + flags + BL(num_owned)
+            std::string block_name = r.read_t();
+            if (!block_name.empty() && !r.has_error()) {
+                m_sections.block_names[bh_handle] = block_name;
+                prescan_block_names++;
+                // Also read handle stream to find the BLOCK entity handle.
+                // This lets us map BLOCK_handle → name without relying on
+                // nearby handle search during the main loop.
+                size_t hs_start = static_cast<size_t>(is_r2010_plus ? 0 : 0);
+                if (is_r2010_plus) {
+                    // For R2010+, use UMC handle_stream_size
+                    const uint8_t* up3 = obj_data + bh_offset + msb;
+                    size_t uavail3 = obj_data_size - bh_offset - msb;
+                    uint32_t hss = 0;
+                    for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail3; ++i) {
+                        hss = (hss << 7) | (up3[i] & 0x7F);
+                        if ((up3[i] & 0x80) == 0) break;
+                    }
+                    hs_start = (hss < edb * 8) ? (edb * 8 - hss) : 0;
+                } else if (m_version >= DwgVersion::R2004) {
+                    // For R2004, mdb (from RL bitsize) marks start of handle stream
+                    hs_start = mdb;
+                }
+                if (hs_start > 0 && hs_start < edb * 8) {
+                    DwgBitReader hreader2(obj_data + bh_offset + msb + umcb, edb);
+                    hreader2.set_bit_offset(hs_start);
+                    hreader2.set_bit_limit(edb * 8);
+                    auto bref = hreader2.read_h();
+                    if (!hreader2.has_error()) {
+                        uint64_t block_entity_h = resolve_handle_ref(bh_handle, bref);
+                        if (block_entity_h != 0 && block_entity_h != bh_handle) {
+                            block_names_from_entities[block_entity_h] = block_name;
+                            prescan_reverse_maps++;
+                        }
+                    }
+                }
+            }
+        }
+        dwg_debug_log("[DWG] BLOCK_HEADER pre-scan: %zu names loaded, %zu reverse maps\n",
+                      prescan_block_names, prescan_reverse_maps);
+    }
+    dwg_debug_log("[DWG] Pre-scan: %zu layer handles, %zu linetype handles, %zu block names loaded\n",
+            m_layer_handle_to_index.size(), m_linetype_handle_to_index.size(),
+            m_sections.block_names.size());
 
     // Collect INSERT handle stream data for post-processing resolution.
     // Maps entity_index → vector of handles from INSERT handle stream.
     std::unordered_map<size_t, std::vector<uint64_t>> insert_handles;
+    std::unordered_map<size_t, std::vector<uint64_t>> insert_handle_fallback_candidates;
     std::unordered_map<size_t, std::vector<uint64_t>> entity_common_handles;
     std::unordered_map<size_t, uint64_t> entity_owner_handles;
     std::unordered_map<size_t, uint64_t> entity_object_handles;
@@ -2238,16 +3861,31 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     size_t unrecovered_object_offsets = 0;
     size_t object_recovery_scans = 0;
     size_t primary_self_handle_mismatches = 0;
+    size_t insert_handle_role_fallbacks = 0;
+    size_t invalid_handle_stream_framing = 0;
+    size_t prepared_string_streams = 0;
+    size_t r2007_primary_self_recovered = 0;
+    size_t viewport_frozen_layer_refs = 0;
+    size_t viewport_frozen_layer_viewports = 0;
 
-    struct ObjectRecord {
+    struct PreparedObject {
         size_t offset = 0;
         size_t ms_bytes = 0;
         size_t umc_bytes = 0;
         size_t entity_data_bytes = 0;
         size_t entity_bits = 0;
         size_t main_data_bits = 0;
+        size_t handle_stream_bits = 0;
+        bool handle_stream_valid = true;
+        bool has_string_stream = false;
+        size_t string_stream_bit_pos = 0;
         uint32_t obj_type = 0;
         DwgBitReader::HandleRef self_handle;
+
+        size_t entity_data_offset() const { return offset + ms_bytes + umc_bytes; }
+        size_t handle_stream_bit_start() const { return main_data_bits; }
+        size_t handle_stream_bit_end() const { return entity_bits; }
+        bool has_handle_stream() const { return handle_stream_bits >= 8 && handle_stream_valid; }
     };
 
     auto is_known_object_type = [&](uint32_t obj_type) {
@@ -2265,7 +3903,7 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
     };
 
-    auto prepare_object_record = [&](size_t record_offset, ObjectRecord& record,
+    auto prepare_object = [&](size_t record_offset, PreparedObject& record,
                                      bool require_valid_handle_stream,
                                      bool require_known_type,
                                      const char** failure_reason = nullptr) {
@@ -2323,8 +3961,10 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
         const size_t entity_bits = entity_data_bytes * 8;
         size_t main_data_bits = entity_bits;
+        bool handle_stream_valid = true;
         if (is_r2010_plus) {
             if (handle_stream_size > entity_bits) {
+                handle_stream_valid = false;
                 if (require_valid_handle_stream) {
                     return fail("invalid_handle_stream_size");
                 }
@@ -2338,12 +3978,35 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
         DwgBitReader reader(obj_data + record_offset + ms_bytes + umc_bytes,
                             entity_data_bytes);
-        reader.set_bit_limit(main_data_bits);
+        reader.set_bit_limit(entity_bits);
         const uint32_t obj_type = is_r2010_plus ? reader.read_bot() : reader.read_bs();
+        size_t framed_main_data_bits = main_data_bits;
+        // R2004-R2007: bitsize (RL) indicates end of main data / start of handle stream.
+        // R2010+: handle_stream_size (UMC) is read separately before object data.
+        if (!is_r2010_plus && m_version >= DwgVersion::R2004) {
+            framed_main_data_bits = reader.read_rl();
+            if (reader.has_error() || framed_main_data_bits == 0 ||
+                framed_main_data_bits > entity_bits ||
+                framed_main_data_bits <= reader.bit_offset()) {
+                return fail("invalid_object_end_bit");
+            }
+            // R2004 handle stream heuristic: for most objects the handle stream
+            // contains at least owner handle (typically 16-40 bits). Streams
+            // smaller than 12 bits or larger than 256 bits are suspicious and
+            // likely indicate an interior object-map offset.
+            if (m_version == DwgVersion::R2004) {
+                size_t hs_bits = (entity_bits > framed_main_data_bits)
+                                     ? (entity_bits - framed_main_data_bits)
+                                     : 0;
+                if (hs_bits < 12 || hs_bits > 256) {
+                    return fail("r2004_handle_stream_heuristic");
+                }
+            }
+            reader.set_bit_limit(framed_main_data_bits);
+        }
         if (reader.has_error() || (require_known_type && !is_known_object_type(obj_type))) {
             return fail(reader.has_error() ? "object_type_read_failed" : "unknown_object_type");
         }
-
         auto self_handle = reader.read_h();
         if (reader.has_error()) {
             return fail("self_handle_read_failed");
@@ -2354,14 +4017,23 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         record.umc_bytes = umc_bytes;
         record.entity_data_bytes = entity_data_bytes;
         record.entity_bits = entity_bits;
-        record.main_data_bits = main_data_bits;
+        record.main_data_bits = framed_main_data_bits;
+        record.handle_stream_bits = entity_bits > framed_main_data_bits ? entity_bits - framed_main_data_bits : 0;
+        record.handle_stream_valid = handle_stream_valid;
         record.obj_type = obj_type;
         record.self_handle = self_handle;
+        if (is_r2007_plus && framed_main_data_bits > 0) {
+            DwgBitReader string_probe(obj_data + record.entity_data_offset(), entity_data_bytes);
+            string_probe.set_bit_limit(framed_main_data_bits);
+            string_probe.setup_string_stream(static_cast<uint32_t>(framed_main_data_bits));
+            record.has_string_stream = string_probe.has_string_stream();
+            record.string_stream_bit_pos = string_probe.string_stream_bit_pos();
+        }
         return true;
     };
 
-    auto recover_object_record_for_handle = [&](uint64_t target_handle,
-                                                ObjectRecord& recovered) {
+    auto recover_prepared_object_for_handle = [&](uint64_t target_handle,
+                                                PreparedObject& recovered) {
         // Recovery is intentionally strict and bounded: it is a generic DWG
         // object-map repair path for bad offsets, not a file-specific fallback.
         if (++object_recovery_scans > 64) {
@@ -2369,12 +4041,12 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
 
         bool found = false;
-        ObjectRecord candidate;
+        PreparedObject candidate;
         auto scan_range = [&](size_t begin, size_t end) {
             end = std::min(end, obj_data_size);
             for (size_t pos = begin; pos < end; ++pos) {
-                ObjectRecord current;
-                if (!prepare_object_record(pos, current, true, true)) {
+                PreparedObject current;
+                if (!prepare_object(pos, current, true, true)) {
                     continue;
                 }
                 const uint64_t self_abs = resolve_handle_ref(target_handle, current.self_handle);
@@ -2411,22 +4083,22 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         return true;
     };
 
-    auto recover_object_record_from_candidates = [&](uint64_t target_handle,
+    auto recover_prepared_object_from_candidates = [&](uint64_t target_handle,
                                                      size_t primary_offset,
-                                                     ObjectRecord& recovered) {
+                                                     PreparedObject& recovered) {
         auto it = m_sections.handle_offset_candidates.find(target_handle);
         if (it == m_sections.handle_offset_candidates.end()) {
             return false;
         }
 
         bool found = false;
-        ObjectRecord candidate;
+        PreparedObject candidate;
         for (size_t candidate_offset : it->second) {
             if (candidate_offset == primary_offset) {
                 continue;
             }
-            ObjectRecord current;
-            if (!prepare_object_record(candidate_offset, current, false, false)) {
+            PreparedObject current;
+            if (!prepare_object(candidate_offset, current, false, false)) {
                 continue;
             }
             const uint64_t self_abs = resolve_handle_ref(target_handle, current.self_handle);
@@ -2446,24 +4118,26 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         return true;
     };
 
-    // Collect BLOCK entity handle→name mapping from handle streams.
-    // BLOCK entities have correct unique names (e.g., "*D1077") while
-    // BLOCK_HEADER (type 49) stores truncated names (e.g., "*D").
-    std::unordered_map<uint64_t, std::string> block_names_from_entities;
-    for (const auto& handle_entry : m_sections.handle_map) {
-        uint64_t handle = handle_entry.first;
-        size_t offset = handle_entry.second;
+    // Iterate in handle-sorted order so BLOCK/ENDBLK markers correctly
+    // bracket the entities that belong to each block definition.
+    // unordered_map iteration is hash-order which scrambles entity grouping.
+    std::vector<std::pair<uint64_t, size_t>> sorted_handles(
+        m_sections.handle_map.begin(), m_sections.handle_map.end());
+    std::sort(sorted_handles.begin(), sorted_handles.end());
+    for (const auto& sorted_entry : sorted_handles) {
+        uint64_t handle = sorted_entry.first;
+        size_t offset = sorted_entry.second;
         processed++;
         if ((processed % 10000) == 0) {
             dwg_debug_log("[DWG] parse_objects progress: %zu / %zu\n",
                     processed, m_sections.handle_map.size());
         }
-        ObjectRecord record;
+        PreparedObject record;
         const char* prepare_failure = "";
-        if (!prepare_object_record(offset, record, false, false, &prepare_failure)) {
-            ObjectRecord recovered;
-            if (!recover_object_record_from_candidates(handle, offset, recovered) &&
-                !recover_object_record_for_handle(handle, recovered)) {
+        if (!prepare_object(offset, record, false, false, &prepare_failure)) {
+            PreparedObject recovered;
+            if (!recover_prepared_object_from_candidates(handle, offset, recovered) &&
+                !recover_prepared_object_for_handle(handle, recovered)) {
                 if (dwg_debug_enabled() && unrecovered_object_offsets < 20) {
                     dwg_debug_log("[DWG] object-map invalid: handle=%llu offset=%zu reason=%s\n",
                                   static_cast<unsigned long long>(handle),
@@ -2475,8 +4149,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                         for (size_t ci = 0; ci < cand_limit; ++ci) {
                             const size_t cand_offset = cand_it->second[ci];
                             const char* cand_reason = "";
-                            ObjectRecord cand_record;
-                            const bool cand_ok = prepare_object_record(
+                            PreparedObject cand_record;
+                            const bool cand_ok = prepare_object(
                                 cand_offset, cand_record, false, false, &cand_reason);
                             const uint64_t self_abs = cand_ok
                                 ? resolve_handle_ref(handle, cand_record.self_handle)
@@ -2506,16 +4180,32 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         const size_t entity_bits = record.entity_bits;
         const size_t main_data_bits = record.main_data_bits;
         const uint32_t obj_type = record.obj_type;
+        if (!record.handle_stream_valid) {
+            invalid_handle_stream_framing++;
+        }
+        if (record.has_string_stream) {
+            prepared_string_streams++;
+        }
         const uint64_t primary_self_handle = resolve_handle_ref(handle, record.self_handle);
-        if (primary_self_handle != 0 && primary_self_handle != handle) {
-            if (dwg_debug_enabled() && primary_self_handle_mismatches < 20) {
-                dwg_debug_log("[DWG] object-map self mismatch: map_handle=%llu self=%llu offset=%zu type=%u\n",
-                              static_cast<unsigned long long>(handle),
-                              static_cast<unsigned long long>(primary_self_handle),
-                              offset,
-                              obj_type);
+        if (primary_self_handle != handle) {
+            PreparedObject recovered_by_self;
+            if (m_version == DwgVersion::R2007 &&
+                recover_prepared_object_from_candidates(handle, offset, recovered_by_self)) {
+                record = recovered_by_self;
+                offset = record.offset;
+                r2007_primary_self_recovered++;
+                recovered_object_offsets++;
+            } else {
+                if (dwg_debug_enabled() && primary_self_handle_mismatches < 20) {
+                    dwg_debug_log("[DWG] object-map self mismatch: map_handle=%llu self=%llu offset=%zu type=%u\n",
+                                  static_cast<unsigned long long>(handle),
+                                  static_cast<unsigned long long>(primary_self_handle),
+                                  offset,
+                                  obj_type);
+                }
+                primary_self_handle_mismatches++;
+                continue;
             }
-            primary_self_handle_mismatches++;
         }
 
         // Entity reader starts AFTER MS + UMC, with exactly entity_size bytes.
@@ -2529,6 +4219,9 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             (void)reader.read_bot();
         } else {
             (void)reader.read_bs();
+            if (m_version >= DwgVersion::R2004) {
+                (void)reader.read_rl();  // bitsize: end of main data / start of handle stream
+            }
         }
         if (reader.has_error()) {
             error_count++;
@@ -2536,6 +4229,102 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         }
         object_type_counts[obj_type]++;
         handle_object_types[handle] = obj_type;
+
+        // ---- BLOCK / ENDBLK tracking (before CED to avoid bit exhaustion) ----
+        if (obj_type == 4) { // BLOCK
+            m_block_entity_start = scene.entities().size();
+            m_current_block_handle = handle;
+            m_current_block_name = "__pending__";
+            // First check pre-scan mapping (BLOCK_HEADER handle stream → name)
+            auto bn_pre = block_names_from_entities.find(handle);
+            if (bn_pre != block_names_from_entities.end() && !bn_pre->second.empty()) {
+                m_current_block_name = bn_pre->second;
+            }
+            // Also check direct BLOCK_HEADER handle match (some DWGs share handles)
+            if (m_current_block_name == "__pending__") {
+                auto bn_direct = m_sections.block_names.find(handle);
+                if (bn_direct != m_sections.block_names.end() && !bn_direct->second.empty()) {
+                    m_current_block_name = bn_direct->second;
+                }
+            }
+            // Try handle stream bridge to find BLOCK_HEADER name.
+            {
+                size_t hs_bit_start = main_data_bits;
+                size_t hs_bit_end   = entity_bits;
+                size_t hs_bits = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
+                if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
+                    DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
+                    hreader.set_bit_offset(hs_bit_start);
+                    hreader.set_bit_limit(hs_bit_end);
+                    for (int h_idx = 0; h_idx < 20 && !hreader.has_error(); ++h_idx) {
+                        auto href = hreader.read_h();
+                        if (hreader.has_error()) break;
+                        if (href.value == 0 && href.code == 0) break;
+                        uint64_t abs_handle = resolve_handle_ref(handle, href);
+                        auto type_it = handle_object_types.find(abs_handle);
+                        if (abs_handle != 0 && abs_handle != handle &&
+                            type_it != handle_object_types.end() && type_it->second == 49) {
+                            auto bn_it = m_sections.block_names.find(abs_handle);
+                            if (bn_it != m_sections.block_names.end() && !bn_it->second.empty()) {
+                                m_current_block_name = bn_it->second;
+                                block_names_from_entities[abs_handle] = bn_it->second;
+                                block_names_from_entities[handle] = bn_it->second;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            non_graphic_count++;
+            continue;
+        }
+
+        if (obj_type == 5) { // ENDBLK
+            if (m_current_block_name == "__pending__") {
+                // Search nearby handles in m_sections.block_names (pre-scanned)
+                // directly, not handle_object_types (which may not have
+                // BLOCK_HEADER entries yet if they have higher handles).
+                for (int64_t delta = -10; delta <= 10; ++delta) {
+                    uint64_t probe = static_cast<uint64_t>(
+                        static_cast<int64_t>(m_current_block_handle) + delta);
+                    auto bn_it = m_sections.block_names.find(probe);
+                    if (bn_it != m_sections.block_names.end() && !bn_it->second.empty()) {
+                        m_current_block_name = bn_it->second;
+                        block_names_from_entities[m_current_block_handle] = bn_it->second;
+                        break;
+                    }
+                }
+                if (m_current_block_name == "__pending__") {
+                    m_current_block_name.clear();
+                }
+            }
+            if (!m_current_block_name.empty()) {
+                Block block;
+                block.name = m_current_block_name;
+                block.base_point = m_current_block_base_point;
+                block.dwg_block_handle = m_current_block_handle;
+                for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
+                    block.entity_indices.push_back(static_cast<int32_t>(i));
+                }
+                int32_t block_idx = scene.add_block(block);
+                const auto& added_block = scene.blocks()[static_cast<size_t>(block_idx)];
+                for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
+                    auto& child = scene.entities()[i].header;
+                    child.in_block = true;
+                    child.owner_block_index = block_idx;
+                    if (added_block.is_paper_space) {
+                        child.space = DrawingSpace::PaperSpace;
+                    } else if (added_block.is_model_space) {
+                        child.space = DrawingSpace::ModelSpace;
+                    }
+                }
+                m_current_block_name.clear();
+                m_current_block_base_point = Vec3::zero();
+                m_current_block_handle = 0;
+            }
+            non_graphic_count++;
+            continue;
+        }
 
         bool is_graphic = is_graphic_entity(obj_type);
 
@@ -2596,10 +4385,12 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             continue;
         }
 
+
         // ---- Entity CED or Object Common Header ----
 
         EntityHeader entity_hdr;
         entity_hdr.entity_id = static_cast<int64_t>(handle);
+        entity_hdr.dwg_handle = handle;
 
         uint16_t color_raw = 0;
         uint8_t color_flag = 0;
@@ -2607,7 +4398,9 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         bool saved_is_xdic_missing = false;
         if (is_graphic) {
             // Graphic entity CED (Common Entity Data)
-            if (is_r2010_plus) {
+            // entity_mode (BB) is present for R2007+ per libredwg common_entity_data.spec.
+            // R2004 does NOT have this field.
+            if (m_version >= DwgVersion::R2007) {
                 (void)reader.read_bits(2);  // entity_mode (BB)
             }
 
@@ -2731,17 +4524,17 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 return type_it->second;
             }
             auto offset_it = m_sections.handle_map.find(ref_handle);
-            ObjectRecord ref_record;
+            PreparedObject ref_record;
             if (offset_it != m_sections.handle_map.end() &&
-                prepare_object_record(offset_it->second, ref_record, false, false, nullptr)) {
+                prepare_object(offset_it->second, ref_record, false, false, nullptr)) {
                 return ref_record.obj_type;
             }
             const size_t primary_offset =
                 offset_it != m_sections.handle_map.end() ? offset_it->second : static_cast<size_t>(-1);
-            if (recover_object_record_from_candidates(ref_handle, primary_offset, ref_record)) {
+            if (recover_prepared_object_from_candidates(ref_handle, primary_offset, ref_record)) {
                 return ref_record.obj_type;
             }
-            if (recover_object_record_for_handle(ref_handle, ref_record)) {
+            if (recover_prepared_object_for_handle(ref_handle, ref_record)) {
                 return ref_record.obj_type;
             }
             if (offset_it == m_sections.handle_map.end()) {
@@ -3274,6 +5067,14 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                             uint64_t abs_handle = resolve_handle_ref(handle, href);
                             if (abs_handle != 0) {
                                 refs.push_back(abs_handle);
+                                if (layout_index >= 0 &&
+                                    static_cast<size_t>(layout_index) < scene.layouts().size()) {
+                                    auto& layouts_mut =
+                                        const_cast<std::vector<Layout>&>(scene.layouts());
+                                    if (layouts_mut[static_cast<size_t>(layout_index)].layout_handle == 0) {
+                                        layouts_mut[static_cast<size_t>(layout_index)].layout_handle = handle;
+                                    }
+                                }
                             }
                         }
                     }
@@ -3288,95 +5089,6 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                                        handle,
                                        &m_layer_handle_to_index,
                                        &m_linetype_handle_to_index);
-            }
-            non_graphic_count++;
-            continue;
-        }
-
-        // ---- Handle BLOCK / ENDBLK for block definition tracking ----
-        if (obj_type == 4) { // BLOCK
-            if (is_r2010_plus) {
-                (void)reader.read_raw_char(); // class_version (RC)
-            }
-            std::string block_name;
-            if (has_string_stream) {
-                block_name = reader.read_t();
-            } else if (is_r2007_plus) {
-                block_name = reader.read_tu();
-            } else {
-                block_name = reader.read_tv();
-            }
-            // Read 3BD(base_pt) + BS(flag) + B(xref)
-            double bpx = reader.read_bd();
-            double bpy = reader.read_bd();
-            double bpz = reader.read_bd();
-            (void)reader.read_bs();
-            (void)reader.read_b();
-
-            m_current_block_name = block_name;
-            m_current_block_base_point = Vec3{
-                static_cast<float>(bpx), static_cast<float>(bpy), static_cast<float>(bpz)};
-            m_block_entity_start = scene.entities().size();
-
-            // Store mapping from BLOCK entity handle → block name.
-            // In DWG, a BLOCK entity and its BLOCK_HEADER table object often share
-            // the same handle value. By also mapping the BLOCK entity's own handle,
-            // INSERT entities can resolve their block_header handles directly.
-            if (!block_name.empty()) {
-                block_names_from_entities[handle] = block_name;
-            }
-
-            // Read handle stream to find BLOCK_HEADER handle.
-            // Store mapping: BLOCK_HEADER handle → correct name from BLOCK entity.
-            // Handle references use relative encoding: target = entity_handle - value - 1
-            // for most codes, or absolute for code 6.
-            if (!block_name.empty()) {
-                size_t hs_bit_start = main_data_bits;
-                size_t hs_bit_end   = entity_bits;
-                size_t hs_bits = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
-                if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
-                    DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
-                    hreader.set_bit_offset(hs_bit_start);
-                    hreader.set_bit_limit(hs_bit_end);
-                    for (int h_idx = 0; h_idx < 20 && !hreader.has_error(); ++h_idx) {
-                        auto href = hreader.read_h();
-                        if (hreader.has_error()) break;
-                        if (href.value == 0 && href.code == 0) break;
-
-                        uint64_t abs_handle = 0;
-                        abs_handle = resolve_handle_ref(handle, href);
-                        if (abs_handle != 0 && abs_handle != handle) {
-                            block_names_from_entities[abs_handle] = block_name;
-                        }
-                    }
-                }
-            }
-            non_graphic_count++;
-            continue;
-        }
-
-        if (obj_type == 5) { // ENDBLK
-            if (!m_current_block_name.empty()) {
-                Block block;
-                block.name = m_current_block_name;
-                block.base_point = m_current_block_base_point;
-                for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
-                    block.entity_indices.push_back(static_cast<int32_t>(i));
-                }
-                int32_t block_idx = scene.add_block(block);
-                const auto& added_block = scene.blocks()[static_cast<size_t>(block_idx)];
-                for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
-                    auto& child = scene.entities()[i].header;
-                    child.in_block = true;
-                    child.owner_block_index = block_idx;
-                    if (added_block.is_paper_space) {
-                        child.space = DrawingSpace::PaperSpace;
-                    } else if (added_block.is_model_space) {
-                        child.space = DrawingSpace::ModelSpace;
-                    }
-                }
-                m_current_block_name.clear();
-                m_current_block_base_point = Vec3::zero();
             }
             non_graphic_count++;
             continue;
@@ -3405,106 +5117,202 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version);
         }
 
-        // ---- Handle stream: capture common handles for space/block semantics ----
-        // The owner handle is not consistently the first handle in every DWG
-        // object flavor; some files put layer/style handles first. Preserve the
-        // bounded stream and choose the semantic owner during post-processing.
+        // ---- Role-based handle stream decoding ----
+        // Common entity handles are positional: owner, reactors, optional
+        // extension dictionary, layer, then entity-specific handles. Keep the
+        // roles explicit so layer/style handles cannot become semantic owners.
         if (scene.entities().size() > entities_before) {
+            struct HandleRoles {
+                uint64_t owner = 0;
+                uint64_t extension_dictionary = 0;
+                uint64_t layer = 0;
+                std::vector<uint64_t> reactors;
+                std::vector<uint64_t> entity_specific;
+                bool ok = false;
+            };
+
+            auto read_abs_handle = [&](DwgBitReader& hreader) -> uint64_t {
+                auto href = hreader.read_h();
+                if (hreader.has_error() || (href.value == 0 && href.code == 0)) {
+                    return 0;
+                }
+                return resolve_handle_ref(handle, href);
+            };
+
+            HandleRoles roles;
+            const size_t hs_bit_start = main_data_bits;
+            const size_t hs_bit_end   = entity_bits;
+            const size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
+            if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
+                DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
+                hreader.set_bit_offset(hs_bit_start);
+                hreader.set_bit_limit(hs_bit_end);
+
+                roles.owner = read_abs_handle(hreader);
+                const uint32_t reactor_limit = std::min<uint32_t>(saved_num_reactors, 1024u);
+                roles.reactors.reserve(reactor_limit);
+                for (uint32_t ri = 0; ri < reactor_limit && !hreader.has_error(); ++ri) {
+                    uint64_t reactor_handle = read_abs_handle(hreader);
+                    if (reactor_handle != 0) {
+                        roles.reactors.push_back(reactor_handle);
+                    }
+                }
+                if (!saved_is_xdic_missing && !hreader.has_error()) {
+                    roles.extension_dictionary = read_abs_handle(hreader);
+                }
+                if (!hreader.has_error()) {
+                    roles.layer = read_abs_handle(hreader);
+                }
+                for (int h_idx = 0; h_idx < 30 && !hreader.has_error(); ++h_idx) {
+                    uint64_t abs_handle = read_abs_handle(hreader);
+                    if (abs_handle == 0) {
+                        break;
+                    }
+                    roles.entity_specific.push_back(abs_handle);
+                }
+                roles.ok = !hreader.has_error();
+            }
+
             for (size_t eidx = entities_before; eidx < scene.entities().size(); ++eidx) {
                 entity_object_handles[eidx] = handle;
-            }
-
-            size_t hs_bit_start = main_data_bits;
-            size_t hs_bit_end   = entity_bits;
-            size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
-            if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
-                DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
-                hreader.set_bit_offset(hs_bit_start);
-                hreader.set_bit_limit(hs_bit_end);
-                std::vector<uint64_t> handles;
-                for (int h_idx = 0; h_idx < 30 && !hreader.has_error(); ++h_idx) {
-                    auto href = hreader.read_h();
-                    if (hreader.has_error()) break;
-                    if (href.value == 0 && href.code == 0) continue;
-                    uint64_t abs_handle = resolve_handle_ref(handle, href);
-                    if (abs_handle != 0) {
-                        handles.push_back(abs_handle);
+                auto& added_header = scene.entities()[eidx].header;
+                if (roles.owner != 0) {
+                    entity_owner_handles[eidx] = roles.owner;
+                    entity_common_handles[eidx] = {roles.owner};
+                    added_header.owner_handle = roles.owner;
+                }
+                int32_t resolved_layer_index = -1;
+                if (roles.layer != 0) {
+                    auto layer_it = m_layer_handle_to_index.find(roles.layer);
+                    if (layer_it != m_layer_handle_to_index.end()) {
+                        resolved_layer_index = layer_it->second;
                     }
                 }
-                if (!handles.empty()) {
-                    for (size_t eidx = entities_before; eidx < scene.entities().size(); ++eidx) {
-                        entity_common_handles[eidx] = handles;
-                        // Kept for diagnostics/fallback compatibility; the
-                        // post-process resolver below scans all handles.
-                        entity_owner_handles[eidx] = handles.front();
+                if (resolved_layer_index < 0 && !m_layer_handle_to_index.empty() &&
+                    hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
+                    DwgBitReader scan(obj_data + offset + ms_bytes + umc_bytes,
+                                      entity_data_bytes);
+                    scan.set_bit_offset(hs_bit_start);
+                    scan.set_bit_limit(hs_bit_end);
+                    for (int h_idx = 0; h_idx < 30 && !scan.has_error(); ++h_idx) {
+                        uint64_t abs_handle = read_abs_handle(scan);
+                        if (abs_handle == 0) {
+                            break;
+                        }
+                        auto layer_it = m_layer_handle_to_index.find(abs_handle);
+                        if (layer_it != m_layer_handle_to_index.end()) {
+                            resolved_layer_index = layer_it->second;
+                            break;
+                        }
                     }
                 }
+                if (resolved_layer_index >= 0) {
+                    added_header.layer_index = resolved_layer_index;
+                    g_layer_resolved++;
+                }
             }
-        }
 
-        // ---- Handle stream for INSERT block_header resolution ----
-        // Collect handles for post-processing (block_names may not be populated yet)
-        if (obj_type == 7 || obj_type == 8) {
-            size_t hs_bit_start = main_data_bits;
-            size_t hs_bit_end   = entity_bits;
-            size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
-
-            if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
-                DwgBitReader hreader(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
-                hreader.set_bit_offset(hs_bit_start);
-                hreader.set_bit_limit(hs_bit_end);
-
-                std::vector<uint64_t> handles;
-                for (int h_idx = 0; h_idx < 20 && !hreader.has_error(); ++h_idx) {
-                    auto href = hreader.read_h();
-                    if (hreader.has_error()) break;
-                    if (href.value == 0 && href.code == 0) break;
-
-                    uint64_t abs_handle = resolve_handle_ref(handle, href);
-                    if (abs_handle != 0) {
-                        handles.push_back(abs_handle);
+            if (obj_type == 7 || obj_type == 8) {
+                std::vector<uint64_t> insert_specific = roles.entity_specific;
+                // For R2004, the RL-based handle stream boundary is often inaccurate.
+                // The positional parsing (owner→reactors→xdic→layer) may also be
+                // misaligned because the CED may read num_reactors from garbage bits.
+                // Use a broad scan approach: scan entity data for BLOCK_HEADER handles.
+                const bool is_r2004_insert = (m_version == DwgVersion::R2004);
+                if (insert_specific.empty()) {
+                    std::vector<uint64_t> fallback_specific;
+                    auto try_scan_range = [&](size_t from_bit, size_t to_bit) {
+                        if (from_bit >= to_bit || to_bit > entity_bits) return;
+                        DwgBitReader scan(obj_data + offset + ms_bytes + umc_bytes,
+                                          entity_data_bytes);
+                        scan.set_bit_offset(from_bit);
+                        scan.set_bit_limit(to_bit);
+                        for (int h_idx = 0; h_idx < 30 && !scan.has_error(); ++h_idx) {
+                            uint64_t abs_handle = read_abs_handle(scan);
+                            if (abs_handle == 0) continue;
+                            bool is_block_header =
+                                object_type_for_handle(abs_handle) == 49 ||
+                                m_sections.block_names.find(abs_handle) !=
+                                    m_sections.block_names.end();
+                            if (is_block_header) {
+                                fallback_specific.push_back(abs_handle);
+                            }
+                        }
+                    };
+                    // Scan declared handle stream with extension
+                    if (hs_bits >= 8) {
+                        size_t scan_start = hs_bit_start;
+                        if (is_r2004_insert && hs_bit_start >= 96) {
+                            scan_start = hs_bit_start - 96;
+                        }
+                        try_scan_range(scan_start, hs_bit_end);
+                    }
+                    // For R2004, also scan broader entity data if no hits
+                    if (fallback_specific.empty() && is_r2004_insert && entity_bits >= 64) {
+                        for (size_t probe = 48; probe + 8 <= entity_bits && fallback_specific.empty(); probe += 8) {
+                            try_scan_range(probe, std::min(probe + 128, entity_bits));
+                        }
+                    }
+                    // Also include the already-read roles (owner, xdic, layer) as
+                    // candidates. For R2004, the "owner" may actually be the layer,
+                    // and "layer" may be the block_header due to misaligned parsing.
+                    if (fallback_specific.empty() && is_r2004_insert) {
+                        for (uint64_t h : {roles.owner, roles.extension_dictionary, roles.layer}) {
+                            if (h != 0) {
+                                bool is_bh = object_type_for_handle(h) == 49 ||
+                                    m_sections.block_names.find(h) != m_sections.block_names.end();
+                                if (is_bh) {
+                                    fallback_specific.push_back(h);
+                                }
+                            }
+                        }
+                    }
+                    if (!fallback_specific.empty()) {
+                        const size_t eidx = scene.entities().size() - 1;
+                        insert_handle_fallback_candidates[eidx] =
+                            std::move(fallback_specific);
                     }
                 }
-                if (!handles.empty() && !scene.entities().empty()) {
-                    size_t eidx = scene.entities().size() - 1;
-                    insert_handles[eidx] = std::move(handles);
+                if (!insert_specific.empty()) {
+                    const size_t eidx = scene.entities().size() - 1;
+                    insert_handles[eidx] = std::move(insert_specific);
                 }
             }
-        }
 
-        // ---- Handle stream: resolve layer handle for all graphic entities ----
-        // Handle stream layout (ODA spec 2.13):
-        //   owner_handle(1) + reactor_handles(N) + xdicobjhandle(optional, 1) + layer_handle(1) + ...
-        // Handle reference codes determine absolute value:
-        //   code 2-5: TYPEDOBJHANDLE — href.value is absolute handle
-        //   code 6:   OFFSETOBJHANDLE — abs = entity_handle + 1
-        //   code 8:   OFFSETOBJHANDLE — abs = entity_handle - 1
-        //   code 0xA: OFFSETOBJHANDLE — abs = entity_handle + href.value
-        //   code 0xC: OFFSETOBJHANDLE — abs = entity_handle - href.value
-        if (!m_layer_handle_to_index.empty() && !scene.entities().empty()) {
-            size_t hs_bit_start = main_data_bits;
-            size_t hs_bit_end   = entity_bits;
-            size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
-
-            if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
-                // Scan all handles in the handle stream for a layer match.
-                // This approach is more robust than positional skip because
-                // different entity types have varying handle layouts (some have
-                // no owner handle, some have extra type-specific handles).
-                DwgBitReader scan(obj_data + offset + ms_bytes + umc_bytes, entity_data_bytes);
-                scan.set_bit_offset(hs_bit_start);
-                scan.set_bit_limit(hs_bit_end);
-                for (int h_idx = 0; h_idx < 30 && !scan.has_error(); ++h_idx) {
-                    auto href = scan.read_h();
-                    if (scan.has_error()) break;
-                    if (href.value == 0 && href.code == 0) break;
-
-                    uint64_t abs_h = resolve_handle_ref(handle, href);
-                    auto it = m_layer_handle_to_index.find(abs_h);
-                    if (it != m_layer_handle_to_index.end()) {
-                        scene.entities().back().header.layer_index = it->second;
-                        g_layer_resolved++;
-                        break;
+            if (obj_type == 34 && roles.ok) {
+                auto& all_entities = scene.entities();
+                std::vector<int32_t> frozen_layer_indices;
+                std::unordered_set<int32_t> seen_layer_indices;
+                for (uint64_t ref_handle : roles.entity_specific) {
+                    auto layer_it = m_layer_handle_to_index.find(ref_handle);
+                    if (layer_it == m_layer_handle_to_index.end()) {
+                        continue;
+                    }
+                    if (seen_layer_indices.insert(layer_it->second).second) {
+                        frozen_layer_indices.push_back(layer_it->second);
+                    }
+                }
+                if (!frozen_layer_indices.empty()) {
+                    for (size_t eidx = entities_before; eidx < all_entities.size(); ++eidx) {
+                        auto& added_header = all_entities[eidx].header;
+                        if (added_header.type != EntityType::Viewport ||
+                            added_header.viewport_index < 0) {
+                            continue;
+                        }
+                        auto& viewports_mut = const_cast<std::vector<Viewport>&>(scene.viewports());
+                        if (static_cast<size_t>(added_header.viewport_index) >= viewports_mut.size()) {
+                            continue;
+                        }
+                        auto& vp = viewports_mut[static_cast<size_t>(added_header.viewport_index)];
+                        for (int32_t layer_index : frozen_layer_indices) {
+                            if (std::find(vp.frozen_layer_indices.begin(),
+                                          vp.frozen_layer_indices.end(),
+                                          layer_index) == vp.frozen_layer_indices.end()) {
+                                vp.frozen_layer_indices.push_back(layer_index);
+                                viewport_frozen_layer_refs++;
+                            }
+                        }
+                        viewport_frozen_layer_viewports++;
                     }
                 }
             }
@@ -3515,6 +5323,20 @@ Result DwgParser::parse_objects(SceneGraph& scene)
 
     dwg_debug_log("[DWG] parse_objects: %zu graphic, %zu non-graphic, %zu errors\n",
             graphic_count, non_graphic_count, error_count);
+    if (viewport_frozen_layer_refs > 0) {
+        scene.add_diagnostic({
+            "dwg_viewport_frozen_layers_decoded",
+            "Semantic gap",
+            "DWG VIEWPORT handle streams reference per-viewport frozen layer handles. They are stored on Viewport metadata, but the renderer does not yet apply layout-viewport layer overrides while viewport projection remains diagnostic-only.",
+            static_cast<int32_t>(std::min<size_t>(viewport_frozen_layer_refs, 2147483647u)),
+            version_family_name(m_version),
+            "VIEWPORT/LAYER",
+            34,
+        });
+        dwg_debug_log("[DWG] viewport frozen layers decoded: refs=%zu viewports=%zu\n",
+                      viewport_frozen_layer_refs,
+                      viewport_frozen_layer_viewports);
+    }
     size_t line_resource_entities_found = 0;
     size_t line_resource_entities_in_block = 0;
     if (!line_resource_line_handles.empty()) {
@@ -3559,6 +5381,25 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         dwg_debug_log("[DWG] object-map self mismatches: %zu\n",
                       primary_self_handle_mismatches);
     }
+    if (r2007_primary_self_recovered > 0) {
+        dwg_debug_log("[DWG] R2007 primary self-handle recoveries: %zu\n",
+                      r2007_primary_self_recovered);
+    }
+    if (invalid_handle_stream_framing > 0) {
+        dwg_debug_log("[DWG] invalid handle stream framing: %zu\n",
+                      invalid_handle_stream_framing);
+        scene.add_diagnostic({
+            "dwg_handle_stream_framing_invalid",
+            "Object framing gap",
+            "One or more DWG objects declared a handle stream outside the prepared object boundary; those objects were parsed with a conservative no-handle-stream fallback.",
+            static_cast<int32_t>(std::min<size_t>(invalid_handle_stream_framing, 2147483647u)),
+            version_family_name(m_version),
+            "PreparedObject",
+        });
+    }
+    if (dwg_debug_enabled() && prepared_string_streams > 0) {
+        dwg_debug_log("[DWG] prepared string streams: %zu\n", prepared_string_streams);
+    }
     auto object_type_for_summary = [&](uint64_t h) -> uint32_t {
         auto it = handle_object_types.find(h);
         if (it != handle_object_types.end()) {
@@ -3568,8 +5409,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
         if (offset_it == m_sections.handle_map.end()) {
             return 0;
         }
-        ObjectRecord record;
-        if (!prepare_object_record(offset_it->second, record, false, false, nullptr)) {
+        PreparedObject record;
+        if (!prepare_object(offset_it->second, record, false, false, nullptr)) {
             return 0;
         }
         return record.obj_type;
@@ -4019,6 +5860,17 @@ Result DwgParser::parse_objects(SceneGraph& scene)
     // names are truncated for anonymous dimension blocks (e.g., "*D" instead of
     // "*D1077"). Use as a fallback only when the entity map doesn't have the name.
     {
+        dwg_debug_log("[DWG] INSERT capture: insert_handles=%zu fallback_candidates=%zu\n",
+            insert_handles.size(), insert_handle_fallback_candidates.size());
+        // Merge fallback_candidates into insert_handles for entities not already tracked.
+        // The positional parsing (insert_handles) may catch some; the fallback scan
+        // catches others. Both need to be resolved in post-processing.
+        for (auto& [eidx, handles] : insert_handle_fallback_candidates) {
+            if (insert_handles.find(eidx) == insert_handles.end()) {
+                insert_handles[eidx] = std::move(handles);
+                insert_handle_role_fallbacks++;
+            }
+        }
         size_t resolved = 0;
         bool apply = true;
         if (apply) {
@@ -4057,8 +5909,21 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 resolved, insert_handles.size(),
                 block_names_from_entities.size(), m_sections.block_names.size(),
                 scene.blocks().size(), apply ? "yes" : "no");
+        if (insert_handle_role_fallbacks > 0) {
+            dwg_debug_log("[DWG] INSERT handle role fallback: %zu\n",
+                          insert_handle_role_fallbacks);
+            scene.add_diagnostic({
+                "dwg_insert_handle_role_fallback",
+                "Handle resolution gap",
+                "One or more INSERT/MINSERT objects did not expose a block-header reference at the expected role position; parser used a bounded BLOCK_HEADER-only handle fallback.",
+                static_cast<int32_t>(std::min<size_t>(insert_handle_role_fallbacks, 2147483647u)),
+                version_family_name(m_version),
+                "INSERT",
+            });
+        }
     }
     std::unordered_map<uint64_t, int32_t> layout_block_owner_handles;
+    std::unordered_map<uint64_t, int32_t> layout_viewport_handles;
     if (!layout_handle_refs.empty()) {
         auto block_name_for_handle = [&](uint64_t h) -> std::string {
             auto it1 = block_names_from_entities.find(h);
@@ -4085,10 +5950,39 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 if (is_space_name || is_layout_block_header) {
                     layout_block_owner_handles[h] = layout_index;
                 }
+                auto type_it = handle_object_types.find(h);
+                if (type_it != handle_object_types.end() && type_it->second == 34) {
+                    layout_viewport_handles[h] = layout_index;
+                }
             }
         }
-        dwg_debug_log("[DWG] layout handles: layouts=%zu owner_block_refs=%zu\n",
-                      layout_handle_refs.size(), layout_block_owner_handles.size());
+        dwg_debug_log("[DWG] layout handles: layouts=%zu owner_block_refs=%zu viewport_refs=%zu\n",
+                      layout_handle_refs.size(),
+                      layout_block_owner_handles.size(),
+                      layout_viewport_handles.size());
+    }
+    if (!layout_viewport_handles.empty()) {
+        size_t viewport_layouts_resolved = 0;
+        auto& all_entities = scene.entities();
+        auto& viewports_mut = const_cast<std::vector<Viewport>&>(scene.viewports());
+        for (const auto& [eidx, entity_handle] : entity_object_handles) {
+            if (eidx >= all_entities.size()) continue;
+            auto layout_it = layout_viewport_handles.find(entity_handle);
+            if (layout_it == layout_viewport_handles.end()) continue;
+            auto& header = all_entities[eidx].header;
+            if (header.type != EntityType::Viewport) continue;
+            header.layout_index = layout_it->second;
+            header.space = DrawingSpace::PaperSpace;
+            if (header.viewport_index >= 0 &&
+                static_cast<size_t>(header.viewport_index) < viewports_mut.size()) {
+                viewports_mut[static_cast<size_t>(header.viewport_index)].layout_index =
+                    layout_it->second;
+            }
+            viewport_layouts_resolved++;
+        }
+        dwg_debug_log("[DWG] layout viewport owners resolved: %zu / %zu\n",
+                      viewport_layouts_resolved,
+                      layout_viewport_handles.size());
     }
     size_t block_header_space_resolved = 0;
     size_t block_header_model = 0;
@@ -4131,6 +6025,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             }
 
             auto& header = all_entities[eidx].header;
+            header.block_header_handle = block_header_handle;
+            header.owner_handle = block_header_handle;
             auto layout_owner = layout_block_owner_handles.find(block_header_handle);
             if (layout_owner != layout_block_owner_handles.end()) {
                 header.layout_index = layout_owner->second;
@@ -4233,12 +6129,20 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 }
             }
             for (uint64_t h : handles) {
+                auto type_it = handle_object_types.find(h);
+                if (type_it != handle_object_types.end() && type_it->second != 49) {
+                    continue;
+                }
                 const std::string upper_name = upper_block_name_for_handle(h);
                 if (upper_name == "*MODEL_SPACE" || upper_name == "*PAPER_SPACE") {
                     return h;
                 }
             }
             for (uint64_t h : handles) {
+                auto type_it = handle_object_types.find(h);
+                if (type_it == handle_object_types.end() || type_it->second != 49) {
+                    continue;
+                }
                 const std::string name = block_name_for_handle(h);
                 if (!name.empty()) {
                     return h;
@@ -4255,6 +6159,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             auto layout_owner = layout_block_owner_handles.find(owner_handle);
             if (layout_owner != layout_block_owner_handles.end()) {
                 auto& header = all_entities[eidx].header;
+                header.owner_handle = owner_handle;
+                header.block_header_handle = owner_handle;
                 header.owner_block_index = -1;
                 header.layout_index = layout_owner->second;
                 header.in_block = false;
@@ -4284,6 +6190,11 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             if (block_idx < 0 && !is_model_space_owner && !is_paper_space_owner) continue;
 
             auto& header = all_entities[eidx].header;
+            header.owner_handle = owner_handle;
+            if (handle_object_types.find(owner_handle) != handle_object_types.end() &&
+                handle_object_types[owner_handle] == 49) {
+                header.block_header_handle = owner_handle;
+            }
             header.owner_block_index = block_idx;
             const Block* block = nullptr;
             if (block_idx >= 0) {
@@ -4344,8 +6255,8 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                 if (offset_it == m_sections.handle_map.end()) {
                     return 0;
                 }
-                ObjectRecord record;
-                if (!prepare_object_record(offset_it->second, record, false, false, nullptr)) {
+                PreparedObject record;
+                if (!prepare_object(offset_it->second, record, false, false, nullptr)) {
                     return 0;
                 }
                 return record.obj_type;

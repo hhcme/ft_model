@@ -62,6 +62,11 @@ struct EntityHeader {
     uint32_t draw_order = 0;
     float annotation_scale = 1.0f;
     uint8_t dimensionality = 0x02;     // 0x02 = 2D, 0x03 = 3D (reserved)
+    uint64_t dwg_handle = 0;
+    uint64_t owner_handle = 0;
+    uint64_t block_header_handle = 0;
+    uint32_t validation_flags = 0;
+    bool is_proxy_fallback = false;
 };
 
 // ============================================================

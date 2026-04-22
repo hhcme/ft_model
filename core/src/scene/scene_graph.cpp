@@ -273,25 +273,20 @@ const Layout* SceneGraph::active_layout() const {
                !layout.border_bounds.is_empty() ||
                !layout.paper_bounds.is_empty();
     };
-    auto has_layout_entities = [&](int32_t layout_index) {
-        for (const auto& ent : m_impl->entities) {
-            if (ent.header.layout_index == layout_index) {
-                return true;
-            }
-        }
-        return false;
-    };
     for (const auto& layout : m_impl->layouts) {
-        const int32_t layout_index = static_cast<int32_t>(&layout - m_impl->layouts.data());
         if (layout.is_active && !layout.is_model_layout &&
-            has_presentation_bounds(layout) && has_layout_entities(layout_index)) {
+            has_presentation_bounds(layout)) {
             return &layout;
         }
     }
     for (const auto& layout : m_impl->layouts) {
-        const int32_t layout_index = static_cast<int32_t>(&layout - m_impl->layouts.data());
-        if (!layout.is_model_layout && has_presentation_bounds(layout) &&
-            has_layout_entities(layout_index)) {
+        if (layout.is_current && !layout.is_model_layout &&
+            has_presentation_bounds(layout)) {
+            return &layout;
+        }
+    }
+    for (const auto& layout : m_impl->layouts) {
+        if (!layout.is_model_layout && has_presentation_bounds(layout)) {
             return &layout;
         }
     }

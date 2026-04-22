@@ -91,7 +91,10 @@ R2004 引入了文件加密、压缩和页面映射系统。
 
 ## R2004 → R2007 Delta
 
-R2007 引入了独立的 string stream 和 UTF-16 编码。
+R2007 引入了独立的 string stream 和 UTF-16 编码；真实 `AC1021`
+fixture 还显示容器 metadata/page-section 入口不能复用当前 R2004/R2010
+的 0x80 解密 header 路径。项目代码必须先按 `DwgVersion::R2007`
+分流到独立 container reader，再进入 object map/object parser。
 
 ### 新增机制
 
@@ -111,6 +114,17 @@ R2007 引入了独立的 string stream 和 UTF-16 编码。
    - Class records 中的文本字段也使用 string stream
    - `is_entity` 判断使用 class_id == 0x1F2（R2007+）vs 直接读取 B（R2004）
    - 代码：`dwg_parser.cpp` `parse_classes()` 中 R2007+ 分支
+   - 当前 R2010/R2013 sentinel 仍会触发
+     `dwg_classes_partial_fallback`：class string stream 可恢复 dxf/class 名称，
+     但 class record 主流只部分对齐，class id/entity flag 仍为 provisional
+
+4. **Container Reader 分流**
+   - R2007/AC1021 不得先进入 `decrypt_r2004_header()` 再靠 section map
+     越界诊断兜底
+   - 当前实现先进入 `read_r2007_container_metadata()` 并输出
+     `dwg_r2007_container_reader_incomplete` Version gap
+   - 完整支持需要补齐 R2007 file header、page map、section map 和
+     section data 组装后，再复用 `PreparedObject` object framing
 
 ### 实体字段变化
 - Common entity data (CED) 格式可能因 string stream 而不同
@@ -339,8 +353,22 @@ H(shadow) if shadow_flags
 | Version | AC Code | Fixture | Parser Path |
 |---------|---------|---------|-------------|
 | R2000 | AC1015 | **Missing** | 需 fixture 验证 flat section 路径 |
-| R2004 | AC1018 | **Missing** | 需 fixture 验证加密/压缩路径 |
-| R2007 | AC1021 | **Missing** | 需 fixture 验证 string stream 路径 |
-| R2010 | AC1024 | `big.dwg`, `Drawing2.dwg` | 主要开发路径 |
-| R2013 | AC1027 | **Missing** | 需 fixture 验证 R2010 parser 兼容性 |
-| R2018+ | AC1032 | **Missing** | 需 fixture 验证效率优化兼容性 |
+| R2004 | AC1018 | `新块.dwg`, `好世凤凰城74号302（陈先生）.dwg`, `设计图纸20240718.dwg`, `平立剖，分析图_t3.dwg` | 主 section/object map 可进入解析；Classes/LAYOUT 仍有 `dwg_classes_unparsed` / `dwg_layout_parse_failed` gap，需要补 R2004 class table 与 layout payload |
+| R2007 | AC1021 | `zj-02-00-1.dwg`, `张江之尚地下一层图纸.dwg` | Container reader 未完成；当前输出 Version gap，不再误走 R2004 section map；metadata probe 已记录 UTF-16/AppInfo/Acad marker 以定位后续 R2007 page/section reader |
+| R2010 | AC1024 | `big.dwg` | 主要开发路径；Classes Section 仍有 partial fallback 诊断 |
+| R2013 | AC1027 | `Drawing2.dwg` | R2010 相邻路径；Mechanical/Classes fallback 是当前 sentinel |
+| R2018+ | AC1032 | `2026040913_69d73f952f59f.dwg`, `泰国网格屏施工图.dwg` | 小样本可解析并产生 layout/viewports；仍有 `dwg_classes_partial_fallback`、layout ownership 和 custom/prototype 语义 gap；大样本需性能与完整性分级验证 |
+
+### Layout VIEWPORT Sentinel Notes
+
+- `big.dwg` (R2010/AC1024) and `2026040913_69d73f952f59f.dwg`
+  (R2018+/AC1032) now decode complete paper-space VIEWPORT metadata for
+  some layout viewport entities and bind those viewport entity handles back to
+  their LAYOUT records.
+- The export JSON records layout viewport `paperBounds`, `modelBounds`,
+  `viewHeight`, `customScale`, `twistAngle`, and `modelCoverage` for
+  diagnostics. Low `modelCoverage` keeps viewport projection deferred rather
+  than using a potentially misaligned model window as the active layout view.
+- `Drawing2.dwg` (R2013/AC1027) and the large AC1032 fixture still report
+  `missing_layout_viewports`, so adjacent-version fixes must preserve the
+  placeholder/fallback path until their VIEWPORT field layouts are verified.

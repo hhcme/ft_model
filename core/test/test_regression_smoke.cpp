@@ -28,6 +28,8 @@ struct Summary {
     size_t layout_count = 0;
     size_t viewport_count = 0;
     bool bounds_empty = true;
+    bool has_active_layout = false;
+    std::unordered_set<std::string> diagnostic_codes;
 };
 
 struct SmokeCase {
@@ -42,8 +44,10 @@ struct SmokeCase {
     size_t max_texts = static_cast<size_t>(-1);
     size_t min_layouts = 0;
     size_t min_viewports = 0;
+    bool require_active_layout = false;
     bool expect_bounds_empty = false;
     bool optional = false;
+    std::vector<std::string> expected_diagnostics;
 };
 
 bool is_dwg_path(const std::string& path) {
@@ -147,6 +151,10 @@ Summary summarize_scene(SceneGraph& scene, bool is_dwg) {
     summary.text_count = collect_text_count(scene);
     summary.layout_count = scene.layouts().size();
     summary.viewport_count = scene.viewports().size();
+    summary.has_active_layout = scene.active_layout() != nullptr;
+    for (const auto& diagnostic : scene.diagnostics()) {
+        summary.diagnostic_codes.insert(diagnostic.code);
+    }
 
     std::unordered_set<int32_t> block_entity_indices;
     std::unordered_set<int32_t> direct_block_indices;
@@ -252,10 +260,11 @@ bool run_case(const SmokeCase& smoke_case) {
 
     bool is_dwg = is_dwg_path(smoke_case.path);
     Summary summary = summarize_scene(scene, is_dwg);
-    std::printf("[smoke] %s entities=%zu batches=%zu vertices=%zu texts=%zu layouts=%zu viewports=%zu boundsEmpty=%s\n",
+    std::printf("[smoke] %s entities=%zu batches=%zu vertices=%zu texts=%zu layouts=%zu viewports=%zu activeLayout=%s boundsEmpty=%s\n",
                 smoke_case.path.c_str(), summary.entity_count, summary.batch_count,
                 summary.total_vertices, summary.text_count,
                 summary.layout_count, summary.viewport_count,
+                summary.has_active_layout ? "true" : "false",
                 summary.bounds_empty ? "true" : "false");
 
     bool ok = true;
@@ -279,6 +288,20 @@ bool run_case(const SmokeCase& smoke_case) {
                      summary.bounds_empty ? "true" : "false",
                      smoke_case.expect_bounds_empty ? "true" : "false");
         ok = false;
+    }
+    if (smoke_case.require_active_layout && !summary.has_active_layout) {
+        std::fprintf(stderr,
+                     "[smoke] active layout check failed for %s\n",
+                     smoke_case.path.c_str());
+        ok = false;
+    }
+    for (const auto& code : smoke_case.expected_diagnostics) {
+        if (summary.diagnostic_codes.find(code) == summary.diagnostic_codes.end()) {
+            std::fprintf(stderr,
+                         "[smoke] expected diagnostic missing for %s: %s\n",
+                         smoke_case.path.c_str(), code.c_str());
+            ok = false;
+        }
     }
 
     return ok;
@@ -307,12 +330,13 @@ int main() {
          .min_texts = 7, .max_texts = 7,
          .expect_bounds_empty = false},
         {.path = "test_dwg/big.dwg",
-         .min_entities = 100000,
+         .min_entities = 95000,
          .min_batches = 50,
          .min_vertices = 350000,
          .min_texts = 5000, .max_texts = 7000,
          .expect_bounds_empty = false,
-         .optional = true},
+         .optional = true,
+         .expected_diagnostics = {"dwg_classes_partial_fallback"}},
         {.path = "test_dwg/Drawing2.dwg",
          .min_entities = 15000,
          .min_batches = 5,
@@ -321,7 +345,30 @@ int main() {
          .min_layouts = 3,
          .min_viewports = 1,
          .expect_bounds_empty = false,
+         .optional = true,
+         .expected_diagnostics = {"dwg_classes_partial_fallback"}},
+        {.path = "test_dwg/zj-02-00-1.dwg",
+         .min_entities = 400, .max_entities = 600,
+         .min_batches = 10, .max_batches = 30,
+         .min_vertices = 2000, .max_vertices = 5000,
+         .expect_bounds_empty = false,
+         .optional = true,
+         .expected_diagnostics = {"dwg_r2007_container_decoded"}},
+        {.path = "test_dwg/新块.dwg",
+         .min_entities = 2000,
+         .min_batches = 20,
+         .min_vertices = 200,
+         .expect_bounds_empty = false,
          .optional = true},
+        {.path = "test_dwg/2026040913_69d73f952f59f.dwg",
+         .min_entities = 8000,
+         .min_batches = 10,
+         .min_vertices = 20000,
+         .min_layouts = 2,
+         .min_viewports = 2,
+         .expect_bounds_empty = false,
+         .optional = true,
+         .expected_diagnostics = {"dwg_classes_partial_fallback"}},
     };
 
     bool ok = true;

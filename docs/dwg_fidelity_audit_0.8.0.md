@@ -30,8 +30,8 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | EED/XData/reactor/extension dictionary semantics | Partial | EED skip alignment is handled for current files. XData/reactor/extension dictionary semantic preservation is still incomplete. |
 | DWG object classification before rendering | Partial | Standard entities and some tables/custom objects are distinguished. Full Standard/Table/Dictionary/Layout/Proxy/Custom/External classification is still incomplete. |
 | Model Space, Paper Space, Layout, and Layout Viewport are distinct concepts | Partial | `DrawingSpace`, `Layout`, and expanded `Viewport` exist in SceneGraph. Full DWG Layout object decoding remains a Semantic/View gap. |
-| Default view prioritizes Layout/Plot Window, drawing border, viewport content, model bounds, then raw bounds | Partial | `presentation_bounds()` and JSON `presentationBounds/views` exist. Missing full layout semantics still require finite-geometry fallback diagnostics. |
-| Layout Viewport clipping, scale, model content, per-viewport frozen layers | Partial | Data fields and JSON/frontend consumption exist. Native DWG viewport clip/scale/layer-freeze decoding remains incomplete. |
+| Default view prioritizes Layout/Plot Window, drawing border, viewport content, model bounds, then raw bounds | Partial | `presentation_bounds()` and JSON `presentationBounds/views` exist. Missing full layout semantics now exports `layout_entity_ownership_unresolved` before falling back to finite geometry. |
+| Layout Viewport clipping, scale, model content, per-viewport frozen layers | Partial | DWG VIEWPORT entities now expose diagnostic paper/model viewport windows when fields validate, and layout viewport owner handles are linked from LAYOUT refs. Projection remains deferred when `modelCoverage` is low; hidden in-view text/geometry is surfaced through `layer_state_hides_presentation_text` and `layer_state_hides_presentation_geometry`. |
 | Drawing border/title block should drive sheet fitting when available | Partial | Presentation view support exists. Native paper-space border/title-block semantics and robust detection remain View gaps. |
 | Mechanical drawing visual acceptance includes border, views, dimensions, leaders, balloons, text readability | Partial | `Drawing2.dwg` is the visual sentinel. TEXT/MTEXT rich rendering, proxy Mechanical leaders/bubbles, and 6 inferred detail/source crop frame proxies exist. Native Mechanical/FIELD/AcDs semantics remain Custom object semantic gaps. |
 | AutoCAD Mechanical custom object handling | Partial | `ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, FIELD/FIELDLIST/MTEXT context graph diagnostics, detail-frame proxy, and `AcDsPrototype` diagnostics exist. Native bubble labels, full FIELD/ContextData graph resolution, and detail/section object semantics remain incomplete. |
@@ -57,11 +57,11 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | R13 / AC1012 | Missing fixture | Deferred with Version gap diagnostics when encountered. |
 | R14 / AC1014 | Missing fixture | Deferred with Version gap diagnostics when encountered. |
 | R2000 / AC1015 | Missing fixture | Needs real fixture before compatibility can be claimed. |
-| R2004 / AC1018 | Missing fixture | Needs real fixture for encrypted/compressed/object-map regression. |
-| R2007 / AC1021 | Missing fixture | Needs real fixture for string-stream compatibility. |
-| R2010 / AC1024 | Implemented sentinel | `big.dwg` and `Drawing2.dwg` cover current large-file and Mechanical/Layout behavior. |
-| R2013 / AC1027 | Missing fixture | Needs adjacent-version regression for R2010 parser changes. |
-| R2018+ / AC1032 | Missing fixture | Needs current-version customer-style fixture. |
+| R2004 / AC1018 | Cataloged fixtures | `新块.dwg` and `好世凤凰城74号302（陈先生）.dwg` parse through the main section/object path; class table and LAYOUT payload remain explicit gaps. |
+| R2007 / AC1021 | Cataloged fixtures | `zj-02-00-1.dwg` is routed to the R2007 container branch with a Version gap and UTF-16/AppInfo marker probe; full page/section/object map reader is still pending. |
+| R2010 / AC1024 | Implemented sentinel | `big.dwg` covers current large-file site/masterplan behavior. |
+| R2013 / AC1027 | Implemented sentinel | `Drawing2.dwg` is the adjacent-version Mechanical/Layout sentinel for R2010 parser changes. |
+| R2018+ / AC1032 | Cataloged fixtures | `2026040913_69d73f952f59f.dwg` parses with layout/viewports and remains a smoke sentinel; `泰国网格屏施工图.dwg` is a large performance/catalog candidate. |
 
 ## Fixture Catalog
 
@@ -71,9 +71,13 @@ Every DWG issue should be classified with both a primary gap label and, when use
 | `test_data/insert_blocks.dxf` | DXF | Synthetic INSERT/block | Exact | Transform and block rendering baseline. |
 | `test_data/text_entities.dxf` | DXF | Synthetic text | Exact | TEXT/MTEXT export/render baseline. |
 | `test_dwg/big.dwg` | R2010/AC1024 | Large site/masterplan | Data + visual sentinel | Large-file parsing, abnormal entity filtering, finite bounds, lower-bound counts. |
-| `test_dwg/Drawing2.dwg` | Unknown until cataloged | Mechanical/Layout | Visual + diagnostics sentinel | Paper/layout, drawing border, Mechanical annotations, leaders, balloons, detail frames. Current 0.8.x data baseline: about 26,163 entities, 20 batches, 392,570 vertices, and 6 inferred detail-frame proxies. |
-| `test_dwg/zj-02-00-1.dwg` | Unknown | Unclassified | Catalog candidate | Record version/domain/diagnostics before making it a gate. |
-| `test_dwg/新块.dwg` | Unknown | Block/unclassified | Catalog candidate | Record version/domain/diagnostics before making it a gate. |
+| `test_dwg/Drawing2.dwg` | R2013/AC1027 | Mechanical/Layout | Visual + diagnostics sentinel | Paper/layout, drawing border, Mechanical annotations, leaders, balloons, detail frames. Current 0.8.x data baseline: about 26,163 entities, 19 batches, 392,570 vertices, and inferred detail-frame proxies. |
+| `test_dwg/zj-02-00-1.dwg` | R2007/AC1021 | Unclassified small drawing | Version catalog gate | Must not throw `Section page map out of bounds`; currently reports `dwg_r2007_container_reader_incomplete` with metadata marker probes. |
+| `test_dwg/新块.dwg` | R2004/AC1018 | Block/unclassified | Optional smoke gate | Current baseline parses about 2,302 entities, 45 batches, 253 exported vertices; Classes/LAYOUT gaps remain diagnostic. |
+| `test_dwg/好世凤凰城74号302（陈先生）.dwg` | R2004/AC1018 | Residential/unclassified | Catalog candidate | Current baseline parses about 13,618 entities and 38 VPORT records; repeated LAYOUT payload parse gaps show R2004 layout decoding work. |
+| `test_dwg/2026040913_69d73f952f59f.dwg` | R2018+/AC1032 | Unclassified/current DWG | Optional smoke gate | Current baseline parses about 12,148 entities with 2 layouts and 2 viewports; Classes partial fallback and layout ownership gaps remain. |
+| `test_dwg/张江之尚地下一层图纸.dwg` | R2007/AC1021 | Large architecture/site | Catalog candidate | Requires the same R2007 container reader as `zj-02-00-1.dwg`; keep as a later large-file AC1021 sentinel. |
+| `test_dwg/泰国网格屏施工图.dwg` | R2018+/AC1032 | Large construction/grid screen | Catalog candidate | Large current-version fixture for performance and object-family coverage after the small AC1032 gate is stable. |
 
 ## Required Acceptance Gates
 

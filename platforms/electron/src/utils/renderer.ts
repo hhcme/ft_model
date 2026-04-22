@@ -72,6 +72,34 @@ function intersectsBounds(a: BatchBounds, b: Bounds): boolean {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 }
 
+function textApproxBounds(txt: TextEntity): Bounds {
+  const height = Number.isFinite(txt.height) && txt.height > 0 ? txt.height : 1;
+  const widthFactor = Number.isFinite(txt.widthFactor) && (txt.widthFactor ?? 0) > 0
+    ? txt.widthFactor ?? 1
+    : 1;
+  const raw = txt.text || '';
+  const plain = raw
+    .replace(/\\P/g, '\n')
+    .replace(/\\[A-Za-z]+[^;\\{}]*;/g, '')
+    .replace(/[{}]/g, '');
+  const lines = plain.split('\n');
+  const maxChars = Math.max(1, ...lines.map((line) => line.trim().length));
+  const lineCount = Math.max(1, lines.length);
+  const width = Number.isFinite(txt.rectWidth) && (txt.rectWidth ?? 0) > 0
+    ? txt.rectWidth ?? 0
+    : maxChars * height * widthFactor * 0.65;
+  const blockHeight = Number.isFinite(txt.rectHeight) && (txt.rectHeight ?? 0) > 0
+    ? txt.rectHeight ?? 0
+    : lineCount * height * 1.2;
+  const pad = height * 0.5;
+  return {
+    minX: txt.x - pad,
+    maxX: txt.x + Math.max(width, height) + pad,
+    minY: txt.y - blockHeight - pad,
+    maxY: txt.y + height + pad,
+  };
+}
+
 function expandBounds(bounds: Bounds, padRatio: number): Bounds {
   const w = bounds.maxX - bounds.minX;
   const h = bounds.maxY - bounds.minY;
@@ -126,9 +154,10 @@ function isArtifactSegment(
   const inside1 = pointInBounds(x1, y1, padded);
   if (inside0 && inside1) return false;
   if (!intersectsPresentation) {
-    // Both endpoints outside the padded presentation bounds — always filter.
-    // These are scattered entities far from the main drawing area.
-    return true;
+    // Match the export-side filter: nearby off-window geometry may be valid
+    // content reached by panning or by enabling all layers, while long isolated
+    // segments are usually decoded flying-line artifacts.
+    return len > diag * 0.05;
   }
 
   // One endpoint inside, one outside — typical flying-line pattern where
@@ -136,7 +165,7 @@ function isArtifactSegment(
   // Filter if the segment is much longer than the drawing diagonal.
   if (len > diag * 1.0) return true;
   if (len > diag * 0.5) {
-    const farPad = expandBounds(presentationBounds, 0.2);
+    const farPad = expandBounds(presentationBounds, 0.4);
     return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
   }
   return false;
@@ -423,6 +452,8 @@ function renderLinestrip(
   wb: Bounds, margin: number, presentationBounds?: Bounds,
 ): void {
   const breaks = batch.breaks;
+  // Pre-compute artifact bounds for entity-level culling
+  const artPad = validBounds(presentationBounds) ? expandBounds(presentationBounds!, 0.12) : undefined;
   if (breaks?.length) {
     ctx.beginPath();
     let hasPath = false;
@@ -440,6 +471,9 @@ function renderLinestrip(
       }
       if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
       if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
+      // Entity-level artifact culling: skip entities entirely outside artifact bounds
+      if (artPad && (eMaxX < artPad.minX || eMinX > artPad.maxX ||
+                     eMaxY < artPad.minY || eMinY > artPad.maxY)) continue;
 
       let penDown = false;
       for (let i = startIdx + 1; i < endIdx; i++) {
@@ -493,17 +527,26 @@ export function renderTexts(
   clipBounds?: Bounds,
   paperMode = false,
 ): void {
+  const wb = getViewportWorldBounds(vp);
   for (const txt of texts) {
     if (txt.layerName && layerVisible.has(txt.layerName) && !layerVisible.get(txt.layerName)) continue;
-    if (validBounds(clipBounds) &&
-        (txt.x < clipBounds.minX || txt.x > clipBounds.maxX ||
-         txt.y < clipBounds.minY || txt.y > clipBounds.maxY)) continue;
+    const approxBounds = textApproxBounds(txt);
+    if (!intersectsBounds(approxBounds, wb)) continue;
+    if (validBounds(clipBounds) && !intersectsBounds(approxBounds, clipBounds)) continue;
 
     const [sx, sy] = worldToScreen(txt.x, txt.y, vp);
-    if (sx < -500 || sx > vp.canvasWidth + 500 || sy < -500 || sy > vp.canvasHeight + 500) continue;
+    const screenPad = Math.max(500, Math.max(
+      approxBounds.maxX - approxBounds.minX,
+      approxBounds.maxY - approxBounds.minY,
+    ) * vp.zoom);
+    if (sx < -screenPad || sx > vp.canvasWidth + screenPad ||
+        sy < -screenPad || sy > vp.canvasHeight + screenPad) continue;
 
     const screenHeight = txt.height * vp.zoom;
-    if (screenHeight < 3) continue;
+    // CAD overview sheets contain meaningful labels that can project to only
+    // 1-2 screen pixels at fit zoom. Keep them and render with the minimum
+    // Canvas font below; only skip text that is effectively sub-pixel noise.
+    if (screenHeight < 0.35) continue;
 
     ctx.save();
     ctx.translate(sx, sy);

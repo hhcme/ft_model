@@ -176,33 +176,6 @@ export function fitViewToBounds(
   const ob = computeOutlierResistantBounds(batches, batchBoundsList);
   if (!ob) return { centerX: 0, centerY: 0, zoom: 1 };
 
-  // Compute center from IQR core
-  const samplesX: number[] = [];
-  const samplesY: number[] = [];
-  let totalVerts = 0;
-  for (let i = 0; i < batchBoundsList.length; i++) {
-    const batch = batches[i];
-    if (batch?.vertices?.length) totalVerts += batch.vertices.length;
-  }
-  const sampleInterval = Math.max(1, Math.floor(totalVerts / 10000));
-  let globalIdx = 0;
-  for (const batch of batches) {
-    if (!batch?.vertices) continue;
-    for (const v of batch.vertices) {
-      if (globalIdx % sampleInterval === 0 && Number.isFinite(v[0]) && Number.isFinite(v[1])) {
-        samplesX.push(v[0]);
-        samplesY.push(v[1]);
-      }
-      globalIdx++;
-    }
-  }
-  if (samplesX.length === 0) return { centerX: 0, centerY: 0, zoom: 1 };
-  samplesX.sort((a, b) => a - b);
-  samplesY.sort((a, b) => a - b);
-
-  const q25x = pct(samplesX, 0.25), q75x = pct(samplesX, 0.75);
-  const q25y = pct(samplesY, 0.25), q75y = pct(samplesY, 0.75);
-
   const w = ob.maxX - ob.minX;
   const h = ob.maxY - ob.minY;
   const zoom = Math.min(
@@ -210,10 +183,11 @@ export function fitViewToBounds(
     (canvasHeight * 0.9) / h,
   );
 
-  // Center on the IQR core (Q25+Q75)/2 — robust against asymmetric outliers
+  // Center on the same outlier-resistant bounds used for zoom. Centering on
+  // the IQR core can push dense sheet-edge tables/title blocks off screen.
   return {
-    centerX: (q25x + q75x) / 2,
-    centerY: (q25y + q75y) / 2,
+    centerX: (ob.minX + ob.maxX) / 2,
+    centerY: (ob.minY + ob.maxY) / 2,
     zoom,
   };
 }

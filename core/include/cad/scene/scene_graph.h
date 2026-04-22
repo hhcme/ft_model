@@ -28,6 +28,7 @@ struct DrawingMetadata {
     Vec3 insertion_base = Vec3::zero();
     float text_size = 0.0f;
     std::string acad_version;
+    size_t dwg_header_vars_bytes = 0;
 };
 
 struct Layout {
@@ -35,7 +36,17 @@ struct Layout {
     Bounds3d paper_bounds = Bounds3d::empty();
     Bounds3d plot_window = Bounds3d::empty();
     Bounds3d border_bounds = Bounds3d::empty();
+    Bounds3d limits = Bounds3d::empty();
+    Bounds3d extents = Bounds3d::empty();
+    Vec3 insertion_base = Vec3::zero();
+    Vec3 plot_origin = Vec3::zero();
+    float plot_scale = 1.0f;
+    int32_t plot_rotation = 0;
+    int32_t paper_units = 0;
+    uint64_t layout_handle = 0;
+    uint64_t owner_block_handle = 0;
     bool is_active = false;
+    bool is_current = false;
     bool is_model_layout = false;
 };
 
@@ -44,6 +55,11 @@ struct SceneDiagnostic {
     std::string category;
     std::string message;
     int32_t count = 0;
+    std::string version_family;
+    std::string object_family;
+    uint32_t object_type = 0;
+    std::string class_name;
+    uint64_t sample_handle = 0;
 };
 
 // ============================================================

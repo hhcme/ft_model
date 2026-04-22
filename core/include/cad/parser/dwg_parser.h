@@ -170,6 +170,12 @@ private:
     // Decrypt the R2004+ file header at offset 0x80, parse R2004FileHeader fields
     Result decrypt_r2004_header(const uint8_t* data, size_t size);
 
+    // Read the R2007/AC1021 R21 container. This is separate from the
+    // R2004/R2010 section-page reader: AC1021 uses an interleaved
+    // Reed-Solomon-protected file header plus R21 system pages.
+    Result read_r2007_container(const uint8_t* data, size_t size,
+                                SceneGraph& scene);
+
     // Read the section page map at section_map_address+0x100, decompress, parse entries
     Result read_section_page_map(const uint8_t* data, size_t size);
 
@@ -212,6 +218,7 @@ private:
     uint64_t find_page_file_offset_(const uint8_t* data, size_t file_size,
                                      int32_t target_page_number) const;
 
+public:
     // Decode modular char (variable-length encoding, high bit = continuation)
     static uint32_t read_modular_char(const uint8_t* data, size_t size,
                                        size_t& offset);
@@ -220,6 +227,7 @@ private:
     static int32_t read_modular_char_signed(const uint8_t* data, size_t size,
                                              size_t& offset);
 
+private:
     // Read a little-endian 32-bit value from data at offset
     static uint32_t read_le32(const uint8_t* data, size_t offset);
 
@@ -252,6 +260,7 @@ private:
     std::string m_current_block_name;
     Vec3 m_current_block_base_point = Vec3::zero();
     size_t m_block_entity_start = 0;
+    uint64_t m_current_block_handle = 0;
 
     // ---- DWG table handle tracking ----
     // Maps table object handles → SceneGraph indices. Populated during table

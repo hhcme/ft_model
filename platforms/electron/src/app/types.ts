@@ -60,16 +60,39 @@ export interface Bounds {
 export interface ViewDefinition {
   id: string;
   name: string;
-  type: 'layout' | 'model' | 'fallback';
+  type: 'layout' | 'layoutViewport' | 'model' | 'fallback';
   source?: string;
   paperMode?: boolean;
   layoutIndex?: number;
   viewportId?: number;
+  entitySpace?: 'model' | 'paper' | 'unknown';
+  hasViewportEntity?: boolean;
   bounds?: Bounds;
   presentationBounds?: Bounds;
   paperBounds?: Bounds;
   plotWindow?: Bounds;
   clipBounds?: Bounds;
+  modelBounds?: Bounds;
+  viewHeight?: number;
+  customScale?: number;
+  twistAngle?: number;
+  modelCoverage?: number;
+  targetModelBounds?: Bounds;
+  targetModelCoverage?: number;
+  targetPlusCenterModelBounds?: Bounds;
+  targetPlusCenterModelCoverage?: number;
+  frozenLayerCount?: number;
+  frozenLayers?: string[];
+  paperCenter?: { x: number; y: number; z?: number };
+  modelViewCenter?: { x: number; y: number; z?: number };
+  modelViewTarget?: { x: number; y: number; z?: number };
+  center?: { x: number; y: number; z?: number };
+  limits?: Bounds;
+  extents?: Bounds;
+  insertionBase?: { x: number; y: number; z?: number };
+  plotScale?: number;
+  plotRotation?: number;
+  paperUnits?: number;
 }
 
 export interface DiagnosticGap {
@@ -85,6 +108,14 @@ export interface DrawDiagnostics {
   gaps?: DiagnosticGap[];
 }
 
+export interface DrawingInfo {
+  acadVersion?: string;
+  headerVarsBytes?: number;
+  extents?: Bounds;
+  insertionBase?: { x: number; y: number; z?: number };
+  textSize?: number;
+}
+
 /** Full drawing data from render_export. */
 export interface DrawData {
   batches: Batch[];
@@ -96,6 +127,7 @@ export interface DrawData {
   views?: ViewDefinition[];
   activeViewId?: string;
   diagnostics?: DrawDiagnostics;
+  drawingInfo?: DrawingInfo;
   entityCount: number;
   totalVertices: number;
 }

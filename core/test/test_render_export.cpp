@@ -24,6 +24,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <functional>
 #include <utility>
 #include <zlib.h>
 
@@ -147,7 +148,9 @@ static void write_render_bounds(JsonWriter& out, const RenderBounds& bounds) {
 
 static void write_bounds3d_xy(JsonWriter& out, const Bounds3d& bounds) {
     out << "{";
-    if (!bounds.is_empty()) {
+    if (!bounds.is_empty() &&
+        std::isfinite(bounds.min.x) && std::isfinite(bounds.min.y) &&
+        std::isfinite(bounds.max.x) && std::isfinite(bounds.max.y)) {
         out << "\"minX\": " << bounds.min.x
             << ", \"minY\": " << bounds.min.y
             << ", \"maxX\": " << bounds.max.x
@@ -157,6 +160,24 @@ static void write_bounds3d_xy(JsonWriter& out, const Bounds3d& bounds) {
         out << "\"isEmpty\": true";
     }
     out << "}";
+}
+
+static void write_vec3_xy(JsonWriter& out, const Vec3& p) {
+    out << "{";
+    if (std::isfinite(p.x) && std::isfinite(p.y)) {
+        out << "\"x\": " << p.x
+            << ", \"y\": " << p.y
+            << ", \"z\": " << (std::isfinite(p.z) ? p.z : 0.0f);
+    } else {
+        out << "\"isEmpty\": true";
+    }
+    out << "}";
+}
+
+static bool bounds3d_has_finite_xy(const Bounds3d& bounds) {
+    return !bounds.is_empty() &&
+           std::isfinite(bounds.min.x) && std::isfinite(bounds.min.y) &&
+           std::isfinite(bounds.max.x) && std::isfinite(bounds.max.y);
 }
 
 static RenderBounds viewport_model_bounds(const Viewport& viewport) {
@@ -173,6 +194,52 @@ static RenderBounds viewport_model_bounds(const Viewport& viewport) {
                       viewport.model_view_center.y - half_h);
         bounds.expand(viewport.model_view_center.x + half_w,
                       viewport.model_view_center.y + half_h);
+    }
+    return bounds;
+}
+
+static RenderBounds layout_viewport_model_bounds(const Viewport& viewport) {
+    RenderBounds bounds;
+    if (std::isfinite(viewport.model_view_center.x) &&
+        std::isfinite(viewport.model_view_center.y) &&
+        std::isfinite(viewport.paper_width) &&
+        std::isfinite(viewport.paper_height) &&
+        std::isfinite(viewport.view_height) &&
+        viewport.paper_width > 0.0f &&
+        viewport.paper_height > 0.0f &&
+        viewport.view_height > 0.0f) {
+        const float aspect = viewport.paper_width / viewport.paper_height;
+        const float half_w = viewport.view_height * aspect * 0.5f;
+        const float half_h = viewport.view_height * 0.5f;
+        bounds.expand(viewport.model_view_center.x - half_w,
+                      viewport.model_view_center.y - half_h);
+        bounds.expand(viewport.model_view_center.x + half_w,
+                      viewport.model_view_center.y + half_h);
+    }
+    return bounds;
+}
+
+static RenderBounds layout_viewport_model_bounds_with_center(const Viewport& viewport,
+                                                             const Vec3& center) {
+    Viewport candidate = viewport;
+    candidate.model_view_center = center;
+    return layout_viewport_model_bounds(candidate);
+}
+
+static RenderBounds layout_viewport_paper_bounds(const Viewport& viewport) {
+    RenderBounds bounds;
+    if (std::isfinite(viewport.paper_center.x) &&
+        std::isfinite(viewport.paper_center.y) &&
+        std::isfinite(viewport.paper_width) &&
+        std::isfinite(viewport.paper_height) &&
+        viewport.paper_width > 0.0f &&
+        viewport.paper_height > 0.0f) {
+        const float half_w = viewport.paper_width * 0.5f;
+        const float half_h = viewport.paper_height * 0.5f;
+        bounds.expand(viewport.paper_center.x - half_w,
+                      viewport.paper_center.y - half_h);
+        bounds.expand(viewport.paper_center.x + half_w,
+                      viewport.paper_center.y + half_h);
     }
     return bounds;
 }
@@ -220,6 +287,40 @@ static bool render_bounds_intersects(const RenderBounds& a, const RenderBounds& 
     if (a.empty || b.empty) return false;
     return !(a.max_x < b.min_x || a.min_x > b.max_x ||
              a.max_y < b.min_y || a.min_y > b.max_y);
+}
+
+static const char* drawing_space_name(DrawingSpace space) {
+    switch (space) {
+        case DrawingSpace::ModelSpace: return "model";
+        case DrawingSpace::PaperSpace: return "paper";
+        default: return "unknown";
+    }
+}
+
+static std::string summarize_layer_counts(const std::vector<size_t>& counts,
+                                          const std::vector<Layer>& layers,
+                                          size_t limit) {
+    std::vector<std::pair<size_t, size_t>> ranked;
+    for (size_t i = 0; i < counts.size() && i < layers.size(); ++i) {
+        if (counts[i] > 0) {
+            ranked.push_back({counts[i], i});
+        }
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.first != b.first) return a.first > b.first;
+                  return a.second < b.second;
+              });
+    std::string summary;
+    const size_t n = std::min(limit, ranked.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (!summary.empty()) summary += "; ";
+        const size_t layer_index = ranked[i].second;
+        summary += layers[layer_index].name.empty() ? "<unnamed>" : layers[layer_index].name;
+        summary += "=";
+        summary += std::to_string(ranked[i].first);
+    }
+    return summary;
 }
 
 static RenderBounds batch_render_bounds(const RenderBatch& batch) {
@@ -441,6 +542,17 @@ static size_t filter_abnormal_segments(RenderBatch& batch,
 
     filtered_vertices.reserve(vd.size());
     filtered_starts.reserve(batch.entity_starts.size());
+    auto append_kept_segment = [&](float x0, float y0, float x1, float y1,
+                                   bool& run_open) {
+        if (!run_open) {
+            filtered_starts.push_back(static_cast<uint32_t>(filtered_vertices.size() / 2));
+            filtered_vertices.push_back(x0);
+            filtered_vertices.push_back(y0);
+            run_open = true;
+        }
+        filtered_vertices.push_back(x1);
+        filtered_vertices.push_back(y1);
+    };
     for (size_t ei = 0; ei < batch.entity_starts.size(); ++ei) {
         size_t start_vertex = static_cast<size_t>(batch.entity_starts[ei]);
         size_t end_vertex = (ei + 1 < batch.entity_starts.size())
@@ -450,36 +562,25 @@ static size_t filter_abnormal_segments(RenderBatch& batch,
         end_vertex = std::min(end_vertex, vd.size() / 2);
         if (end_vertex <= start_vertex) continue;
 
-        RenderBounds subpath_bounds;
-        for (size_t vi = start_vertex; vi < end_vertex; ++vi) {
-            const size_t off = vi * 2;
-            subpath_bounds.expand(vd[off], vd[off + 1]);
-        }
-
-        bool abnormal = false;
-        if (!render_bounds_intersects(subpath_bounds, far_window) ||
-            render_bounds_diag(subpath_bounds) > presentation_diag * 3.0f) {
-            abnormal = true;
-        }
+        bool kept_any = false;
+        bool run_open = false;
         for (size_t vi = start_vertex; vi + 1 < end_vertex; ++vi) {
             const size_t off = vi * 2;
-            if (is_abnormal_segment(vd[off], vd[off + 1],
-                                    vd[off + 2], vd[off + 3],
-                                    presentation)) {
-                abnormal = true;
-                break;
+            const float x0 = vd[off];
+            const float y0 = vd[off + 1];
+            const float x1 = vd[off + 2];
+            const float y1 = vd[off + 3];
+            if (!segment_intersects_bounds(x0, y0, x1, y1, far_window) ||
+                is_abnormal_segment(x0, y0, x1, y1, presentation)) {
+                removed++;
+                run_open = false;
+                continue;
             }
+            append_kept_segment(x0, y0, x1, y1, run_open);
+            kept_any = true;
         }
-        if (abnormal) {
+        if (!kept_any && end_vertex > start_vertex) {
             removed++;
-            continue;
-        }
-
-        filtered_starts.push_back(static_cast<uint32_t>(filtered_vertices.size() / 2));
-        for (size_t vi = start_vertex; vi < end_vertex; ++vi) {
-            const size_t off = vi * 2;
-            filtered_vertices.push_back(vd[off]);
-            filtered_vertices.push_back(vd[off + 1]);
         }
     }
 
@@ -578,9 +679,42 @@ static RenderBounds adaptive_visible_bounds(const std::vector<BoundsPoint>& poin
     const float range_x = (hi_x - lo_x) > 0 ? (hi_x - lo_x) : 1.0f;
     const float range_y = (hi_y - lo_y) > 0 ? (hi_y - lo_y) : 1.0f;
 
+    // Dense annotation/table bands often sit at the sheet edge. A pure
+    // percentile crop removes them together with true outliers, so preserve
+    // nearby dense edge clusters when they overlap the main horizontal span.
+    const float x_band_min = lo_x - range_x * 0.20f;
+    const float x_band_max = hi_x + range_x * 0.20f;
+    const size_t dense_threshold = std::max<size_t>(40, xs.size() / 250);
+    auto include_dense_y_edge = [&](bool lower_edge) {
+        size_t count = 0;
+        float edge = lower_edge ? lo_y : hi_y;
+        const float max_gap = std::max(range_y * 0.60f, 50.0f);
+        for (const auto& p : points) {
+            if (!is_export_coord(p.x, p.y)) continue;
+            if (p.x < x_band_min || p.x > x_band_max) continue;
+            if (lower_edge) {
+                if (p.y >= lo_y || lo_y - p.y > max_gap) continue;
+                edge = std::min(edge, p.y);
+            } else {
+                if (p.y <= hi_y || p.y - hi_y > max_gap) continue;
+                edge = std::max(edge, p.y);
+            }
+            ++count;
+        }
+        if (count >= dense_threshold) {
+            if (lower_edge) lo_y = edge;
+            else hi_y = edge;
+        }
+    };
+    include_dense_y_edge(true);
+    include_dense_y_edge(false);
+
+    const float final_range_x = (hi_x - lo_x) > 0 ? (hi_x - lo_x) : range_x;
+    const float final_range_y = (hi_y - lo_y) > 0 ? (hi_y - lo_y) : range_y;
+
     RenderBounds result;
-    const float margin_x = range_x * 0.05f;
-    const float margin_y = range_y * 0.05f;
+    const float margin_x = final_range_x * 0.05f;
+    const float margin_y = final_range_y * 0.05f;
     result.expand(lo_x - margin_x, lo_y - margin_y);
     result.expand(hi_x + margin_x, hi_y + margin_y);
 
@@ -761,13 +895,66 @@ static bool should_merge_dwg_block_header_entities(
 
 static std::string escape_json(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    auto append_byte_escape = [&out](unsigned char c) {
+        char buf[7];
+        std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+        out += buf;
+    };
+    auto is_continuation = [](unsigned char c) {
+        return (c & 0xC0u) == 0x80u;
+    };
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
         switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            default: out += c;
+            case '"': out += "\\\""; ++i; break;
+            case '\\': out += "\\\\"; ++i; break;
+            case '\b': out += "\\b"; ++i; break;
+            case '\f': out += "\\f"; ++i; break;
+            case '\n': out += "\\n"; ++i; break;
+            case '\r': out += "\\r"; ++i; break;
+            case '\t': out += "\\t"; ++i; break;
+            default:
+                if (c < 0x20) {
+                    append_byte_escape(c);
+                    ++i;
+                } else if (c < 0x80) {
+                    out.push_back(static_cast<char>(c));
+                    ++i;
+                } else {
+                    size_t len = 0;
+                    uint32_t codepoint = 0;
+                    if ((c & 0xE0u) == 0xC0u) {
+                        len = 2;
+                        codepoint = c & 0x1Fu;
+                    } else if ((c & 0xF0u) == 0xE0u) {
+                        len = 3;
+                        codepoint = c & 0x0Fu;
+                    } else if ((c & 0xF8u) == 0xF0u) {
+                        len = 4;
+                        codepoint = c & 0x07u;
+                    }
+                    bool valid = len > 0 && i + len <= s.size();
+                    for (size_t j = 1; valid && j < len; ++j) {
+                        const unsigned char cc = static_cast<unsigned char>(s[i + j]);
+                        valid = is_continuation(cc);
+                        codepoint = (codepoint << 6) | (cc & 0x3Fu);
+                    }
+                    if (valid) {
+                        if ((len == 2 && codepoint < 0x80u) ||
+                            (len == 3 && codepoint < 0x800u) ||
+                            (len == 4 && (codepoint < 0x10000u || codepoint > 0x10FFFFu)) ||
+                            (codepoint >= 0xD800u && codepoint <= 0xDFFFu)) {
+                            valid = false;
+                        }
+                    }
+                    if (valid) {
+                        out.append(s, i, len);
+                        i += len;
+                    } else {
+                        append_byte_escape(c);
+                        ++i;
+                    }
+                }
         }
     }
     return out;
@@ -827,6 +1014,70 @@ int main(int argc, char** argv) {
     auto& entities = scene.entities();
     auto& layers = scene.layers();
     printf("Parsed %zu entities\n", entities.size());
+
+    // Debug: count entity types
+    {
+        std::unordered_map<std::string, size_t> type_counts;
+        for (const auto& e : entities) {
+            switch (e.type()) {
+                case EntityType::Line: type_counts["Line"]++; break;
+                case EntityType::Circle: type_counts["Circle"]++; break;
+                case EntityType::Arc: type_counts["Arc"]++; break;
+                case EntityType::Polyline: type_counts["Polyline"]++; break;
+                case EntityType::LwPolyline: type_counts["LwPolyline"]++; break;
+                case EntityType::Spline: type_counts["Spline"]++; break;
+                case EntityType::Text: type_counts["Text"]++; break;
+                case EntityType::MText: type_counts["MText"]++; break;
+                case EntityType::Dimension: type_counts["Dimension"]++; break;
+                case EntityType::Hatch: type_counts["Hatch"]++; break;
+                case EntityType::Insert: type_counts["Insert"]++; break;
+                case EntityType::Point: type_counts["Point"]++; break;
+                case EntityType::Ellipse: type_counts["Ellipse"]++; break;
+                case EntityType::Ray: type_counts["Ray"]++; break;
+                case EntityType::XLine: type_counts["XLine"]++; break;
+                case EntityType::Viewport: type_counts["Viewport"]++; break;
+                case EntityType::Solid: type_counts["Solid"]++; break;
+            }
+        }
+        printf("Entity types:\n");
+        for (const auto& [name, count] : type_counts) {
+            printf("  %s: %zu\n", name.c_str(), count);
+        }
+        // Debug: check bounds validity for key types
+        size_t zero_bounds_line = 0, zero_bounds_arc = 0, zero_bounds_circle = 0;
+        size_t nonzero_bounds_line = 0, nonzero_bounds_arc = 0, nonzero_bounds_circle = 0;
+        for (const auto& e : entities) {
+            bool empty = e.bounds().is_empty();
+            switch (e.type()) {
+                case EntityType::Line:
+                    if (empty) zero_bounds_line++; else nonzero_bounds_line++;
+                    break;
+                case EntityType::Arc:
+                    if (empty) zero_bounds_arc++; else nonzero_bounds_arc++;
+                    break;
+                case EntityType::Circle:
+                    if (empty) zero_bounds_circle++; else nonzero_bounds_circle++;
+                    break;
+                default: break;
+            }
+        }
+        printf("Line: empty_bounds=%zu nonempty_bounds=%zu\n", zero_bounds_line, nonzero_bounds_line);
+        printf("Arc: empty_bounds=%zu nonempty_bounds=%zu\n", zero_bounds_arc, nonzero_bounds_arc);
+        printf("Circle: empty_bounds=%zu nonempty_bounds=%zu\n", zero_bounds_circle, nonzero_bounds_circle);
+        // Debug: sample some Arc entities with empty bounds
+        size_t arc_samples = 0;
+        for (const auto& e : entities) {
+            if (e.type() != EntityType::Arc || !e.bounds().is_empty()) continue;
+            if (arc_samples >= 5) break;
+            auto* arc = std::get_if<2>(&e.data);
+            if (arc) {
+                printf("Arc sample %zu: center=(%.3f,%.3f,%.3f) radius=%.3f angles=(%.3f,%.3f)\n",
+                       arc_samples, arc->center.x, arc->center.y, arc->center.z,
+                       arc->radius, arc->start_angle, arc->end_angle);
+            }
+            arc_samples++;
+        }
+    }
 
     // Build set of entity indices that belong to block definitions.
     // DXF uses local-space block definitions expanded through INSERT. For DWG,
@@ -1063,6 +1314,191 @@ int main(int argc, char** argv) {
     };
     std::vector<TextEntry> text_entries;
 
+    auto transform_scale_rotation = [](const Matrix4x4& xform) {
+        const Vec3 origin = xform.transform_point({0.0f, 0.0f, 0.0f});
+        const Vec3 ux = xform.transform_point({1.0f, 0.0f, 0.0f});
+        const Vec3 uy = xform.transform_point({0.0f, 1.0f, 0.0f});
+        const float sx = std::hypot(ux.x - origin.x, ux.y - origin.y);
+        const float sy = std::hypot(uy.x - origin.x, uy.y - origin.y);
+        const float rot = std::atan2(ux.y - origin.y, ux.x - origin.x);
+        struct Result {
+            float sx;
+            float sy;
+            float rotation;
+        };
+        return Result{
+            std::isfinite(sx) && sx > 0.0f ? sx : 1.0f,
+            std::isfinite(sy) && sy > 0.0f ? sy : 1.0f,
+            std::isfinite(rot) ? rot : 0.0f,
+        };
+    };
+
+    auto resolve_text_color = [&](const EntityVariant& entity,
+                                  const EntityHeader* parent_header = nullptr) {
+        if (entity.header.has_true_color) {
+            return entity.header.true_color;
+        }
+        if (entity.header.color_override != 256 && entity.header.color_override != 0) {
+            return Color::from_aci(entity.header.color_override);
+        }
+        if (entity.header.color_override == 0 && parent_header != nullptr) {
+            if (parent_header->has_true_color) {
+                return parent_header->true_color;
+            }
+            if (parent_header->color_override != 256 && parent_header->color_override != 0) {
+                return Color::from_aci(parent_header->color_override);
+            }
+        }
+        int32_t li = entity.header.layer_index;
+        if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
+            return layers[static_cast<size_t>(li)].color;
+        }
+        return Color::white();
+    };
+
+    auto layer_name_for = [&](int32_t layer_index) {
+        if (layer_index >= 0 && static_cast<size_t>(layer_index) < layers.size()) {
+            return layers[static_cast<size_t>(layer_index)].name;
+        }
+        return std::string{};
+    };
+
+    auto append_text_entry = [&](const EntityVariant& entity,
+                                 const Matrix4x4& xform,
+                                 const EntityHeader* parent_header = nullptr) {
+        const auto scaled = transform_scale_rotation(xform);
+        if (entity.type() == EntityType::Text || entity.type() == EntityType::MText) {
+            const TextEntity* te = nullptr;
+            if (entity.type() == EntityType::Text) {
+                te = std::get_if<6>(&entity.data);
+            } else {
+                te = std::get_if<7>(&entity.data);
+            }
+            if (!te || te->height <= 0.0f || te->text.empty() ||
+                !std::isfinite(te->height) || !std::isfinite(te->rotation) ||
+                !std::isfinite(te->width_factor)) {
+                return;
+            }
+            const Vec3 pos = xform.transform_point(te->insertion_point);
+            if (!is_export_coord(pos.x, pos.y)) return;
+
+            TextEntry entry;
+            entry.x = pos.x;
+            entry.y = pos.y;
+            entry.height = te->height * scaled.sy;
+            entry.rotation = te->rotation + scaled.rotation;
+            entry.width_factor = (te->width_factor > 0.0f ? te->width_factor : 1.0f) *
+                                 (scaled.sy > 1.0e-6f ? scaled.sx / scaled.sy : 1.0f);
+            entry.rect_width = (te->rect_width > 0.0f && std::isfinite(te->rect_width))
+                ? te->rect_width * scaled.sx
+                : 0.0f;
+            entry.rect_height = (te->rect_height > 0.0f && std::isfinite(te->rect_height))
+                ? te->rect_height * scaled.sy
+                : 0.0f;
+            entry.text = te->text;
+            entry.layer_index = entity.header.layer_index;
+            entry.space = entity.header.space;
+            entry.layout_index = entity.header.layout_index;
+            entry.viewport_index = entity.header.viewport_index;
+            entry.style_index = te->text_style_index;
+            entry.alignment = te->alignment;
+            entry.kind = (entity.type() == EntityType::MText) ? "mtext" : "text";
+
+            Color text_color = resolve_text_color(entity, parent_header);
+            entry.r = text_color.r;
+            entry.g = text_color.g;
+            entry.b = text_color.b;
+            entry.layer_name = layer_name_for(entry.layer_index);
+            text_entries.push_back(std::move(entry));
+            return;
+        }
+
+        if (entity.type() == EntityType::Dimension) {
+            const auto* dim = std::get_if<8>(&entity.data);
+            if (!dim || dim->text.empty() || dim->text == "<>" || dim->text == " " ||
+                !std::isfinite(dim->rotation)) {
+                return;
+            }
+            const Vec3 pos = xform.transform_point(dim->text_midpoint);
+            if (!is_export_coord(pos.x, pos.y)) return;
+
+            TextEntry entry;
+            entry.x = pos.x;
+            entry.y = pos.y;
+            entry.height = 3.0f * scaled.sy;
+            entry.rotation = dim->rotation + scaled.rotation;
+            entry.width_factor = scaled.sy > 1.0e-6f ? scaled.sx / scaled.sy : 1.0f;
+            entry.text = dim->text;
+            entry.kind = "dimension";
+            entry.layer_index = entity.header.layer_index;
+            entry.space = entity.header.space;
+            entry.layout_index = entity.header.layout_index;
+            entry.viewport_index = entity.header.viewport_index;
+
+            Color text_color = resolve_text_color(entity, parent_header);
+            entry.r = text_color.r;
+            entry.g = text_color.g;
+            entry.b = text_color.b;
+            entry.layer_name = layer_name_for(entry.layer_index);
+            text_entries.push_back(std::move(entry));
+        }
+    };
+
+    std::function<void(const EntityVariant&, const Matrix4x4&, int, const EntityHeader*)>
+        collect_insert_text;
+    collect_insert_text = [&](const EntityVariant& entity,
+                              const Matrix4x4& xform,
+                              int depth,
+                              const EntityHeader* parent_header) {
+        if (depth > 16 || !entity.is_visible()) return;
+        if (entity.type() != EntityType::Insert) {
+            append_text_entry(entity, xform, parent_header);
+            return;
+        }
+
+        const auto* ins = std::get_if<InsertEntity>(&entity.data);
+        if (!ins || ins->block_index < 0 ||
+            static_cast<size_t>(ins->block_index) >= scene.blocks().size()) {
+            return;
+        }
+        const Block& block = scene.blocks()[static_cast<size_t>(ins->block_index)];
+        if (block.entity_indices.empty()) return;
+
+        float bpx = std::isfinite(block.base_point.x) ? block.base_point.x : 0.0f;
+        float bpy = std::isfinite(block.base_point.y) ? block.base_point.y : 0.0f;
+        Matrix4x4 base_offset = Matrix4x4::translation_2d(-bpx, -bpy);
+        Matrix4x4 insert_xform = Matrix4x4::affine_2d(
+            ins->x_scale, ins->y_scale, ins->rotation,
+            ins->insertion_point.x, ins->insertion_point.y);
+
+        const int32_t total_instances = ins->column_count * ins->row_count;
+        constexpr int32_t MAX_INSTANCES = 100;
+        int32_t col_limit = ins->column_count;
+        int32_t row_limit = ins->row_count;
+        if (total_instances > MAX_INSTANCES) {
+            float sc = std::sqrt(static_cast<float>(MAX_INSTANCES) /
+                                 static_cast<float>(total_instances));
+            col_limit = std::max(1, static_cast<int32_t>(ins->column_count * sc));
+            row_limit = std::max(1, static_cast<int32_t>(ins->row_count * sc));
+        }
+        col_limit = std::max(1, col_limit);
+        row_limit = std::max(1, row_limit);
+
+        for (int32_t col = 0; col < col_limit; ++col) {
+            for (int32_t row = 0; row < row_limit; ++row) {
+                Matrix4x4 final_xform = base_offset * insert_xform *
+                    Matrix4x4::translation_2d(
+                        static_cast<float>(col) * ins->column_spacing,
+                        static_cast<float>(row) * ins->row_spacing) * xform;
+                for (int32_t ei : block.entity_indices) {
+                    if (ei < 0 || static_cast<size_t>(ei) >= entities.size()) continue;
+                    const auto& child = entities[static_cast<size_t>(ei)];
+                    collect_insert_text(child, final_xform, depth + 1, &entity.header);
+                }
+            }
+        }
+    };
+
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
     batcher.begin_frame(camera);
@@ -1092,6 +1528,7 @@ int main(int argc, char** argv) {
                     auto* local_ins = std::get_if<InsertEntity>(&local_insert.data);
                     if (local_ins) {
                         local_ins->block_index = local_block_index;
+                        collect_insert_text(local_insert, Matrix4x4::identity(), 0, nullptr);
                         batcher.submit_entity(local_insert, scene);
                     }
                 }
@@ -1099,110 +1536,15 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Extract text entities for separate rendering
-        if (entity.type() == EntityType::Text || entity.type() == EntityType::MText) {
-            const TextEntity* te = nullptr;
-            if (entity.type() == EntityType::Text) {
-                te = std::get_if<6>(&entity.data);
-            } else {
-                te = std::get_if<7>(&entity.data);
-            }
-            if (te && te->height > 0.0f && !te->text.empty() &&
-                is_export_coord(te->insertion_point.x, te->insertion_point.y) &&
-                std::isfinite(te->height) && std::isfinite(te->rotation) &&
-                std::isfinite(te->width_factor)) {
-                TextEntry entry;
-                entry.x = te->insertion_point.x;
-                entry.y = te->insertion_point.y;
-                entry.height = te->height;
-                entry.rotation = te->rotation;
-                entry.width_factor = (te->width_factor > 0.0f) ? te->width_factor : 1.0f;
-                entry.rect_width = (te->rect_width > 0.0f && std::isfinite(te->rect_width))
-                    ? te->rect_width
-                    : 0.0f;
-                entry.rect_height = (te->rect_height > 0.0f && std::isfinite(te->rect_height))
-                    ? te->rect_height
-                    : 0.0f;
-                entry.text = te->text;
-                entry.layer_index = entity.header.layer_index;
-                entry.space = entity.header.space;
-                entry.layout_index = entity.header.layout_index;
-                entry.viewport_index = entity.header.viewport_index;
-                entry.style_index = te->text_style_index;
-                entry.alignment = te->alignment;
-                entry.kind = (entity.type() == EntityType::MText) ? "mtext" : "text";
-
-                // Resolve color
-                Color text_color;
-                if (entity.header.has_true_color) {
-                    text_color = entity.header.true_color;
-                } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
-                    text_color = Color::from_aci(entity.header.color_override);
-                } else {
-                    int32_t li = entity.header.layer_index;
-                    const auto& layers = scene.layers();
-                    if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
-                        text_color = layers[static_cast<size_t>(li)].color;
-                    } else {
-                        text_color = Color::white();
-                    }
-                }
-                entry.r = text_color.r;
-                entry.g = text_color.g;
-                entry.b = text_color.b;
-
-                // Layer name
-                const auto& layers = scene.layers();
-                if (entry.layer_index >= 0 && static_cast<size_t>(entry.layer_index) < layers.size()) {
-                    entry.layer_name = layers[static_cast<size_t>(entry.layer_index)].name;
-                }
-
-                text_entries.push_back(std::move(entry));
-            }
-        }
-
-        // Also export dimension text as text entries
-        if (entity.type() == EntityType::Dimension) {
-            const auto* dim = std::get_if<8>(&entity.data);
-            if (dim && !dim->text.empty() && dim->text != "<>" && dim->text != " " &&
-                is_export_coord(dim->text_midpoint.x, dim->text_midpoint.y) &&
-                std::isfinite(dim->rotation)) {
-                TextEntry entry;
-                entry.x = dim->text_midpoint.x;
-                entry.y = dim->text_midpoint.y;
-                entry.height = 3.0f; // Default dimension text height
-                entry.rotation = dim->rotation;
-                entry.width_factor = 1.0f;
-                entry.text = dim->text;
-                entry.kind = "dimension";
-                entry.layer_index = entity.header.layer_index;
-                entry.space = entity.header.space;
-                entry.layout_index = entity.header.layout_index;
-                entry.viewport_index = entity.header.viewport_index;
-
-                Color text_color;
-                if (entity.header.has_true_color) {
-                    text_color = entity.header.true_color;
-                } else if (entity.header.color_override != 256 && entity.header.color_override != 0) {
-                    text_color = Color::from_aci(entity.header.color_override);
-                } else {
-                    int32_t li = entity.header.layer_index;
-                    if (li >= 0 && static_cast<size_t>(li) < layers.size()) {
-                        text_color = layers[static_cast<size_t>(li)].color;
-                    } else {
-                        text_color = Color::white();
-                    }
-                }
-                entry.r = text_color.r;
-                entry.g = text_color.g;
-                entry.b = text_color.b;
-
-                if (entry.layer_index >= 0 && static_cast<size_t>(entry.layer_index) < layers.size()) {
-                    entry.layer_name = layers[static_cast<size_t>(entry.layer_index)].name;
-                }
-
-                text_entries.push_back(std::move(entry));
-            }
+        // Extract text entities for separate rendering. INSERT-owned block
+        // text must be expanded with the same transform as RenderBatcher;
+        // otherwise CAD tables/title blocks only show underline geometry.
+        if (entity.type() == EntityType::Insert) {
+            collect_insert_text(entity, Matrix4x4::identity(), 0, nullptr);
+        } else if (entity.type() == EntityType::Text ||
+                   entity.type() == EntityType::MText ||
+                   entity.type() == EntityType::Dimension) {
+            append_text_entry(entity, Matrix4x4::identity(), nullptr);
         }
 
         batcher.submit_entity(entity, scene);
@@ -1751,6 +2093,7 @@ int main(int argc, char** argv) {
 
     auto& meta = scene.drawing_info();
     auto raw_b = scene.total_bounds();
+    const bool raw_bounds_nonfinite = !raw_b.is_empty() && !bounds3d_has_finite_xy(raw_b);
     const char* debug_env_for_bounds = std::getenv("FT_DWG_DEBUG");
     if (is_dwg && debug_env_for_bounds && debug_env_for_bounds[0] != '\0' &&
         std::strcmp(debug_env_for_bounds, "0") != 0 && !raw_b.is_empty()) {
@@ -1785,6 +2128,17 @@ int main(int argc, char** argv) {
     const bool has_paper_viewports = std::any_of(
         scene.viewports().begin(), scene.viewports().end(),
         [](const Viewport& vp) { return vp.is_paper_space; });
+    const bool has_complete_paper_viewports = std::any_of(
+        scene.viewports().begin(), scene.viewports().end(),
+        [](const Viewport& vp) {
+            return vp.is_paper_space &&
+                   std::isfinite(vp.paper_width) &&
+                   std::isfinite(vp.paper_height) &&
+                   std::isfinite(vp.view_height) &&
+                   vp.paper_width > 0.0f &&
+                   vp.paper_height > 0.0f &&
+                   vp.view_height > 0.0f;
+        });
     RenderBounds presentation_bounds = output_bounds;
     Bounds3d scene_presentation = scene.presentation_bounds();
     const Layout* active_layout = has_layouts ? scene.active_layout() : nullptr;
@@ -1801,6 +2155,73 @@ int main(int argc, char** argv) {
                 active_layout_index = static_cast<int32_t>(i);
                 break;
             }
+        }
+    }
+    size_t active_layout_visible_entities = 0;
+    size_t active_layout_visible_geometry = 0;
+    size_t active_layout_visible_text = 0;
+    size_t active_layout_owned_entities = 0;
+    size_t active_layout_owned_block_entities = 0;
+    size_t active_layout_viewport_entities = 0;
+    size_t active_layout_layer_hidden_geometry = 0;
+    size_t active_layout_layer_hidden_text = 0;
+    bool rejected_metadata_only_layout = false;
+    if (is_dwg && active_layout_index >= 0) {
+        const RenderBounds layout_bounds = presentation_bounds;
+        for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
+            const auto& entity = entities[static_cast<size_t>(i)];
+            const bool belongs_to_layout =
+                entity.header.layout_index == active_layout_index ||
+                entity.header.space == DrawingSpace::PaperSpace;
+            if (!belongs_to_layout) continue;
+            ++active_layout_owned_entities;
+            const bool is_block_definition_entity = block_entity_indices.count(i) != 0;
+            if (is_block_definition_entity) {
+                ++active_layout_owned_block_entities;
+            }
+            if (entity.type() == EntityType::Viewport) {
+                ++active_layout_viewport_entities;
+            }
+            if (entity.header.layer_index >= 0 &&
+                static_cast<size_t>(entity.header.layer_index) < layers.size()) {
+                const auto& layer = layers[static_cast<size_t>(entity.header.layer_index)];
+                if ((layer.is_frozen || layer.is_off) &&
+                    render_bounds_intersects(bounds3d_to_render_bounds(entity.bounds()), layout_bounds)) {
+                    ++active_layout_layer_hidden_geometry;
+                }
+            }
+            if (is_block_definition_entity) continue;
+            if (render_bounds_intersects(bounds3d_to_render_bounds(entity.bounds()), layout_bounds)) {
+                ++active_layout_visible_entities;
+                ++active_layout_visible_geometry;
+            }
+        }
+        for (const auto& text : text_entries) {
+            const bool belongs_to_layout =
+                text.layout_index == active_layout_index ||
+                text.space == DrawingSpace::PaperSpace;
+            if (!belongs_to_layout) continue;
+            if (text.layer_index >= 0 && static_cast<size_t>(text.layer_index) < layers.size()) {
+                const auto& layer = layers[static_cast<size_t>(text.layer_index)];
+                if ((layer.is_frozen || layer.is_off) && point_in_bounds(text.x, text.y, layout_bounds)) {
+                    ++active_layout_layer_hidden_text;
+                }
+            }
+            if (point_in_bounds(text.x, text.y, layout_bounds)) {
+                ++active_layout_visible_entities;
+                ++active_layout_visible_text;
+            }
+        }
+
+        // A decoded LAYOUT object can carry valid paper/plot metadata before
+        // the DWG layout viewport and owner graph are complete. Do not use a
+        // metadata-only sheet as the active export window, or model-space
+        // content is incorrectly clipped to paper millimetres.
+        if (active_layout_visible_entities < 25) {
+            rejected_metadata_only_layout = true;
+            active_layout = nullptr;
+            active_layout_index = -1;
+            presentation_bounds = output_bounds;
         }
     }
     int32_t active_model_viewport_index = -1;
@@ -1904,7 +2325,7 @@ int main(int argc, char** argv) {
     }
     out << "  },\n";
     out << "  \"rawBounds\": {\n";
-    if (!raw_b.is_empty()) {
+    if (bounds3d_has_finite_xy(raw_b)) {
         out << "    \"minX\": " << raw_b.min.x << ",\n";
         out << "    \"minY\": " << raw_b.min.y << ",\n";
         out << "    \"maxX\": " << raw_b.max.x << ",\n";
@@ -1914,9 +2335,38 @@ int main(int argc, char** argv) {
         out << "    \"isEmpty\": true\n";
     }
     out << "  },\n";
+    out << "  \"drawingInfo\": {";
+    out << "\"acadVersion\": \"" << escape_json(meta.acad_version) << "\"";
+    out << ", \"headerVarsBytes\": " << meta.dwg_header_vars_bytes;
+    out << ", \"extents\": ";
+    write_bounds3d_xy(out, meta.extents);
+    out << ", \"insertionBase\": ";
+    write_vec3_xy(out, meta.insertion_base);
+    out << ", \"textSize\": " << meta.text_size;
+    out << "},\n";
     out << "  \"activeViewId\": \"" << active_view_id << "\",\n";
     out << "  \"views\": [\n";
     bool wrote_view = false;
+    size_t complete_layout_viewport_views = 0;
+    size_t low_coverage_layout_viewport_views = 0;
+    struct ViewportEntityInfo {
+        int32_t layout_index = -1;
+        DrawingSpace space = DrawingSpace::Unknown;
+        bool has_entity = false;
+    };
+    std::vector<ViewportEntityInfo> viewport_entity_info(scene.viewports().size());
+    for (const auto& entity : entities) {
+        if (entity.type() != EntityType::Viewport) continue;
+        const int32_t viewport_index = entity.header.viewport_index;
+        if (viewport_index < 0 ||
+            static_cast<size_t>(viewport_index) >= viewport_entity_info.size()) {
+            continue;
+        }
+        auto& info = viewport_entity_info[static_cast<size_t>(viewport_index)];
+        info.layout_index = entity.header.layout_index;
+        info.space = entity.header.space;
+        info.has_entity = true;
+    }
     if (has_layouts) {
         const auto& layouts = scene.layouts();
         for (size_t i = 0; i < layouts.size(); ++i) {
@@ -1941,6 +2391,15 @@ int main(int argc, char** argv) {
             write_bounds3d_xy(out, layout.paper_bounds);
             out << ", \"plotWindow\": ";
             write_bounds3d_xy(out, layout.plot_window);
+            out << ", \"limits\": ";
+            write_bounds3d_xy(out, layout.limits);
+            out << ", \"extents\": ";
+            write_bounds3d_xy(out, layout.extents);
+            out << ", \"insertionBase\": ";
+            write_vec3_xy(out, layout.insertion_base);
+            out << ", \"plotScale\": " << layout.plot_scale
+                << ", \"plotRotation\": " << layout.plot_rotation
+                << ", \"paperUnits\": " << layout.paper_units;
             out << ", \"clipBounds\": ";
             write_bounds3d_xy(out, clip);
             out << "}";
@@ -1991,6 +2450,84 @@ int main(int argc, char** argv) {
     const auto& viewports = scene.viewports();
     for (size_t i = 0; i < viewports.size(); ++i) {
         const auto& vp = viewports[i];
+        if (!vp.is_paper_space) continue;
+        RenderBounds paper_vb = layout_viewport_paper_bounds(vp);
+        RenderBounds model_vb = layout_viewport_model_bounds(vp);
+        if (paper_vb.empty || model_vb.empty) continue;
+        const float model_coverage = bounds_point_coverage(model_vb, visible_points);
+        RenderBounds target_model_vb =
+            layout_viewport_model_bounds_with_center(vp, vp.model_view_target);
+        Vec3 target_plus_center{
+            vp.model_view_target.x + vp.model_view_center.x,
+            vp.model_view_target.y + vp.model_view_center.y,
+            vp.model_view_target.z + vp.model_view_center.z
+        };
+        RenderBounds target_plus_center_vb =
+            layout_viewport_model_bounds_with_center(vp, target_plus_center);
+        const float target_model_coverage =
+            bounds_point_coverage(target_model_vb, visible_points);
+        const float target_plus_center_coverage =
+            bounds_point_coverage(target_plus_center_vb, visible_points);
+        ++complete_layout_viewport_views;
+        if (model_coverage < 0.05f) {
+            ++low_coverage_layout_viewport_views;
+        }
+        if (wrote_view) out << ",\n";
+        out << "    {\"id\": \"layout-vport-" << i << "\", "
+            << "\"name\": \"" << escape_json(vp.name.empty() ? "Layout Viewport" : vp.name) << "\", "
+            << "\"type\": \"layoutViewport\", "
+            << "\"source\": \"layoutViewport\", "
+            << "\"viewportId\": " << i << ", "
+            << "\"layoutIndex\": " << (i < viewport_entity_info.size()
+                    ? viewport_entity_info[i].layout_index : -1) << ", "
+            << "\"entitySpace\": \"" << (i < viewport_entity_info.size()
+                    ? drawing_space_name(viewport_entity_info[i].space) : "unknown") << "\", "
+            << "\"hasViewportEntity\": "
+            << ((i < viewport_entity_info.size() && viewport_entity_info[i].has_entity)
+                    ? "true" : "false") << ", "
+            << "\"bounds\": ";
+        write_render_bounds(out, paper_vb);
+        out << ", \"presentationBounds\": ";
+        write_render_bounds(out, paper_vb);
+        out << ", \"modelBounds\": ";
+        write_render_bounds(out, model_vb);
+        out << ", \"viewHeight\": " << vp.view_height
+            << ", \"customScale\": " << vp.custom_scale
+            << ", \"twistAngle\": " << vp.twist_angle
+            << ", \"modelCoverage\": " << model_coverage
+            << ", \"paperCenter\": ";
+        write_vec3_xy(out, vp.paper_center);
+        out << ", \"modelViewCenter\": ";
+        write_vec3_xy(out, vp.model_view_center);
+        out << ", \"modelViewTarget\": ";
+        write_vec3_xy(out, vp.model_view_target);
+        out << ", \"center\": ";
+        write_vec3_xy(out, vp.center);
+        out << ", \"targetModelBounds\": ";
+        write_render_bounds(out, target_model_vb);
+        out << ", \"targetModelCoverage\": " << target_model_coverage
+            << ", \"targetPlusCenterModelBounds\": ";
+        write_render_bounds(out, target_plus_center_vb);
+        out << ", \"targetPlusCenterModelCoverage\": " << target_plus_center_coverage
+            << ", \"frozenLayerCount\": " << vp.frozen_layer_indices.size()
+            << ", \"frozenLayers\": [";
+        const size_t frozen_limit = std::min<size_t>(vp.frozen_layer_indices.size(), 12);
+        for (size_t fi = 0; fi < frozen_limit; ++fi) {
+            if (fi > 0) out << ", ";
+            const int32_t layer_index = vp.frozen_layer_indices[fi];
+            std::string layer_name;
+            if (layer_index >= 0 && static_cast<size_t>(layer_index) < scene.layers().size()) {
+                layer_name = scene.layers()[static_cast<size_t>(layer_index)].name;
+            }
+            out << "\"" << escape_json(layer_name) << "\"";
+        }
+        out << "]";
+        out
+            << "}\n";
+        wrote_view = true;
+    }
+    for (size_t i = 0; i < viewports.size(); ++i) {
+        const auto& vp = viewports[i];
         if (vp.is_paper_space) continue;
         RenderBounds vb = viewport_model_bounds(vp);
         if (vb.empty) continue;
@@ -2004,6 +2541,12 @@ int main(int argc, char** argv) {
         write_render_bounds(out, vb);
         out << ", \"presentationBounds\": ";
         write_render_bounds(out, vb);
+        out << ", \"modelViewCenter\": ";
+        write_vec3_xy(out, vp.model_view_center);
+        out << ", \"modelViewTarget\": ";
+        write_vec3_xy(out, vp.model_view_target);
+        out << ", \"center\": ";
+        write_vec3_xy(out, vp.center);
         out << "}\n";
         wrote_view = true;
     }
@@ -2025,18 +2568,179 @@ int main(int argc, char** argv) {
         out << "{\"code\": \"" << escape_json(diagnostic.code)
             << "\", \"category\": \"" << escape_json(diagnostic.category)
             << "\", \"message\": \"" << escape_json(diagnostic.message)
-            << "\", \"count\": " << diagnostic.count << "}";
+            << "\", \"count\": " << diagnostic.count;
+        if (!diagnostic.version_family.empty()) {
+            out << ", \"version_family\": \"" << escape_json(diagnostic.version_family) << "\"";
+        }
+        if (!diagnostic.object_family.empty()) {
+            out << ", \"object_family\": \"" << escape_json(diagnostic.object_family) << "\"";
+        }
+        if (diagnostic.object_type != 0) {
+            out << ", \"object_type\": " << diagnostic.object_type;
+        }
+        if (!diagnostic.class_name.empty()) {
+            out << ", \"class_name\": \"" << escape_json(diagnostic.class_name) << "\"";
+        }
+        if (diagnostic.sample_handle != 0) {
+            out << ", \"sample_handle\": " << diagnostic.sample_handle;
+        }
+        out << "}";
     };
     for (const auto& diagnostic : scene.diagnostics()) {
         gap_with_count(diagnostic);
+    }
+    if (is_dwg && has_layouts && active_layout_index < 0) {
+        if (!first_gap) out << ", ";
+        first_gap = false;
+        out << "{\"code\": \"layout_entity_ownership_unresolved\", "
+            << "\"category\": \"View gap\", "
+            << "\"message\": \"DWG layout objects were decoded, but paper-space entity ownership/viewport content was not complete enough to select a layout as the default view.";
+        if (rejected_metadata_only_layout) {
+            out << " The best layout candidate had only "
+                << active_layout_visible_entities
+                << " paper/layout-owned visible entities (geometry="
+                << active_layout_visible_geometry
+                << ", text=" << active_layout_visible_text
+                << ", owned=" << active_layout_owned_entities
+                << ", blockDefinitionOwned=" << active_layout_owned_block_entities
+                << ", viewportEntities=" << active_layout_viewport_entities
+                << ", layerHiddenGeometry=" << active_layout_layer_hidden_geometry
+                << ", layerHiddenText=" << active_layout_layer_hidden_text
+                << "), so it remains a view candidate rather than the active export window.";
+        }
+        out << "\", "
+            << "\"count\": " << scene.layouts().size()
+            << ", \"object_family\": \"LAYOUT/VIEWPORT\"}";
+    }
+    if (is_dwg && has_complete_paper_viewports && active_layout_index < 0) {
+        if (!first_gap) out << ", ";
+        first_gap = false;
+        out << "{\"code\": \"layout_viewport_projection_deferred\", "
+            << "\"category\": \"View gap\", "
+            << "\"message\": \"Full paper-space viewport metadata was decoded, but model-space content is not yet projected through layout viewports in the export/render path.\", "
+            << "\"count\": " << scene.viewports().size()
+            << ", \"object_family\": \"VIEWPORT\"}";
+    }
+    if (is_dwg && low_coverage_layout_viewport_views > 0) {
+        if (!first_gap) out << ", ";
+        first_gap = false;
+        out << "{\"code\": \"layout_viewport_model_coverage_low\", "
+            << "\"category\": \"View gap\", "
+            << "\"message\": \"Decoded layout viewport model windows cover little or none of the finite model geometry, so viewport projection remains diagnostic-only until field alignment and owner binding are verified.\", "
+            << "\"count\": " << low_coverage_layout_viewport_views
+            << ", \"object_family\": \"VIEWPORT\", "
+            << "\"object_type\": " << complete_layout_viewport_views << "}";
+    }
+    if (is_dwg && complete_layout_viewport_views > 0) {
+        size_t unowned_layout_viewports = 0;
+        for (size_t i = 0; i < viewports.size(); ++i) {
+            const auto& vp = viewports[i];
+            if (!vp.is_paper_space) continue;
+            if (layout_viewport_paper_bounds(vp).empty ||
+                layout_viewport_model_bounds(vp).empty) {
+                continue;
+            }
+            if (i >= viewport_entity_info.size() ||
+                viewport_entity_info[i].layout_index < 0 ||
+                viewport_entity_info[i].space != DrawingSpace::PaperSpace) {
+                ++unowned_layout_viewports;
+            }
+        }
+        if (unowned_layout_viewports > 0) {
+            if (!first_gap) out << ", ";
+            first_gap = false;
+            out << "{\"code\": \"layout_viewport_owner_unresolved\", "
+                << "\"category\": \"Handle resolution gap\", "
+                << "\"message\": \"One or more decoded layout viewports are not yet bound to a paper-space layout owner, so viewport projection remains diagnostic-only.\", "
+                << "\"count\": " << unowned_layout_viewports
+                << ", \"object_family\": \"VIEWPORT\"}";
+        }
+    }
+    if (is_dwg && !default_view_bounds.empty && !layers.empty()) {
+        size_t hidden_text_in_view = 0;
+        size_t hidden_geometry_in_view = 0;
+        size_t hidden_layer_count = 0;
+        size_t hidden_geometry_layer_count = 0;
+        std::vector<bool> layer_seen(layers.size(), false);
+        std::vector<bool> geometry_layer_seen(layers.size(), false);
+        std::vector<size_t> hidden_text_by_layer(layers.size(), 0);
+        std::vector<size_t> hidden_geometry_by_layer(layers.size(), 0);
+        for (const auto& te : text_entries) {
+            if (!point_in_bounds(te.x, te.y, default_view_bounds)) continue;
+            if (te.layer_index < 0 || static_cast<size_t>(te.layer_index) >= layers.size()) continue;
+            const auto& layer = layers[static_cast<size_t>(te.layer_index)];
+            if (!layer.is_frozen && !layer.is_off) continue;
+            ++hidden_text_in_view;
+            ++hidden_text_by_layer[static_cast<size_t>(te.layer_index)];
+            if (!layer_seen[static_cast<size_t>(te.layer_index)]) {
+                layer_seen[static_cast<size_t>(te.layer_index)] = true;
+                ++hidden_layer_count;
+            }
+        }
+        for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
+            if (block_entity_indices.count(i)) continue;
+            const auto& entity = entities[static_cast<size_t>(i)];
+            if (entity.type() == EntityType::Text || entity.type() == EntityType::MText ||
+                entity.type() == EntityType::Dimension) {
+                continue;
+            }
+            if (entity.header.layer_index < 0 ||
+                static_cast<size_t>(entity.header.layer_index) >= layers.size()) {
+                continue;
+            }
+            const auto& layer = layers[static_cast<size_t>(entity.header.layer_index)];
+            if (!layer.is_frozen && !layer.is_off) continue;
+            RenderBounds entity_bounds = bounds3d_to_render_bounds(entity.bounds());
+            if (!render_bounds_intersects(entity_bounds, default_view_bounds)) continue;
+            ++hidden_geometry_in_view;
+            ++hidden_geometry_by_layer[static_cast<size_t>(entity.header.layer_index)];
+            if (!geometry_layer_seen[static_cast<size_t>(entity.header.layer_index)]) {
+                geometry_layer_seen[static_cast<size_t>(entity.header.layer_index)] = true;
+                ++hidden_geometry_layer_count;
+            }
+        }
+        const std::string hidden_text_layers =
+            summarize_layer_counts(hidden_text_by_layer, layers, 5);
+        const std::string hidden_geometry_layers =
+            summarize_layer_counts(hidden_geometry_by_layer, layers, 5);
+        if (hidden_text_in_view > 0) {
+            if (!first_gap) out << ", ";
+            first_gap = false;
+            out << "{\"code\": \"layer_state_hides_presentation_text\", "
+                << "\"category\": \"View gap\", "
+                << "\"message\": \"Text exists inside the active presentation bounds on frozen/off layers. This may be intentional layer state, or a missing layout-viewport layer override until per-viewport layer state is decoded.";
+            if (!hidden_text_layers.empty()) {
+                out << " Top hidden text layers: " << escape_json(hidden_text_layers) << ".";
+            }
+            out << "\", "
+                << "\"count\": " << hidden_text_in_view
+                << ", \"object_family\": \"LAYER/VIEWPORT\", "
+                << "\"object_type\": " << hidden_layer_count << "}";
+        }
+        if (hidden_geometry_in_view > 0) {
+            if (!first_gap) out << ", ";
+            first_gap = false;
+            out << "{\"code\": \"layer_state_hides_presentation_geometry\", "
+                << "\"category\": \"View gap\", "
+                << "\"message\": \"Drawable geometry intersects the active presentation bounds on frozen/off layers. If it should be visible through a layout viewport, per-viewport layer overrides are still missing.";
+            if (!hidden_geometry_layers.empty()) {
+                out << " Top hidden geometry layers: " << escape_json(hidden_geometry_layers) << ".";
+            }
+            out << "\", "
+                << "\"count\": " << hidden_geometry_in_view
+                << ", \"object_family\": \"LAYER/VIEWPORT\", "
+                << "\"object_type\": " << hidden_geometry_layer_count << "}";
+        }
     }
     if (is_dwg && !has_layouts) {
         gap("missing_layout_objects", "Semantic gap",
             "DWG layout objects are not fully parsed; default view uses finite geometry fallback.");
     }
-    if (is_dwg && !has_paper_viewports) {
+    if (is_dwg && !has_complete_paper_viewports) {
         gap("missing_layout_viewports", "View gap",
-            "No full paper-space layout viewport metadata is available.");
+            has_paper_viewports
+                ? "Only placeholder paper-space VIEWPORT entities were decoded; full paper-space rectangle, model view, scale, and clip metadata are still missing."
+                : "No full paper-space layout viewport metadata is available.");
     }
     if (rejected_partial_model_viewport) {
         if (!first_gap) out << ", ";
@@ -2045,6 +2749,14 @@ int main(int argc, char** argv) {
             << "\"category\": \"View gap\", "
             << "\"message\": \"A model VPORT did not cover enough finite drawing geometry for the default preview, so a paper-space fallback window was inferred from finite drawing geometry.\", "
             << "\"count\": " << static_cast<int>(active_model_viewport_coverage * 100.0f) << "}";
+    }
+    if (raw_bounds_nonfinite) {
+        if (!first_gap) out << ", ";
+        first_gap = false;
+        out << "{\"code\": \"raw_bounds_nonfinite\", "
+            << "\"category\": \"Render gap\", "
+            << "\"message\": \"Scene raw bounds contained NaN or infinite coordinates. Exported rawBounds were suppressed while finite presentation bounds were used for preview fitting.\", "
+            << "\"count\": 1}";
     }
     if (abnormal_segment_count > 0) {
         if (!first_gap) out << ", ";
