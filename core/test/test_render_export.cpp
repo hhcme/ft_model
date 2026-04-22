@@ -2217,7 +2217,8 @@ int main(int argc, char** argv) {
         // the DWG layout viewport and owner graph are complete. Do not use a
         // metadata-only sheet as the active export window, or model-space
         // content is incorrectly clipped to paper millimetres.
-        if (active_layout_visible_entities < 25) {
+        if (active_layout_visible_entities < 25 &&
+            active_layout_viewport_entities == 0) {
             rejected_metadata_only_layout = true;
             active_layout = nullptr;
             active_layout_index = -1;
@@ -2282,7 +2283,8 @@ int main(int argc, char** argv) {
             ? presentation_bounds
             : (!paper_fallback_sheet_bounds.empty ? paper_fallback_sheet_bounds : output_bounds);
     const RenderBounds abnormal_reference_bounds =
-        (active_model_viewport_index >= 0) ? output_bounds : default_view_bounds;
+        (active_layout_index >= 0 || active_model_viewport_index >= 0)
+            ? output_bounds : default_view_bounds;
     const size_t abnormal_segment_count = is_dwg
         ? count_abnormal_segments(batches, abnormal_reference_bounds)
         : 0;
@@ -2839,7 +2841,8 @@ int main(int argc, char** argv) {
         out << "\"linePattern\": [";
         for (size_t pi = 0; pi < batch.line_pattern.dash_array.size(); ++pi) {
             if (pi > 0) out << ",";
-            out << batch.line_pattern.dash_array[pi];
+            float v = batch.line_pattern.dash_array[pi];
+            out << (std::isfinite(v) ? v : 0.0f);
         }
         out << "], ";
         out << "\"space\": \"" << space_to_json(batch.space) << "\", ";
