@@ -3651,11 +3651,13 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             uint32_t hss = 0;
             if (is_r2010_plus) {
                 uint32_t res = 0;
+                int shift = 0;
                 const uint8_t* up = obj_data + offset + msb;
                 size_t uavail = obj_data_size - offset - msb;
                 for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail; ++i) {
                     uint8_t bv = up[i];
-                    res = (res << 7) | (bv & 0x7F);
+                    res |= static_cast<uint32_t>(bv & 0x7F) << shift;
+                    shift += 7;
                     umcb = static_cast<size_t>(i) + 1;
                     if ((bv & 0x80) == 0) break;
                 }
@@ -3745,10 +3747,12 @@ Result DwgParser::parse_objects(SceneGraph& scene)
             if (is_r2010_plus) {
                 // Read UMC for handle stream size
                 uint32_t hss = 0;
+                int hss_shift = 0;
                 const uint8_t* up2 = obj_data + bh_offset + msb;
                 size_t uavail2 = obj_data_size - bh_offset - msb;
                 for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail2; ++i) {
-                    hss = (hss << 7) | (up2[i] & 0x7F);
+                    hss |= static_cast<uint32_t>(up2[i] & 0x7F) << hss_shift;
+                    hss_shift += 7;
                     if ((up2[i] & 0x80) == 0) break;
                 }
                 if (hss <= edb * 8) mdb = edb * 8 - hss;
@@ -3794,8 +3798,10 @@ Result DwgParser::parse_objects(SceneGraph& scene)
                     const uint8_t* up3 = obj_data + bh_offset + msb;
                     size_t uavail3 = obj_data_size - bh_offset - msb;
                     uint32_t hss = 0;
+                    int hss_shift3 = 0;
                     for (int i = 0; i < 4 && static_cast<size_t>(i) < uavail3; ++i) {
-                        hss = (hss << 7) | (up3[i] & 0x7F);
+                        hss |= static_cast<uint32_t>(up3[i] & 0x7F) << hss_shift3;
+                        hss_shift3 += 7;
                         if ((up3[i] & 0x80) == 0) break;
                     }
                     hs_start = (hss < edb * 8) ? (edb * 8 - hss) : 0;

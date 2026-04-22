@@ -91,6 +91,19 @@ Vec3 normalize_vec3(double x, double y, double z)
     };
 }
 
+// Safe double→float cast: returns 0.0f for values that would overflow float.
+inline float safe_float(double v) {
+    if (!std::isfinite(v)) return 0.0f;
+    if (v > static_cast<double>(3.4e35f)) return 0.0f;
+    if (v < static_cast<double>(-3.4e35f)) return 0.0f;
+    return static_cast<float>(v);
+}
+
+// Check if a double value is safe to store as float (finite and representable).
+inline bool is_safe_coord(double v) {
+    return std::isfinite(v) && std::abs(v) < 1.0e8;
+}
+
 struct OcsBasis {
     Vec3 x_axis = {1.0f, 0.0f, 0.0f};
     Vec3 y_axis = {0.0f, 1.0f, 0.0f};
@@ -152,9 +165,12 @@ void parse_line(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
+    if (!is_safe_coord(sx) || !is_safe_coord(sy) ||
+        !is_safe_coord(ex) || !is_safe_coord(ey)) return;
+
     LineEntity line;
-    line.start = {static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz)};
-    line.end   = {static_cast<float>(ex), static_cast<float>(ey), static_cast<float>(ez)};
+    line.start = {safe_float(sx), safe_float(sy), safe_float(sz)};
+    line.end   = {safe_float(ex), safe_float(ey), safe_float(ez)};
     EntityHeader line_hdr = hdr;
     line_hdr.bounds = entity_bounds_line(line);
     scene.add_entity(make_entity<0>(line_hdr, std::move(line)));
@@ -178,10 +194,8 @@ void parse_circle(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     // R2004 object-map offsets can land on interior positions. Reject circles
     // with non-finite or sentinel coordinates.
-    bool circle_invalid = !std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cz) ||
-        !std::isfinite(radius) ||
-        std::abs(cx) > 1e9 || std::abs(cy) > 1e9 || std::abs(cz) > 1e9 ||
-        radius <= 0.0 || radius > 1e9;
+    bool circle_invalid = !is_safe_coord(cx) || !is_safe_coord(cy) || !is_safe_coord(cz) ||
+        !std::isfinite(radius) || radius <= 0.0 || radius > 1e9;
     if (circle_invalid) {
         static int g_circ_reject = 0;
         if (g_circ_reject < 5) {
@@ -197,9 +211,9 @@ void parse_circle(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     const OcsBasis basis = has_custom_ocs ? make_ocs_basis(nx, ny, nz) : OcsBasis{};
     circle.center = has_custom_ocs
         ? ocs_point_to_wcs(cx, cy, cz, basis)
-        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
-    circle.radius = static_cast<float>(radius);
-    circle.normal = {static_cast<float>(nx), static_cast<float>(ny), static_cast<float>(nz)};
+        : Vec3{safe_float(cx), safe_float(cy), safe_float(cz)};
+    circle.radius = safe_float(radius);
+    circle.normal = {safe_float(nx), safe_float(ny), safe_float(nz)};
     circle.start_angle = 0.0f;
     circle.end_angle   = math::TWO_PI;
     EntityHeader circ_hdr = hdr;
@@ -226,14 +240,12 @@ void parse_arc(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
-    // R2004 object-map offsets can land on interior object positions where
-    // the bitstream decodes to a matching self-handle but the entity data is
-    // not actually an Arc. Skip arcs with non-finite or sentinel coordinates.
-    bool arc_invalid = !std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cz) ||
-        !std::isfinite(radius) || !std::isfinite(start_angle) ||
-        !std::isfinite(end_angle) ||
-        std::abs(cx) > 1e9 || std::abs(cy) > 1e9 || std::abs(cz) > 1e9 ||
-        radius <= 0.0 || radius > 1e9;
+    // Validate coordinates: must be finite, representable as float, and within
+    // CAD coordinate range.  Angles must be finite (no double→float overflow).
+    bool arc_invalid = !is_safe_coord(cx) || !is_safe_coord(cy) || !is_safe_coord(cz) ||
+        !std::isfinite(radius) || radius <= 0.0 || radius > 1e9 ||
+        !std::isfinite(start_angle) || std::abs(start_angle) > 1e6 ||
+        !std::isfinite(end_angle) || std::abs(end_angle) > 1e6;
     if (arc_invalid) {
         static int g_arc_reject = 0;
         if (g_arc_reject < 5) {
@@ -249,10 +261,10 @@ void parse_arc(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
     const OcsBasis basis = has_custom_ocs ? make_ocs_basis(nx, ny, nz) : OcsBasis{};
     arc.center      = has_custom_ocs
         ? ocs_point_to_wcs(cx, cy, cz, basis)
-        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
-    arc.radius      = static_cast<float>(radius);
-    arc.start_angle = static_cast<float>(start_angle);
-    arc.end_angle   = static_cast<float>(end_angle);
+        : Vec3{safe_float(cx), safe_float(cy), safe_float(cz)};
+    arc.radius      = safe_float(radius);
+    arc.start_angle = safe_float(start_angle);
+    arc.end_angle   = safe_float(end_angle);
     EntityHeader arc_hdr = hdr;
     arc_hdr.type = EntityType::Arc;
     arc_hdr.bounds = entity_bounds_arc(arc);
@@ -471,11 +483,14 @@ void parse_text(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
+    if (!is_safe_coord(ix) || !is_safe_coord(iy) ||
+        !std::isfinite(height) || height <= 0.0) return;
+
     TextEntity txt;
-    txt.insertion_point = {static_cast<float>(ix), static_cast<float>(iy), static_cast<float>(iz)};
-    txt.height          = static_cast<float>(height);
-    txt.rotation        = static_cast<float>(rotation);
-    txt.width_factor    = static_cast<float>(width_factor);
+    txt.insertion_point = {safe_float(ix), safe_float(iy), safe_float(iz)};
+    txt.height          = safe_float(height);
+    txt.rotation        = safe_float(rotation);
+    txt.width_factor    = safe_float(width_factor);
     txt.text            = std::move(text);
     txt.alignment       = static_cast<int32_t>(h_align);
 
@@ -520,18 +535,21 @@ void parse_mtext(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
+    if (!is_safe_coord(ix) || !is_safe_coord(iy) ||
+        !std::isfinite(height) || height <= 0.0) return;
+
     float rotation = std::atan2(static_cast<float>(yay), static_cast<float>(xax));
 
     TextEntity txt;
-    txt.insertion_point = {static_cast<float>(ix), static_cast<float>(iy), static_cast<float>(iz)};
-    txt.height          = static_cast<float>(height);
+    txt.insertion_point = {safe_float(ix), safe_float(iy), safe_float(iz)};
+    txt.height          = safe_float(height);
     txt.rotation        = rotation;
     txt.width_factor    = 1.0f;
     txt.rect_width      = std::isfinite(rect_width) && rect_width > 0.0
-                              ? static_cast<float>(rect_width)
+                              ? safe_float(rect_width)
                               : 0.0f;
     txt.rect_height     = std::isfinite(rect_height) && rect_height > 0.0
-                              ? static_cast<float>(rect_height)
+                              ? safe_float(rect_height)
                               : 0.0f;
     txt.text            = std::move(text);
     txt.alignment       = static_cast<int32_t>(attachment);
@@ -592,16 +610,22 @@ void parse_insert(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
+    // Validate INSERT: skip if insertion point or scale are clearly corrupt.
+    if (!is_safe_coord(ix) || !is_safe_coord(iy) ||
+        !std::isfinite(sx) || !std::isfinite(sy) ||
+        std::abs(sx) > 1e4 || std::abs(sy) > 1e4 ||
+        !std::isfinite(rotation)) return;
+
     InsertEntity ins;
     ins.block_index     = hdr.block_index;  // Set by handle stream parsing in parse_objects
-    ins.insertion_point = {static_cast<float>(ix), static_cast<float>(iy), static_cast<float>(iz)};
-    ins.x_scale         = static_cast<float>(sx);
-    ins.y_scale         = static_cast<float>(sy);
-    ins.rotation        = static_cast<float>(rotation);
+    ins.insertion_point = {safe_float(ix), safe_float(iy), safe_float(iz)};
+    ins.x_scale         = safe_float(sx);
+    ins.y_scale         = safe_float(sy);
+    ins.rotation        = safe_float(rotation);
     ins.column_count    = static_cast<int32_t>(num_cols);
     ins.row_count       = static_cast<int32_t>(num_rows);
-    ins.column_spacing  = static_cast<float>(col_spacing);
-    ins.row_spacing     = static_cast<float>(row_spacing);
+    ins.column_spacing  = safe_float(col_spacing);
+    ins.row_spacing     = safe_float(row_spacing);
 
     EntityHeader ins_hdr = hdr;
     ins_hdr.type = EntityType::Insert;
@@ -625,7 +649,9 @@ void parse_point(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
-    Vec3 point{static_cast<float>(dx), static_cast<float>(dy), static_cast<float>(dz)};
+    if (!is_safe_coord(dx) || !is_safe_coord(dy)) return;
+
+    Vec3 point{safe_float(dx), safe_float(dy), safe_float(dz)};
 
     EntityHeader pt_hdr = hdr;
     pt_hdr.type = EntityType::Point;
@@ -656,18 +682,21 @@ void parse_ellipse(DwgBitReader& r, const EntityHeader& hdr, SceneGraph& scene,
 
     if (!reader_ok(r)) return;
 
+    if (!is_safe_coord(cx) || !is_safe_coord(cy) || !is_safe_coord(cz)) return;
+
     const bool has_custom_ocs = !is_default_extrusion(enx, eny, enz);
     const OcsBasis basis = has_custom_ocs ? make_ocs_basis(enx, eny, enz) : OcsBasis{};
     Vec3 major_axis = has_custom_ocs
         ? ocs_vector_to_wcs(smx, smy, smz, basis)
-        : Vec3{static_cast<float>(smx), static_cast<float>(smy), static_cast<float>(smz)};
+        : Vec3{safe_float(smx), safe_float(smy), safe_float(smz)};
     Vec3 center = has_custom_ocs
         ? ocs_point_to_wcs(cx, cy, cz, basis)
-        : Vec3{static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)};
+        : Vec3{safe_float(cx), safe_float(cy), safe_float(cz)};
 
     double major_radius = major_axis.length();
     if (!std::isfinite(major_radius) || major_radius <= 0.0 ||
-        !std::isfinite(ratio) || ratio <= 0.0) {
+        !std::isfinite(ratio) || ratio <= 0.0 ||
+        !std::isfinite(start_angle) || !std::isfinite(end_angle)) {
         return;
     }
 

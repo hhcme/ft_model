@@ -607,14 +607,17 @@ uint32_t DwgBitReader::read_modular_char()
 {
     // Variable-length encoding: high bit of each byte means "more bytes follow".
     // Each byte contributes 7 bits of data.
+    // First byte is in lowest position (little-endian bit packing), per DWG spec.
     uint32_t result = 0;
+    int shift = 0;
     for (int i = 0; i < 4; ++i) {  // Max 4 bytes = 28 bits
         if (m_error || remaining_bits() < 8) {
             m_error = true;
             return result;
         }
         uint8_t byte_val = read_u8();
-        result = (result << 7) | (byte_val & 0x7F);
+        result |= static_cast<uint32_t>(byte_val & 0x7F) << shift;
+        shift += 7;
         if ((byte_val & 0x80) == 0) {
             break;
         }
