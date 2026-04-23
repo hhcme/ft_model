@@ -145,10 +145,27 @@ def extract_ezdxf_entities(dxf_path: str) -> list[dict]:
             except Exception:
                 pass
             d["degree"] = int(e.dxf.degree) if hasattr(e.dxf, "degree") else 3
+            if hasattr(e.dxf, "flags"):
+                d["closed"] = bool(e.dxf.flags & 1)
+
+        elif e.dxftype() == "ELLIPSE":
+            c = e.dxf.center
+            major = e.dxf.major_axis
+            ratio = e.dxf.ratio
+            major_len = math.sqrt(major.x**2 + major.y**2 + major.z**2)
+            rot = math.degrees(math.atan2(major.y, major.x))
+            d["center"] = [c.x, c.y, c.z]
+            d["major_radius"] = major_len
+            d["minor_radius"] = major_len * ratio
+            d["ratio"] = ratio
+            d["rotation"] = rot
+            d["start_angle"] = math.degrees(e.dxf.start_param)
+            d["end_angle"] = math.degrees(e.dxf.end_param)
 
         elif e.dxftype() == "DIMENSION":
             d["definition_point"] = [e.dxf.defpoint.x, e.dxf.defpoint.y, e.dxf.defpoint.z]
-            d["text_midpoint"] = [e.dxf.text_midpoint.x, e.dxf.text_midpoint.y, e.dxf.text_midpoint.z]
+            if e.dxf.text_midpoint:
+                d["text_midpoint"] = [e.dxf.text_midpoint.x, e.dxf.text_midpoint.y, e.dxf.text_midpoint.z]
             d["text"] = e.dxf.text if hasattr(e.dxf, "text") else ""
             if hasattr(e.dxf, "dimtype"):
                 d["dim_type"] = e.dxf.dimtype
@@ -205,6 +222,8 @@ def characteristic_point(e: dict) -> tuple:
     if "fit_points" in e and e["fit_points"]:
         v = e["fit_points"][0]
         return (_num(v[0]), _num(v[1]))
+    if "position" in e:
+        return (_num(e["position"][0]), _num(e["position"][1]))
     if "definition_point" in e:
         return (_num(e["definition_point"][0]), _num(e["definition_point"][1]))
     if "corners" in e and e["corners"]:
@@ -343,13 +362,38 @@ def compare_props(ref: dict, ours: dict, tol: float = 1e-3) -> list[dict]:
             ov = ours["control_points"]
             if abs(len(rv) - len(ov)) > 0:
                 diffs.append({"prop": "cp_count", "ref": len(rv), "ours": len(ov)})
+            else:
+                for i, (a, b) in enumerate(zip(rv, ov)):
+                    check_num(f"cp[{i}]", a, b)
+        if ref.get("fit_points") and ours.get("fit_points"):
+            rv = ref["fit_points"]
+            ov = ours["fit_points"]
+            if abs(len(rv) - len(ov)) > 0:
+                diffs.append({"prop": "fp_count", "ref": len(rv), "ours": len(ov)})
+            else:
+                for i, (a, b) in enumerate(zip(rv, ov)):
+                    check_num(f"fp[{i}]", a, b)
+    elif t == "ELLIPSE":
+        check_num("center", ref.get("center"), ours.get("center"))
+        check_num("major_radius", ref.get("major_radius"), ours.get("major_radius"))
+        check_num("minor_radius", ref.get("minor_radius"), ours.get("minor_radius"))
+        check_num("rotation", ref.get("rotation"), ours.get("rotation"))
     elif t == "DIMENSION":
         check_num("definition_point", ref.get("definition_point"), ours.get("definition_point"))
         check_str("text", ref.get("text", ""), ours.get("text", ""))
     elif t == "HATCH":
         check_str("pattern", ref.get("pattern", ""), ours.get("pattern", ""))
+        check_num("loop_count", ref.get("loop_count"), ours.get("loop_count"))
     elif t == "SOLID":
-        check_num("corners", ref.get("corners"), ours.get("corners"))
+        rv = ref.get("corners", [])
+        ov = ours.get("corners", [])
+        if abs(len(rv) - len(ov)) > 0:
+            diffs.append({"prop": "corner_count", "ref": len(rv), "ours": len(ov)})
+        else:
+            for i, (a, b) in enumerate(zip(rv, ov)):
+                check_num(f"corner[{i}]", a, b)
+    elif t == "POINT":
+        check_num("position", ref.get("position"), ours.get("position"))
 
     return diffs
 

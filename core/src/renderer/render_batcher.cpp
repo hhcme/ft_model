@@ -528,16 +528,15 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     case EntityType::LwPolyline: {
         auto* poly = std::get_if<4>(&entity.data);
         if (!poly) break;
+        int32_t count = poly->vertex_count;
+        int32_t offset = poly->vertex_offset;
+        if (count < 2) break;
         const auto& vb = scene.vertex_buffer();
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
-
-        int32_t count = poly->vertex_count;
-        int32_t offset = poly->vertex_offset;
-        if (count < 2) break;
 
         for (int32_t i = 0; i < count - 1; ++i) {
             int32_t idx0 = offset + i;
@@ -811,15 +810,15 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     case EntityType::Polyline: {
         auto* poly = std::get_if<3>(&entity.data);
         if (!poly) break;
+        int32_t count = poly->vertex_count;
+        int32_t offset = poly->vertex_offset;
+        if (count < 2) break;
         const auto& vb = scene.vertex_buffer();
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
-
-        int32_t count = poly->vertex_count;
-        int32_t offset = poly->vertex_offset;
         for (int32_t i = 0; i < count; ++i) {
             int32_t idx = offset + i;
             if (idx < 0 || static_cast<size_t>(idx) >= vb.size()) continue;
@@ -1061,8 +1060,29 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     }
 
     // Point — skip, no useful geometry
-    case EntityType::Point:
+    case EntityType::Point: {
+        auto* pt = std::get_if<11>(&entity.data);
+        if (!pt) break;
+        auto [px, py] = tx(pt->x, pt->y);
+        if (!is_renderable_coord(px, py)) break;
+
+        auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
+        batch->sort_key = RenderKey::make(layer_u16,
+            static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
+            depth_order);
+
+        // Draw a crosshair marker (±3 pixels in world space at current zoom)
+        float marker = 3.0f;
+        auto inv = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+        if (inv > 1e-6f) marker = 3.0f / (inv * m_tessellation_quality);
+        marker = std::max(marker, 0.5f);
+
+        append_vertex(batch->vertex_data, px - marker, py);
+        append_vertex(batch->vertex_data, px + marker, py);
+        append_vertex(batch->vertex_data, px, py - marker);
+        append_vertex(batch->vertex_data, px, py + marker);
         break;
+    }
 
     // Dimension — render as dimension lines (extension lines + dimension line)
     case EntityType::Dimension: {

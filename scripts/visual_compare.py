@@ -73,6 +73,40 @@ def render_dxf_to_png(dxf_path: str, output_png: str, width: int = 1920, height:
         render_dxf_to_png_fallback(dxf_path, output_png, width, height)
 
 
+def render_dxf_to_svg(dxf_path: str, output_svg: str):
+    """Render DXF to SVG using ezdxf SVG backend (vector reference)."""
+    import ezdxf
+    from ezdxf.addons.drawing import Frontend, RenderContext
+    from ezdxf.addons.drawing.svg import SVGBackend
+
+    doc = ezdxf.readfile(dxf_path)
+    msp = doc.modelspace()
+    ctx = RenderContext(doc)
+    backend = SVGBackend()
+    Frontend(ctx, backend).draw_layout(msp)
+    svg_string = backend.get_string()
+    Path(output_svg).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_svg).write_text(svg_string, encoding="utf-8")
+    print(f"Rendered {dxf_path} -> {output_svg}")
+
+
+def render_dwg_to_svg_libredwg(dwg_path: str, output_svg: str):
+    """Render DWG to SVG using LibreDWG dwg2SVG (vector reference)."""
+    dwg2svg = os.environ.get("FT_DWG2SVG", "dwg2SVG")
+    result = subprocess.run(
+        [dwg2svg, dwg_path],
+        capture_output=True, text=True, timeout=120
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"dwg2SVG failed: {result.stderr[:500]}")
+    svg_string = result.stdout
+    if not svg_string.strip():
+        raise RuntimeError("dwg2SVG produced empty output")
+    Path(output_svg).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_svg).write_text(svg_string, encoding="utf-8")
+    print(f"Rendered {dwg_path} -> {output_svg}")
+
+
 def render_dxf_to_png_fallback(dxf_path: str, output_png: str, width: int = 1920, height: int = 1080):
     """Best-effort reference PNG renderer that skips problematic DXF styles/entities."""
     import matplotlib
@@ -335,17 +369,23 @@ def compare_images(ref_png: str, our_png: str, output_diff: str = None) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="CAD visual comparison tool")
     parser.add_argument("--render-ref-dxf", metavar="DXF", help="Render DXF reference PNG via ezdxf")
+    parser.add_argument("--render-ref-dxf-svg", metavar="DXF", help="Render DXF reference SVG via ezdxf SVG backend")
+    parser.add_argument("--render-dwg-svg", metavar="DWG", help="Render DWG reference SVG via LibreDWG dwg2SVG")
     parser.add_argument("--pdf-to-png", metavar="PDF", help="Convert PDF to PNG")
     parser.add_argument("--capture-canvas", metavar="JSON", help="Capture our Canvas rendering via Playwright")
     parser.add_argument("--compare", nargs=2, metavar=("REF", "OURS"), help="Compare two PNG images")
     parser.add_argument("--app-url", default=DEFAULT_APP_URL, help="React preview app URL for --capture-canvas")
     parser.add_argument("--width", type=int, default=1920, help="Render/capture width")
     parser.add_argument("--height", type=int, default=1080, help="Render/capture height")
-    parser.add_argument("-o", "--output", help="Output PNG path")
+    parser.add_argument("-o", "--output", help="Output path")
     args = parser.parse_args()
 
     if args.render_ref_dxf:
         render_dxf_to_png(args.render_ref_dxf, args.output or "ref.png", args.width, args.height)
+    elif args.render_ref_dxf_svg:
+        render_dxf_to_svg(args.render_ref_dxf_svg, args.output or "ref.svg")
+    elif args.render_dwg_svg:
+        render_dwg_to_svg_libredwg(args.render_dwg_svg, args.output or "ref.svg")
     elif args.pdf_to_png:
         pdf_to_png(args.pdf_to_png, args.output or "ref.png")
     elif args.capture_canvas:
