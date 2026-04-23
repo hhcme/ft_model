@@ -1,11 +1,17 @@
 import type { Batch, BatchBounds, Bounds, TextEntity, ViewDefinition, Viewport } from '../app/types';
 import { worldToScreen, getViewportWorldBounds } from './transforms';
 import { cleanMText, parseRichMText, type RichTextLine } from './textUtils';
+import { textMeasureCache } from './textMeasureCache';
 
 type Ctx = CanvasRenderingContext2D;
 
+/** Call once per frame before any rendering to reset text measurement cache on zoom change. */
+export function beginRenderFrame(zoom: number): void {
+  textMeasureCache.beginFrame(zoom);
+}
+
 /** Draw background grid lines. */
-export function renderGrid(ctx: Ctx, vp: Viewport): void {
+export function renderGrid(ctx: Ctx, vp: Viewport, theme: 'dark' | 'light' = 'dark'): void {
   const worldWidth = vp.canvasWidth / vp.zoom;
   const targetScreenPx = 80;
   const targetWorldSpacing = targetScreenPx / vp.zoom;
@@ -28,7 +34,7 @@ export function renderGrid(ctx: Ctx, vp: Viewport): void {
   if ((endX - startX) / spacing > 200 || (endY - startY) / spacing > 200) return;
 
   const alpha = Math.max(0.03, Math.min(0.12, 0.12 - Math.abs(screenSpacing - 80) / 2000));
-  ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+  ctx.strokeStyle = theme === 'light' ? `rgba(0,0,0,${alpha})` : `rgba(255,255,255,${alpha})`;
   ctx.lineWidth = 1;
   ctx.beginPath();
 
@@ -59,6 +65,14 @@ function adaptColor(r: number, g: number, b: number, paperMode = false): [number
   const brightness = (r + g + b) / 3;
   if (brightness > 210 && max - min < 70) return [24, 28, 34];
   if (brightness > 170 && max - min < 45) return [54, 60, 70];
+  if (max > 190 && brightness > 135) {
+    const scale = 150 / max;
+    return [
+      Math.round(r * scale),
+      Math.round(g * scale),
+      Math.round(b * scale),
+    ];
+  }
   return [r, g, b];
 }
 
@@ -227,8 +241,8 @@ function wrapRichTextLines(
   const measure = (run: RichTextLine[number], text: string) => {
     const scale = Number.isFinite(run.heightScale) ? Math.max(0.12, Math.min(8, run.heightScale ?? 1)) : 1;
     const runHeight = Math.max(3, baseHeight * scale);
-    ctx.font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
-    return { width: ctx.measureText(text).width, runHeight };
+    const font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
+    return { width: textMeasureCache.measure(ctx, font, text), runHeight };
   };
 
   for (const line of lines) {
@@ -381,7 +395,7 @@ export function renderBatches(
     }
 
     visible++;
-    drawn += batch.vertices.length;
+    drawn += batch.vertices.length / 2;
 
     const [dr, dg, db] = adaptColor(...batch.color, paperMode);
     ctx.strokeStyle = `rgb(${dr},${dg},${db})`;
@@ -415,13 +429,11 @@ function renderTriangles(
 ): void {
   ctx.fillStyle = `rgb(${r},${g},${b})`;
   ctx.beginPath();
-  for (let i = 0; i < batch.vertices.length; i += 3) {
-    const v0 = batch.vertices[i];
-    const v1 = batch.vertices[i + 1];
-    const v2 = batch.vertices[i + 2];
-    const [sx0, sy0] = worldToScreen(v0[0], v0[1], vp);
-    const [sx1, sy1] = worldToScreen(v1[0], v1[1], vp);
-    const [sx2, sy2] = worldToScreen(v2[0], v2[1], vp);
+  const verts = batch.vertices;
+  for (let i = 0; i < verts.length; i += 6) {
+    const [sx0, sy0] = worldToScreen(verts[i], verts[i + 1], vp);
+    const [sx1, sy1] = worldToScreen(verts[i + 2], verts[i + 3], vp);
+    const [sx2, sy2] = worldToScreen(verts[i + 4], verts[i + 5], vp);
     ctx.moveTo(sx0, sy0);
     ctx.lineTo(sx1, sy1);
     ctx.lineTo(sx2, sy2);
@@ -433,13 +445,14 @@ function renderTriangles(
 function renderLines(ctx: Ctx, batch: Batch, vp: Viewport, presentationBounds?: Bounds): void {
   ctx.beginPath();
   let hasPath = false;
-  for (let i = 0; i < batch.vertices.length; i += 2) {
-    const v0 = batch.vertices[i];
-    const v1 = batch.vertices[i + 1];
-    if (!v0 || !v1) continue;
-    if (isArtifactSegment(v0[0], v0[1], v1[0], v1[1], presentationBounds)) continue;
-    const [sx0, sy0] = worldToScreen(v0[0], v0[1], vp);
-    const [sx1, sy1] = worldToScreen(v1[0], v1[1], vp);
+  const verts = batch.vertices;
+  for (let i = 0; i < verts.length; i += 4) {
+    const x0 = verts[i], y0 = verts[i + 1];
+    const x1 = verts[i + 2], y1 = verts[i + 3];
+    if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
+    if (isArtifactSegment(x0, y0, x1, y1, presentationBounds)) continue;
+    const [sx0, sy0] = worldToScreen(x0, y0, vp);
+    const [sx1, sy1] = worldToScreen(x1, y1, vp);
     ctx.moveTo(sx0, sy0);
     ctx.lineTo(sx1, sy1);
     hasPath = true;
@@ -452,43 +465,46 @@ function renderLinestrip(
   wb: Bounds, margin: number, presentationBounds?: Bounds,
 ): void {
   const breaks = batch.breaks;
+  const verts = batch.vertices;
+  const vertCount = verts.length / 2;
   // Pre-compute artifact bounds for entity-level culling
   const artPad = validBounds(presentationBounds) ? expandBounds(presentationBounds!, 0.12) : undefined;
   if (breaks?.length) {
     ctx.beginPath();
     let hasPath = false;
     for (let ei = 0; ei < breaks.length; ei++) {
-      const startIdx = breaks[ei];
-      const endIdx = (ei + 1 < breaks.length) ? breaks[ei + 1] : batch.vertices.length;
-      if (endIdx - startIdx < 2) continue;
+      const startV = breaks[ei];
+      const endV = (ei + 1 < breaks.length) ? breaks[ei + 1] : vertCount;
+      if (endV - startV < 2) continue;
+      const startFi = startV * 2;
+      const endFi = endV * 2;
 
       // Compute entity AABB for culling (not just first/last vertex)
       let eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
-      for (let i = startIdx; i < endIdx; i++) {
-        const x = batch.vertices[i][0], y = batch.vertices[i][1];
+      for (let fi = startFi; fi < endFi; fi += 2) {
+        const x = verts[fi], y = verts[fi + 1];
         if (x < eMinX) eMinX = x; if (x > eMaxX) eMaxX = x;
         if (y < eMinY) eMinY = y; if (y > eMaxY) eMaxY = y;
       }
       if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
       if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
-      // Entity-level artifact culling: skip entities entirely outside artifact bounds
       if (artPad && (eMaxX < artPad.minX || eMinX > artPad.maxX ||
                      eMaxY < artPad.minY || eMinY > artPad.maxY)) continue;
 
       let penDown = false;
-      for (let i = startIdx + 1; i < endIdx; i++) {
-        const prev = batch.vertices[i - 1];
-        const v = batch.vertices[i];
-        if (isArtifactSegment(prev[0], prev[1], v[0], v[1], presentationBounds)) {
+      for (let fi = startFi + 2; fi < endFi; fi += 2) {
+        const px = verts[fi - 2], py = verts[fi - 1];
+        const cx = verts[fi], cy = verts[fi + 1];
+        if (isArtifactSegment(px, py, cx, cy, presentationBounds)) {
           penDown = false;
           continue;
         }
         if (!penDown) {
-          const [sx0, sy0] = worldToScreen(prev[0], prev[1], vp);
+          const [sx0, sy0] = worldToScreen(px, py, vp);
           ctx.moveTo(sx0, sy0);
           penDown = true;
         }
-        const [sx, sy] = worldToScreen(v[0], v[1], vp);
+        const [sx, sy] = worldToScreen(cx, cy, vp);
         ctx.lineTo(sx, sy);
         hasPath = true;
       }
@@ -498,19 +514,19 @@ function renderLinestrip(
     ctx.beginPath();
     let hasPath = false;
     let penDown = false;
-    for (let i = 1; i < batch.vertices.length; i++) {
-      const prev = batch.vertices[i - 1];
-      const v = batch.vertices[i];
-      if (isArtifactSegment(prev[0], prev[1], v[0], v[1], presentationBounds)) {
+    for (let fi = 2; fi < verts.length; fi += 2) {
+      const px = verts[fi - 2], py = verts[fi - 1];
+      const cx = verts[fi], cy = verts[fi + 1];
+      if (isArtifactSegment(px, py, cx, cy, presentationBounds)) {
         penDown = false;
         continue;
       }
       if (!penDown) {
-        const [sx0, sy0] = worldToScreen(prev[0], prev[1], vp);
+        const [sx0, sy0] = worldToScreen(px, py, vp);
         ctx.moveTo(sx0, sy0);
         penDown = true;
       }
-      const [sx, sy] = worldToScreen(v[0], v[1], vp);
+      const [sx, sy] = worldToScreen(cx, cy, vp);
       ctx.lineTo(sx, sy);
       hasPath = true;
     }
@@ -586,9 +602,10 @@ export function renderTexts(
           const runText = run.text.trim();
           if (!runText) return null;
           const runScale = Number.isFinite(run.heightScale) ? (run.heightScale ?? 1) : 1;
-          const runHeight = Math.max(3, screenHeight * Math.max(0.12, Math.min(8, runScale)));
-          ctx.font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
-          return { run, runText, runHeight, width: ctx.measureText(runText).width };
+          const minReadableHeight = paperMode ? 4.25 : 3;
+          const runHeight = Math.max(minReadableHeight, screenHeight * Math.max(0.12, Math.min(8, runScale)));
+          const font = canvasFont(runHeight, run.fontFamily, run.bold, run.italic);
+          return { run, runText, runHeight, width: textMeasureCache.measure(ctx, font, runText) };
         })
         .filter((run): run is {
           run: NonNullable<RichTextLine[number]>;
@@ -603,7 +620,8 @@ export function renderTexts(
       const lineSpacing = (isMText && Number.isFinite(txt.rectHeight) && (txt.rectHeight ?? 0) > 0)
         ? 1.167
         : 1.15;
-      const lineHeight = screenHeight * lineMaxScale * lineSpacing;
+      const maxRunHeight = Math.max(...measuredRuns.map((run) => run.runHeight));
+      const lineHeight = Math.max(screenHeight * lineMaxScale, maxRunHeight) * lineSpacing;
       return { measuredRuns, lineWidth, lineHeight, indent: line.indent };
     }).filter((line) => line.measuredRuns.length > 0);
 
@@ -728,18 +746,18 @@ export function renderMeasurements(
 }
 
 /** Draw a subtle border rectangle from DrawData.bounds. */
-export function renderBorder(ctx: Ctx, bounds: Bounds | undefined, vp: Viewport): void {
+export function renderBorder(ctx: Ctx, bounds: Bounds | undefined, vp: Viewport, theme: 'dark' | 'light' = 'dark'): void {
   if (!bounds || bounds.minX >= bounds.maxX || bounds.minY >= bounds.maxY) return;
 
   const [sx0, sy0] = worldToScreen(bounds.minX, bounds.maxY, vp);
   const [sx1, sy1] = worldToScreen(bounds.maxX, bounds.minY, vp);
 
   // Light fill — subtle "paper" background
-  ctx.fillStyle = 'rgba(255,255,255,0.015)';
+  ctx.fillStyle = theme === 'light' ? 'rgba(0,0,0,0.025)' : 'rgba(255,255,255,0.015)';
   ctx.fillRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
 
   // Border line
-  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.strokeStyle = theme === 'light' ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.15)';
   ctx.lineWidth = 1;
   ctx.setLineDash([8, 4]);
   ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0);

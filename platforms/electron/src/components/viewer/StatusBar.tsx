@@ -1,4 +1,4 @@
-import { Space, Typography } from 'antd';
+import { memo } from 'react';
 
 interface Props {
   fileName: string;
@@ -7,7 +7,7 @@ interface Props {
   mouseWorld: { x: number; y: number } | null;
 }
 
-export default function StatusBar({ fileName, entityCount, vertexCount, mouseWorld }: Props) {
+export default memo(function StatusBar({ fileName, entityCount, vertexCount, mouseWorld }: Props) {
   return (
     <div style={{
       position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10,
@@ -27,4 +27,4 @@ export default function StatusBar({ fileName, entityCount, vertexCount, mouseWor
       </span>
     </div>
   );
-}
+})

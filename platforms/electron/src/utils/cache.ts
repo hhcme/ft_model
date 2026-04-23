@@ -1,10 +1,10 @@
-import type { DrawData, RecentFile } from '../app/types';
+import type { CompareResult, DrawData, RecentFile } from '../app/types';
 
 const DB_NAME = 'cad-preview-cache';
 const STORE = 'drawings';
 const RECENT_KEY = 'cad-recent-files';
 const LAST_KEY = 'cad-last-file';
-const CACHE_SCHEMA_VERSION = 'dwg-fidelity-0.8.7';
+const CACHE_SCHEMA_VERSION = 'dwg-fidelity-0.8.10';
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -48,8 +48,29 @@ export async function deleteCached(key: string): Promise<void> {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).delete(key);
     tx.objectStore(STORE).delete(key + ':file');
+    tx.objectStore(STORE).delete(key + ':compare');
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveCompareCached(key: string, data: CompareResult): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(data, key + ':compare');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getCompareCached(key: string): Promise<CompareResult | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get(key + ':compare');
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
   });
 }
 

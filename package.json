@@ -4,9 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n backend,frontend -c blue,green \"python3 start_preview.py\" \"npm run dev -w platforms/electron\"",
+    "dev:check": "python3 scripts/dev_check.py",
     "dev:backend": "python3 start_preview.py",
     "dev:frontend": "npm run dev -w platforms/electron",
-    "build": "npm run build -w platforms/electron"
+    "build": "npm run build -w platforms/electron",
+    "test:compare": "python3 scripts/run_regression.py",
+    "reference:prewarm": "python3 scripts/prewarm_reference_cache.py"
   },
   "workspaces": [
     "platforms/electron"

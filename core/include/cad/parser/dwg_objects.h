@@ -9,7 +9,7 @@
 
 namespace cad {
 
-class SceneGraph;
+class EntitySink;
 
 // ============================================================
 // DWG entity/object type readers
@@ -26,7 +26,7 @@ class SceneGraph;
 enum class DwgVersion : uint8_t;
 
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
-                       const EntityHeader& header, SceneGraph& scene,
+                       const EntityHeader& header, EntitySink& scene,
                        DwgVersion version);
 
 // Parse a DWG table/object entry (LAYER, LTYPE, STYLE, DIMSTYLE, VPORT).
@@ -37,7 +37,7 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
 // handle: the object's handle value (for building handle→index mappings).
 // layer/linetype maps store table handles→SceneGraph indices for later resolution.
 int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
-                              SceneGraph& scene, DwgVersion version,
+                              EntitySink& scene, DwgVersion version,
                               size_t entity_bits, size_t main_data_bits,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index = nullptr,

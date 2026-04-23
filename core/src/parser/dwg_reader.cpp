@@ -78,25 +78,7 @@ std::string tv_to_utf8(const std::string& raw) {
     return raw;
 }
 
-bool dwg_debug_enabled()
-{
-    static const bool enabled = [] {
-        const char* value = std::getenv("FT_DWG_DEBUG");
-        return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
-void dwg_debug_log(const char* fmt, ...)
-{
-    if (!dwg_debug_enabled()) {
-        return;
-    }
-    va_list args;
-    va_start(args, fmt);
-    std::vfprintf(stderr, fmt, args);
-    va_end(args);
-}
+// dwg_debug_enabled() and dwg_debug_log() are now in dwg_parser.h
 
 } // namespace
 

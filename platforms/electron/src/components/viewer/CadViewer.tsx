@@ -34,6 +34,17 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
     setLayerVisible(m);
   }, [drawData]);
 
+  // Auto-fit viewport when a new file is loaded
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c || !drawData.batches.length) return;
+    const w = c.width, h = c.height;
+    if (w === 0 || h === 0) return;
+    const bb = computeBatchBounds(drawData.batches);
+    const fit = fitViewToBounds(drawData.batches, bb, w, h, getPreferredViewBounds(drawData));
+    setViewport((prev) => ({ ...prev, ...fit }));
+  }, [drawData]);
+
   const handleResize = useCallback((w: number, h: number) => {
     const dpr = window.devicePixelRatio;
     setViewport((prev) => {
@@ -80,11 +91,6 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
   const handleCanvasReady = useCallback((canvas: HTMLCanvasElement) => {
     canvasRef.current = canvas;
   }, []);
-
-  const handleWorldClick = useCallback((wx: number, wy: number) => {
-    if (isNaN(wx)) { handleFit(); return; }
-    if (measure.mode) measure.addPoint(wx, wy);
-  }, [measure, handleFit]);
 
   const toggleLayer = useCallback((name: string, visible: boolean) => {
     setLayerVisible((prev) => { const n = new Map(prev); n.set(name, visible); return n; });

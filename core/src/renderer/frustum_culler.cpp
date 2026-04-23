@@ -1,22 +1,19 @@
 #include "cad/renderer/frustum_culler.h"
+#include "cad/scene/scene_graph.h"
+#include "cad/scene/spatial_index.h"
 
 namespace cad {
 
-std::vector<size_t> FrustumCuller::cull(const Scene& /*scene*/,
-                                          const Bounds3d& /*camera_visible_bounds*/) {
-    // TODO: Implement once Scene and Entity types are defined.
-    // Brute force approach:
-    //   for each entity in scene:
-    //     if entity.bounds.intersects(camera_visible_bounds):
-    //       result.push_back(entity_index)
-    // If spatial index is available on the scene, use that instead.
-    return {};
+std::vector<int32_t> FrustumCuller::cull(const SceneGraph& scene,
+                                          const Bounds3d& camera_visible_bounds) {
+    // Delegate to SceneGraph::entities_in_bounds which already uses
+    // the Quadtree spatial index when available, with brute-force fallback.
+    return scene.entities_in_bounds(camera_visible_bounds);
 }
 
-std::vector<size_t> FrustumCuller::cull(const std::vector<const Entity*>& /*entities*/,
-                                          const Bounds3d& /*camera_visible_bounds*/) {
-    // TODO: Implement once Entity type is defined.
-    return {};
+std::vector<int32_t> FrustumCuller::cull_with_index(const SpatialIndex& index,
+                                                      const Bounds3d& camera_visible_bounds) {
+    return index.query_bounds(camera_visible_bounds);
 }
 
 } // namespace cad

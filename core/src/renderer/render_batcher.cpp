@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -476,13 +477,24 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     case EntityType::Circle: {
         auto* circle = std::get_if<1>(&entity.data);
         if (!circle) break;
-        int segments = compute_arc_segments(circle->radius);
+        float ppu = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+        float screen_radius = circle->radius * ppu * m_tessellation_quality;
+
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
-        tessellate_circle(circle->center, circle->radius, segments, *batch, xform);
+
+        // For large screen-space circles, use adaptive recursive midpoint subdivision.
+        const float kAdaptiveThresholdPx = 1000.0f / std::max(1.0f, m_tessellation_quality);
+        if (screen_radius > kAdaptiveThresholdPx) {
+            tessellate_arc_adaptive(circle->center, circle->radius,
+                                    0.0f, math::TWO_PI, *batch, xform);
+        } else {
+            int segments = compute_arc_segments(circle->radius);
+            tessellate_circle(circle->center, circle->radius, segments, *batch, xform);
+        }
         break;
     }
 
@@ -491,13 +503,25 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         if (!arc) break;
         float arc_angle = arc->end_angle - arc->start_angle;
         float ppu = m_camera ? m_camera->pixels_per_unit() : 1.0f;
-        int segments = LodSelector::compute_arc_segments(arc->radius, arc_angle, ppu * m_tessellation_quality);
+        float screen_radius = arc->radius * ppu * m_tessellation_quality;
+
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
         batch->sort_key = RenderKey::make(layer_u16,
             static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
             depth_order);
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
-        tessellate_arc(arc->center, arc->radius, arc->start_angle, arc->end_angle, segments, *batch, xform);
+
+        // For large screen-space arcs, use adaptive recursive midpoint subdivision.
+        // For small arcs, use uniform subdivision from chord-height LOD.
+        const float kAdaptiveThresholdPx = 1000.0f / std::max(1.0f, m_tessellation_quality);
+        if (screen_radius > kAdaptiveThresholdPx) {
+            tessellate_arc_adaptive(arc->center, arc->radius,
+                                    arc->start_angle, arc->end_angle,
+                                    *batch, xform);
+        } else {
+            int segments = LodSelector::compute_arc_segments(arc->radius, arc_angle, ppu * m_tessellation_quality);
+            tessellate_arc(arc->center, arc->radius, arc->start_angle, arc->end_angle, segments, *batch, xform);
+        }
         break;
     }
 
@@ -887,7 +911,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
-    // Ellipse — tessellate as circle
+    // Ellipse — tessellate as parametric curve
     case EntityType::Ellipse: {
         auto* ellipse = std::get_if<12>(&entity.data);
         if (!ellipse) break;
@@ -912,7 +936,9 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
             end_a = math::TWO_PI;
         }
 
-        int segments = compute_arc_segments(std::max(major_r, minor_r));
+        float ppu = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+        float max_r = std::max(major_r, minor_r);
+        float screen_size = max_r * ppu * m_tessellation_quality;
         float span = end_a - start_a;
 
         float cos_r = std::cos(rotation);
@@ -920,18 +946,69 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         float cx = ellipse->center.x;
         float cy = ellipse->center.y;
 
-        for (int i = 0; i <= segments; ++i) {
-            float t = static_cast<float>(i) / static_cast<float>(segments);
-            float angle = start_a + t * span;
-            // Parametric ellipse point (before rotation)
+        // Helper to compute ellipse point at parametric angle
+        auto ellipse_point = [&](float angle) -> std::pair<float, float> {
             float px = major_r * std::cos(angle);
             float py = minor_r * std::sin(angle);
-            // Apply rotation and translate
             float x = px * cos_r - py * sin_r + cx;
             float y = px * sin_r + py * cos_r + cy;
-            // Apply entity transform (INSERT etc.)
-            auto [tx_x, tx_y] = tx(x, y);
-            append_vertex(batch->vertex_data, tx_x, tx_y);
+            return {x, y};
+        };
+
+        // For large screen-space ellipses, use adaptive subdivision
+        // based on chord deviation in world space.
+        const float kAdaptiveThresholdPx = 1000.0f / std::max(1.0f, m_tessellation_quality);
+        if (screen_size > kAdaptiveThresholdPx) {
+            const float kPixelTolerance = 0.5f / std::max(1.0f, m_tessellation_quality);
+            constexpr int kMaxDepth = 12;
+
+            std::function<void(float, float, int)> subdivide =
+                [&](float a0, float a1, int depth) {
+                // Compute chord deviation at midpoint
+                float mid = (a0 + a1) * 0.5f;
+                auto [mx, my] = ellipse_point(mid);
+                auto [sx, sy] = ellipse_point(a0);
+                auto [ex, ey] = ellipse_point(a1);
+
+                // Approximate sagitta: distance from midpoint to chord
+                float chord_dx = ex - sx;
+                float chord_dy = ey - sy;
+                float chord_len_sq = chord_dx * chord_dx + chord_dy * chord_dy;
+                float sagitta_px = kPixelTolerance + 1.0f; // default: subdivide
+                if (chord_len_sq > 1e-12f) {
+                    // Perpendicular distance from midpoint to chord line
+                    float cross = std::abs(chord_dx * (sy - my) - chord_dy * (sx - mx));
+                    float chord_len = std::sqrt(chord_len_sq);
+                    float sagitta_world = cross / chord_len;
+                    sagitta_px = sagitta_world * ppu;
+                }
+
+                if (sagitta_px <= kPixelTolerance || depth >= kMaxDepth) {
+                    auto [px, py] = ellipse_point(a1);
+                    auto [tpx, tpy] = tx(px, py);
+                    append_vertex(batch->vertex_data, tpx, tpy);
+                    return;
+                }
+                subdivide(a0, mid, depth + 1);
+                subdivide(mid, a1, depth + 1);
+            };
+
+            // Add start point
+            {
+                auto [sx, sy] = ellipse_point(start_a);
+                auto [tpx, tpy] = tx(sx, sy);
+                append_vertex(batch->vertex_data, tpx, tpy);
+            }
+            subdivide(start_a, end_a, 0);
+        } else {
+            int segments = compute_arc_segments(max_r);
+            for (int i = 0; i <= segments; ++i) {
+                float t = static_cast<float>(i) / static_cast<float>(segments);
+                float angle = start_a + t * span;
+                auto [x, y] = ellipse_point(angle);
+                auto [tx_x, tx_y] = tx(x, y);
+                append_vertex(batch->vertex_data, tx_x, tx_y);
+            }
         }
         break;
     }
@@ -1183,6 +1260,52 @@ void RenderBatcher::tessellate_arc(const Vec3& center, float radius,
         Vec3 tp = xform.transform_point({x, y, 0.0f});
         append_vertex(batch.vertex_data, tp.x, tp.y);
     }
+}
+
+void RenderBatcher::tessellate_arc_adaptive(const Vec3& center, float radius,
+                                             float start_angle, float end_angle,
+                                             RenderBatch& batch,
+                                             const Matrix4x4& xform) {
+    // Recursive midpoint subdivision for high screen-space arcs.
+    // Chord-height error (sagitta) = R * (1 - cos(half_angle)).
+    // Subdivide until sagitta * ppu < pixel tolerance.
+    const float kPixelTolerance = 0.5f / std::max(1.0f, m_tessellation_quality);
+    constexpr int kMaxRecursionDepth = 12;
+
+    float ppu = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+
+    // Lambda for recursive subdivision
+    std::function<void(float, float, int)> subdivide =
+        [&](float a0, float a1, int depth) {
+        float half_angle = (a1 - a0) * 0.5f;
+        float sagitta = radius * (1.0f - std::cos(half_angle));
+        float sagitta_px = sagitta * ppu;
+
+        if (sagitta_px <= kPixelTolerance || depth >= kMaxRecursionDepth) {
+            // Error is acceptable — add the endpoint
+            float x = center.x + radius * std::cos(a1);
+            float y = center.y + radius * std::sin(a1);
+            Vec3 tp = xform.transform_point({x, y, 0.0f});
+            append_vertex(batch.vertex_data, tp.x, tp.y);
+            return;
+        }
+
+        // Subdivide at midpoint
+        float mid = (a0 + a1) * 0.5f;
+        subdivide(a0, mid, depth + 1);
+        subdivide(mid, a1, depth + 1);
+    };
+
+    // Add the start point
+    {
+        float x = center.x + radius * std::cos(start_angle);
+        float y = center.y + radius * std::sin(start_angle);
+        Vec3 tp = xform.transform_point({x, y, 0.0f});
+        append_vertex(batch.vertex_data, tp.x, tp.y);
+    }
+
+    // Recursively subdivide from start to end
+    subdivide(start_angle, end_angle, 0);
 }
 
 } // namespace cad

@@ -2,6 +2,7 @@
 
 #include "cad/cad_errors.h"
 #include "cad/cad_types.h"
+#include "cad/parser/dwg_reader.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -10,10 +11,8 @@
 namespace cad {
 
 class SceneGraph;
-
-// Forward-declared from dwg_reader.h — provides bit-level read operations,
-// LZ77 decompression, header decryption, CRC utilities.
-class DwgBitReader;
+class EntitySink;
+struct ParseObjectsContext;
 
 
 // ============================================================
@@ -133,10 +132,24 @@ enum class DwgVersion : uint8_t {
     R2018   = 6,    // AC1032
 };
 
+// Shared debug logging utilities (used across parser modules)
+inline bool dwg_debug_enabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("FT_DWG_DEBUG");
+        return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+void dwg_debug_log(const char* fmt, ...);
+
+const char* version_family_name(DwgVersion version);
+
 // Forward-declared from dwg_objects.h — type-specific entity/object parsing.
 struct EntityHeader;
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
-                       const EntityHeader& header, SceneGraph& scene,
+                       const EntityHeader& header, EntitySink& scene,
                        DwgVersion version);
 
 // ============================================================
@@ -174,7 +187,12 @@ private:
     // R2004/R2010 section-page reader: AC1021 uses an interleaved
     // Reed-Solomon-protected file header plus R21 system pages.
     Result read_r2007_container(const uint8_t* data, size_t size,
-                                SceneGraph& scene);
+                                EntitySink& scene);
+
+    // Read R2000/AC1015 flat sections. R2000 uses sentinel-delimited
+    // sections with no encryption or compression.
+    Result read_r2000_sections(const uint8_t* data, size_t size,
+                               EntitySink& scene);
 
     // Read the section page map at section_map_address+0x100, decompress, parse entries
     Result read_section_page_map(const uint8_t* data, size_t size);
@@ -189,23 +207,149 @@ private:
     Result read_sections(const uint8_t* data, size_t size);
 
     // Parse Section 0: Header Variables (extents, metadata)
-    Result parse_header_variables(SceneGraph& scene);
+    Result parse_header_variables(EntitySink& scene);
 
     // Parse Section 1: Classes (type number -> name + is_entity)
-    Result parse_classes(SceneGraph& scene);
+    Result parse_classes(EntitySink& scene);
 
     // Parse Section 2: Object Map (handle -> offset in object data)
     Result parse_object_map(const uint8_t* data, size_t size);
 
     // Record diagnostics for DWG sections that are decoded but not yet
     // semantically interpreted by the self-developed pipeline.
-    void record_auxiliary_section_diagnostics(SceneGraph& scene) const;
+    void record_auxiliary_section_diagnostics(EntitySink& scene) const;
 
     // Iterate the object map and parse each entity via parse_dwg_entity()
-    Result parse_objects(SceneGraph& scene);
+    Result parse_objects(EntitySink& scene);
+
+    // Pre-scan LTYPE/LAYER/BLOCK_HEADER table objects to populate handle→index
+    // maps and block name lookups before the main object processing loop.
+    // Populates m_layer_handle_to_index, m_linetype_handle_to_index,
+    // m_sections.block_names, and block_names_from_entities.
+    void prescan_table_objects(const uint8_t* obj_data, size_t obj_data_size,
+                               bool is_r2007_plus, bool is_r2010_plus,
+                               EntitySink& scene,
+                               std::unordered_map<uint64_t, std::string>& block_names_from_entities);
+
+    // ---- Extracted parse_objects() sub-functions ----
+
+    // Process BLOCK (type 4) / ENDBLK (type 5) stream markers.
+    // Returns true if the object was a BLOCK or ENDBLK (caller should continue).
+    bool process_block_endblk(ParseObjectsContext& ctx,
+                               uint32_t obj_type, uint64_t handle,
+                               EntitySink& scene,
+                               const uint8_t* obj_data, size_t entity_data_bytes,
+                               size_t ms_bytes, size_t umc_bytes,
+                               size_t main_data_bits, size_t entity_bits);
+
+    // Decode role-based handles (owner, reactors, xdic, layer, entity-specific)
+    // for graphic entities that produced geometry.
+    void decode_role_handles(ParseObjectsContext& ctx,
+                              uint32_t obj_type, uint64_t handle,
+                              EntitySink& scene,
+                              const uint8_t* obj_data, size_t obj_data_size,
+                              size_t offset, size_t entity_data_bytes,
+                              size_t ms_bytes, size_t umc_bytes,
+                              size_t main_data_bits, size_t entity_bits,
+                              size_t entities_before,
+                              uint32_t saved_num_reactors,
+                              bool saved_is_xdic_missing);
+
+    // Detect custom annotation/detail objects and emit proxy geometry.
+    void process_custom_annotation_proxy(ParseObjectsContext& ctx,
+                                          uint32_t obj_type, uint64_t handle,
+                                          EntitySink& scene,
+                                          const uint8_t* obj_data, size_t obj_data_size,
+                                          size_t offset, size_t entity_data_bytes,
+                                          size_t ms_bytes, size_t umc_bytes,
+                                          size_t main_data_bits, size_t entity_bits,
+                                          bool is_graphic, bool is_r2007_plus,
+                                          const EntityHeader& entity_hdr,
+                                          size_t reader_bit_offset);
+
+    // Emit all diagnostic records after the main loop finishes.
+    void emit_parse_diagnostics(ParseObjectsContext& ctx,
+                                 EntitySink& scene,
+                                 const uint8_t* obj_data, size_t obj_data_size,
+                                 bool is_r2010_plus);
+
+    // Run post-processing: INSERT block_index resolution, layout parsing,
+    // and owner resolution.
+    void run_post_processing(ParseObjectsContext& ctx,
+                              EntitySink& scene,
+                              const uint8_t* obj_data, size_t obj_data_size,
+                              bool is_r2010_plus);
+
+    // Look up object type for a handle (from cache or by framing the object).
+    uint32_t lookup_object_type(ParseObjectsContext& ctx,
+                                 uint64_t ref_handle,
+                                 const uint8_t* obj_data, size_t obj_data_size,
+                                 bool is_r2007_plus, bool is_r2010_plus);
+
+    // Look up class name for an object type.
+    std::string class_name_for_object_type(uint32_t type) const;
 
     // Parse section info descriptors from decompressed data
     Result parse_section_info_data(std::vector<uint8_t> info_data);
+
+    // ---- Object preparation / recovery helpers ----
+
+    // Result of framing a single DWG object at a given offset within
+    // object_data.  Populated by prepare_object_at_offset() and used by
+    // try_recover_object() / recover_from_candidates().
+    struct PreparedObject {
+        size_t offset = 0;
+        size_t ms_bytes = 0;
+        size_t umc_bytes = 0;
+        size_t entity_data_bytes = 0;
+        size_t entity_bits = 0;
+        size_t main_data_bits = 0;
+        size_t handle_stream_bits = 0;
+        bool handle_stream_valid = true;
+        bool has_string_stream = false;
+        size_t string_stream_bit_pos = 0;
+        uint32_t obj_type = 0;
+        DwgBitReader::HandleRef self_handle;
+
+        size_t entity_data_offset() const { return offset + ms_bytes + umc_bytes; }
+        size_t handle_stream_bit_start() const { return main_data_bits; }
+        size_t handle_stream_bit_end() const { return entity_bits; }
+        bool has_handle_stream() const { return handle_stream_bits >= 8 && handle_stream_valid; }
+    };
+
+    // Check whether obj_type is a known graphic entity or table object.
+    bool is_known_object_type(uint32_t obj_type) const;
+
+    // Frame (validate) a DWG object at the given offset within obj_data.
+    // Returns true if the offset points to a well-formed object header.
+    // When require_known_type is true, unknown object types are rejected.
+    // When require_valid_handle_stream is true, a corrupted handle stream
+    // causes failure.  On failure, *failure_reason (if non-null) is set.
+    bool prepare_object_at_offset(const uint8_t* obj_data, size_t obj_data_size,
+                                  bool is_r2010_plus,
+                                  size_t record_offset, PreparedObject& record,
+                                  bool require_valid_handle_stream,
+                                  bool require_known_type,
+                                  const char** failure_reason = nullptr) const;
+
+    // Try to recover an object for target_handle by scanning candidate
+    // offsets from the handle_offset_candidates map.  Only candidates whose
+    // self-handle matches target_handle are accepted.
+    bool recover_from_candidates(uint64_t target_handle,
+                                 size_t primary_offset,
+                                 const uint8_t* obj_data, size_t obj_data_size,
+                                 bool is_r2010_plus,
+                                 PreparedObject& recovered) const;
+
+    // Try all recovery strategies for an object with target_handle whose
+    // primary offset failed prepare_object_at_offset().
+    // Strategy 1: candidate offsets from handle_offset_candidates.
+    // Strategy 2: full page scan to find a matching self-handle.
+    // On success, recovered is populated and the method returns true.
+    bool try_recover_object(uint64_t target_handle, size_t primary_offset,
+                            const uint8_t* obj_data, size_t obj_data_size,
+                            bool is_r2007_plus, bool is_r2010_plus,
+                            PreparedObject& recovered);
 
     // ---- Helpers ----
 
@@ -267,6 +411,11 @@ private:
     // pre-scan because entities/layers may appear before their table records.
     std::unordered_map<uint64_t, int32_t> m_layer_handle_to_index;
     std::unordered_map<uint64_t, int32_t> m_linetype_handle_to_index;
+
+    // ---- Object recovery scan budget ----
+    // Limits total recovery scans across all objects within a single
+    // parse_objects() call.  Reset at the start of each call.
+    size_t m_object_recovery_scans = 0;
 };
 
 } // namespace cad

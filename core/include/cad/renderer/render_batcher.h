@@ -107,6 +107,13 @@ private:
                         float end_angle, int segments, RenderBatch& batch,
                         const Matrix4x4& xform);
 
+    // Adaptive arc tessellation using recursive midpoint subdivision.
+    // Used for arcs with high screen-space size (R * ppu > threshold).
+    // Recursively subdivides until chord-height error < pixel tolerance.
+    void tessellate_arc_adaptive(const Vec3& center, float radius,
+                                 float start_angle, float end_angle,
+                                 RenderBatch& batch, const Matrix4x4& xform);
+
     float m_tessellation_quality;
     std::vector<RenderBatch> m_batches;
     const Camera* m_camera = nullptr;

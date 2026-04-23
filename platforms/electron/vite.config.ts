@@ -15,6 +15,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/parse': 'http://localhost:2415',
+      '/compare-reference': 'http://localhost:2415',
+      '/compare-render': 'http://localhost:2415',
     },
     fs: {
       allow: [resolve(__dirname, '..'), resolve(__dirname)],

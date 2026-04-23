@@ -15,7 +15,24 @@ add_library(cad_core STATIC
     src/parser/dxf_objects_reader.cpp
     src/parser/dwg_reader.cpp
     src/parser/dwg_parser.cpp
+    src/parser/dwg_diagnostics.cpp
+    src/parser/dwg_r2004_decoder.cpp
+    src/parser/dwg_r2000_decoder.cpp
+    src/parser/dwg_r2007_codec.cpp
+    src/parser/dwg_r2007_page_decode.cpp
+    src/parser/dwg_header_vars.cpp
+    src/parser/dwg_object_map.cpp
+    src/parser/dwg_parse_helpers.cpp
+    src/parser/dwg_table_prescan.cpp
+    src/parser/dwg_block_tracking.cpp
+    src/parser/dwg_handle_stream.cpp
+    src/parser/dwg_custom_annotation_proxy.cpp
+    src/parser/dwg_parse_diagnostics_emit.cpp
+    src/parser/dwg_post_processing.cpp
+    src/parser/dwg_object_recovery.cpp
     src/parser/dwg_objects.cpp
+    src/parser/dwg_entity_geometry.cpp
+    src/parser/dwg_entity_annotation.cpp
     src/scene/scene_graph.cpp
     src/scene/entity.cpp
     src/scene/layer.cpp

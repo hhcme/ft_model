@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cad/cad_types.h"
+#include "cad/parser/dwg_entity_sink.h"
 #include "cad/scene/entity.h"
 #include "cad/scene/layer.h"
 #include "cad/scene/linetype.h"
@@ -69,11 +70,14 @@ struct SceneDiagnostic {
 // Tables (layers, linetypes, etc.) are stored as separate vectors
 // with name-based lookup maps. A vertex buffer supports polyline
 // entities that reference shared vertex data via offset/count.
+//
+// Implements EntitySink so that parser modules can write into
+// a SceneGraph through the abstract interface.
 // ============================================================
-class SceneGraph {
+class SceneGraph : public EntitySink {
 public:
     SceneGraph();
-    ~SceneGraph();
+    ~SceneGraph() override;
 
     // Non-copyable, movable
     SceneGraph(const SceneGraph&) = delete;
@@ -81,10 +85,9 @@ public:
     SceneGraph(SceneGraph&&) noexcept;
     SceneGraph& operator=(SceneGraph&&) noexcept;
 
-    // ---- Entity management ----
+    // ---- Entity management (EntitySink overrides) ----
 
-    // Add an entity (EntityVariant). Returns the entity index.
-    int32_t add_entity(EntityVariant entity);
+    int32_t add_entity(EntityVariant entity) override;
 
     // Type-specific adders — construct the EntityVariant internally.
     // Each returns the entity index in the entities vector.
@@ -95,51 +98,53 @@ public:
     int32_t add_insert(EntityVariant entity);
 
     // Polyline vertex buffer — append vertices and return the starting offset.
-    int32_t add_polyline_vertices(const Vec3* vertices, size_t count);
-    std::vector<Vec3>& vertex_buffer();
+    int32_t add_polyline_vertices(const Vec3* vertices, size_t count) override;
+    std::vector<Vec3>& vertex_buffer() override;
     const std::vector<Vec3>& vertex_buffer() const;
 
     // Access all entities
-    const std::vector<EntityVariant>& entities() const;
-    std::vector<EntityVariant>& entities();
+    const std::vector<EntityVariant>& entities() const override;
+    std::vector<EntityVariant>& entities() override;
 
     // Entity count
-    size_t total_entity_count() const;
+    size_t total_entity_count() const override;
 
-    // ---- Table management ----
+    // ---- Table management (EntitySink overrides) ----
 
-    int32_t add_layer(Layer layer);
-    int32_t add_linetype(Linetype lt);
-    int32_t add_text_style(TextStyle style);
-    int32_t add_block(Block block);
-    int32_t add_viewport(Viewport vp);
-    int32_t add_layout(Layout layout);
-    void add_diagnostic(SceneDiagnostic diagnostic);
+    int32_t add_layer(Layer layer) override;
+    int32_t add_linetype(Linetype lt) override;
+    int32_t add_text_style(TextStyle style) override;
+    int32_t add_block(Block block) override;
+    int32_t add_viewport(Viewport vp) override;
+    int32_t add_layout(Layout layout) override;
+    void add_diagnostic(SceneDiagnostic diagnostic) override;
 
     // Find or create a layer by name. Returns the layer index.
-    int32_t find_or_add_layer(const std::string& name);
+    int32_t find_or_add_layer(const std::string& name) override;
 
     // Update an existing layer's properties by index.
     // Returns true if the layer was found and updated.
-    bool update_layer(int32_t index, const Layer& layer);
+    bool update_layer(int32_t index, const Layer& layer) override;
 
-    const std::vector<Layer>& layers() const;
+    const std::vector<Layer>& layers() const override;
     const std::vector<Linetype>& linetypes() const;
     const std::vector<TextStyle>& text_styles() const;
-    const std::vector<Block>& blocks() const;
-    std::vector<Block>& blocks();
-    const std::vector<Viewport>& viewports() const;
-    const std::vector<Layout>& layouts() const;
-    const std::vector<SceneDiagnostic>& diagnostics() const;
+    const std::vector<Block>& blocks() const override;
+    std::vector<Block>& blocks() override;
+    const std::vector<Viewport>& viewports() const override;
+    std::vector<Viewport>& viewports() override;
+    const std::vector<Layout>& layouts() const override;
+    std::vector<Layout>& layouts() override;
+    const std::vector<SceneDiagnostic>& diagnostics() const override;
 
     // Name-based lookups (returns index or -1)
     int32_t find_layer(const std::string& name) const;
-    int32_t find_linetype(const std::string& name) const;
-    int32_t find_text_style(const std::string& name) const;
-    int32_t find_block(const std::string& name) const;
+    int32_t find_linetype(const std::string& name) const override;
+    int32_t find_text_style(const std::string& name) const override;
+    int32_t find_block(const std::string& name) const override;
 
-    // ---- Drawing metadata ----
-    DrawingMetadata& drawing_info();
+    // ---- Drawing metadata (EntitySink override) ----
+    DrawingMetadata& drawing_info() override;
     const DrawingMetadata& drawing_info() const;
 
     // ---- Queries ----
@@ -174,7 +179,7 @@ public:
     void clear();
 
     // Pre-allocate vectors for known entity/vertex counts (call before parsing).
-    void reserve(size_t entity_count, size_t vertex_count = 0);
+    void reserve(size_t entity_count, size_t vertex_count = 0) override;
 
     // Release excess vector capacity after parsing completes.
     void shrink_to_fit();

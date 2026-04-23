@@ -6,18 +6,26 @@
 
 namespace cad {
 
-struct Entity;
-struct Scene;
+class SceneGraph;
+class SpatialIndex;
 
+// ============================================================
+// FrustumCuller — culls entities against a camera frustum.
+//
+// When the SceneGraph has a built spatial index (Quadtree),
+// uses O(log N) spatial queries. Otherwise falls back to
+// brute-force O(N) bounds intersection.
+// ============================================================
 class FrustumCuller {
 public:
-    // Returns indices of visible entities from the scene.
-    // Uses spatial index if available, otherwise brute-force bounds test.
-    std::vector<size_t> cull(const Scene& scene, const Bounds3d& camera_visible_bounds);
+    // Returns entity indices visible within camera_visible_bounds.
+    // Queries the SceneGraph's spatial index when available.
+    std::vector<int32_t> cull(const SceneGraph& scene,
+                              const Bounds3d& camera_visible_bounds);
 
-    // Overload: cull a pre-filtered list of entity pointers
-    std::vector<size_t> cull(const std::vector<const Entity*>& entities,
-                             const Bounds3d& camera_visible_bounds);
+    // Cull using a standalone spatial index (e.g. for sub-scenes or blocks).
+    static std::vector<int32_t> cull_with_index(const SpatialIndex& index,
+                                                 const Bounds3d& camera_visible_bounds);
 };
 
 } // namespace cad

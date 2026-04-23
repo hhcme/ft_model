@@ -18,7 +18,7 @@ public:
     static int compute_spline_segments(int num_control_points, float pixels_per_unit);
 
     static constexpr int k_min_segments = 8;
-    static constexpr int k_max_segments = 128;
+    static constexpr int k_max_segments = 512;
 };
 
 } // namespace cad

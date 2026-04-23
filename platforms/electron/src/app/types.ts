@@ -3,7 +3,7 @@ export interface Batch {
   topology: 'lines' | 'linestrip' | 'triangles';
   color: [number, number, number];
   layerName: string;
-  vertices: [number, number][];
+  vertices: number[]; // flat [x0,y0,x1,y1,...]
   breaks?: number[];
   lineWidth?: number;
   linePattern?: number[];
@@ -130,6 +130,7 @@ export interface DrawData {
   drawingInfo?: DrawingInfo;
   entityCount: number;
   totalVertices: number;
+  entityTypeCounts?: Record<string, number>;
 }
 
 /** Viewport state for Canvas rendering. */
@@ -143,7 +144,82 @@ export interface Viewport {
 }
 
 /** Application phase. */
-export type AppPhase = 'landing' | 'parsing' | 'viewer' | 'error';
+export type AppPhase = 'landing' | 'parsing' | 'viewer' | 'compare' | 'error';
+
+/** Compare-render result from backend. */
+export interface EntityCompareResult {
+  status: 'PASS' | 'FAIL' | 'WARN' | 'ERROR' | 'SKIP' | string;
+  ourEntityCount: number;
+  refEntityCount: number;
+  matched?: number;
+  missing?: number;
+  extra?: number;
+  propertyMismatches?: number;
+  entityCountDiffPct?: number;
+  entityTypeCounts?: {
+    ours?: Record<string, number>;
+    reference?: Record<string, number>;
+  };
+  missingSamples?: Array<{ type: string; point?: [number, number] }>;
+  extraSamples?: Array<{ type: string; point?: [number, number] }>;
+}
+
+export interface VisualCompareResult {
+  status: 'PASS' | 'WARN' | 'FAIL' | 'ERROR' | 'SKIP' | string;
+  ssim?: number;
+  diffPct?: number;
+  diffPng?: string;
+  refSize?: [number, number];
+  ourSize?: [number, number];
+}
+
+export interface CompareResult {
+  ours: DrawData | null;
+  ourError: string | null;
+  refPng: string | null;
+  refError: string | null;
+  referenceMeta?: {
+    cacheHit?: boolean;
+    provider?: string;
+    providerStrength?: string;
+    sourceFingerprint?: string;
+    sourceFilename?: string;
+    generatedAt?: string;
+    parserFramework?: {
+      provider?: string;
+      renderer?: string;
+      rendererPath?: string;
+      rendererVersion?: string;
+      dwgConverter?: string;
+      dwgConverterPath?: string;
+      dwgConverterVersion?: string;
+      entityExtractor?: string;
+    };
+  };
+  entityCompare?: EntityCompareResult | null;
+  visualCompare?: VisualCompareResult | null;
+  loading?: {
+    ours?: boolean;
+    reference?: boolean;
+  };
+  errors?: {
+    ourParser?: string | null;
+    reference?: string | null;
+    entityCompare?: string | null;
+    visualCompare?: string | null;
+  };
+  refInfo: {
+    entityCount: number;
+    ourEntityCount?: number;
+    refEntityCount?: number;
+    entityTypeCounts?: EntityCompareResult['entityTypeCounts'];
+    missing?: number;
+    extra?: number;
+    renderTimeMs: number;
+    ourRenderTimeMs: number;
+    entityCompareTimeMs?: number;
+  };
+}
 
 /** Measurement point. */
 export type MeasurePoint = [number, number];

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, memo } from 'react';
 import { Drawer, Input, List, Checkbox, Button, Space } from 'antd';
 
 interface LayerItem {
@@ -22,7 +22,14 @@ interface Props {
   onInvert: () => void;
 }
 
-export default function LayerPanel({
+function mapsEqual(a: Map<string, boolean>, b: Map<string, boolean>): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) { if (b.get(k) !== v) return false; }
+  return true;
+}
+
+export default memo(function LayerPanel({
   open, onClose, layers, visibleMap, onToggle,
   onShowAll, onHideAll, onInvert,
 }: Props) {
@@ -91,4 +98,9 @@ export default function LayerPanel({
       </div>
     </Drawer>
   );
-}
+}, (prev, next) =>
+  prev.open === next.open && prev.layers === next.layers &&
+  mapsEqual(prev.visibleMap, next.visibleMap) &&
+  prev.onToggle === next.onToggle && prev.onShowAll === next.onShowAll &&
+  prev.onHideAll === next.onHideAll && prev.onInvert === next.onInvert && prev.onClose === next.onClose,
+)

@@ -30,6 +30,8 @@ type: agent
 - **cad_types.h 变更**影响所有模块，必须通知所有 Agent
 - **EntityVariant 变更**需同步 Parser Agent（解析）和 Renderer Agent（渲染）
 - **SceneGraph 接口变更**影响 Parser（写入）和 Renderer（读取）
+- **EntitySink 接口**：SceneGraph 继承 `EntitySink`（`core/include/cad/parser/dwg_entity_sink.h`），
+  Parser 通过 EntitySink 抽象接口写入数据，不直接依赖 SceneGraph 具体实现
 - 性能优化（Arena 分配器、四叉树）属于 Phase 3
 
 ## Key Rules

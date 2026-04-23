@@ -423,3 +423,22 @@ Every DWG change, issue, plan, or commit summary should include: version family,
 #### 何时解散
 
 当 `test_dwg/big.dwg` 的解析结果在视觉上与 `test_dwg/big.png` 基本对齐，且 `skip_bits < 100` 时，DWG 攻坚小组解散，后续工作回归标准的 5-Agent 模块制。
+
+### v0.10.0 并行工作协议
+
+**文件所有权矩阵**（Phase 1 拆分后）：
+
+| Agent | 独占文件 | 只读引用 |
+|-------|---------|---------|
+| **Parser** | `dwg_parser.cpp`, `dwg_r2000_decoder.*`, `dwg_r2007_codec.*`, `dwg_r2007_page_decode.*`, `dwg_r2004_decoder.*`, `dwg_object_map.*`, `dwg_header_vars.*`, `dwg_diagnostics.*`, `dwg_parse_helpers.*`, `dwg_object_recovery.*`, `dwg_table_prescan.*`, `dwg_block_tracking.*`, `dwg_handle_stream.*`, `dwg_custom_annotation_proxy.*`, `dwg_parse_diagnostics_emit.*`, `dwg_post_processing.*`, `dwg_entity_sink.*`, `dwg_objects.cpp`, `dwg_entity_geometry.*`, `dwg_entity_annotation.*`, `dwg_entity_hatch.*`, `dwg_entity_insert.*`, `dwg_reader.*`, `dxg_entities_reader.*` | `cad_types.h`, `entity.h` |
+| **Renderer** | `render_batcher.*`, `lod_selector.*`, `frustum_culler.*` | `scene_graph.h`, `entity.h` |
+| **Scene/Infra** | `scene_graph.*`, `spatial_index.*`, `cad_types.*`, `memory/*` | `entity.h` |
+| **Platform** | `platforms/electron/src/**` | DrawData types |
+| **QA** | `core/test/*`, `scripts/*` | 全部（只读） |
+
+**并行规则**：
+1. 不同 Agent 的独占文件集**零交叉**，可安全并行修改
+2. 跨模块接口变更（EntityVariant、EntitySink、RenderBatch）由主 Agent 审查
+3. Phase 2（C++ 算法）和 Phase 3（React 前端）完全并行，零冲突
+4. DWG 攻坚小组：Infra 完成后 Geometry/Annotation/Insert 三域并行
+5. 每步提取后必须跑 `regression_smoke` + `render_export` 二进制对比验证

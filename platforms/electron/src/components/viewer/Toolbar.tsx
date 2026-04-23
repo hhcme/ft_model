@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Button, Tooltip, Upload, Dropdown } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -21,7 +22,7 @@ interface Props {
   onOpenRecent: (recent: RecentFile) => void;
 }
 
-export default function Toolbar({
+export default memo(function Toolbar({
   onFit, onReset, onToggleLayers,
   measureMode, onMeasureDist, onMeasureArea, onMeasureClear,
   onOpenFile, onReparse, recentFiles, onOpenRecent,
@@ -84,4 +85,4 @@ export default function Toolbar({
       <Tooltip title="清除测量"><Button type="text" icon={<ClearOutlined />} size="small" onClick={onMeasureClear} /></Tooltip>
     </div>
   );
-}
+})

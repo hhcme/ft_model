@@ -185,7 +185,9 @@ const std::vector<TextStyle>& SceneGraph::text_styles() const { return m_impl->t
 const std::vector<Block>& SceneGraph::blocks() const { return m_impl->blocks; }
 std::vector<Block>& SceneGraph::blocks() { return m_impl->blocks; }
 const std::vector<Viewport>& SceneGraph::viewports() const { return m_impl->viewports; }
+std::vector<Viewport>& SceneGraph::viewports() { return m_impl->viewports; }
 const std::vector<Layout>& SceneGraph::layouts() const { return m_impl->layouts; }
+std::vector<Layout>& SceneGraph::layouts() { return m_impl->layouts; }
 const std::vector<SceneDiagnostic>& SceneGraph::diagnostics() const { return m_impl->diagnostics; }
 
 int32_t SceneGraph::find_layer(const std::string& name) const {
@@ -220,6 +222,11 @@ const DrawingMetadata& SceneGraph::drawing_info() const { return m_impl->drawing
 // ============================================================
 
 std::vector<int32_t> SceneGraph::entities_in_bounds(const Bounds3d& query_bounds) const {
+    // Use Quadtree O(log N) spatial query when available
+    if (m_impl->spatial_index && m_impl->spatial_index->size() > 0) {
+        return m_impl->spatial_index->query_bounds(query_bounds);
+    }
+    // Fallback: brute-force O(N) traversal
     std::vector<int32_t> result;
     for (size_t i = 0; i < m_impl->entities.size(); ++i) {
         if (query_bounds.intersects(m_impl->entities[i].bounds())) {

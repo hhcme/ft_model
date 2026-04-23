@@ -960,12 +960,12 @@ static std::string escape_json(const std::string& s) {
     return out;
 }
 
-// Format a coordinate with limited precision to reduce JSON file size.
-// Uses %.4g (4 significant figures) for compact scientific notation on large values.
+// Format a coordinate with sufficient precision for large CAD coordinates.
+// Uses %.10g to preserve ~1mm precision for coordinates in the millions range.
 static std::string fmt_coord(double v) {
     if (!std::isfinite(v)) return "0";
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.4g", v);
+    std::snprintf(buf, sizeof(buf), "%.10g", v);
     // Strip unnecessary trailing zeros after decimal point
     char* dot = strchr(buf, '.');
     if (dot) {
@@ -1501,6 +1501,9 @@ int main(int argc, char** argv) {
 
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
+    if (is_dwg) {
+        batcher.set_tessellation_quality(4.0f);
+    }
     batcher.begin_frame(camera);
     const char* outlier_env = std::getenv("FT_DWG_OUTLIER_FILTER");
     const bool outlier_filter_enabled = is_dwg &&
@@ -1556,6 +1559,10 @@ int main(int argc, char** argv) {
     auto& batches = batcher.batches();
 
     auto infer_mechanical_detail_view_frames = [&]() -> size_t {
+        const char* infer_env = std::getenv("FT_INFER_DETAIL_FRAMES");
+        if (!(infer_env && std::strcmp(infer_env, "1") == 0)) {
+            return 0;
+        }
         if (!is_dwg || text_entries.empty() || layers.empty()) {
             return 0;
         }
@@ -2300,10 +2307,67 @@ int main(int argc, char** argv) {
                abnormal_segment_count, filtered_abnormal_segment_count);
     }
 
+    // Layout coordinate consistency check: if the active view is a layout but
+    // all exported batches are in model-space coordinates (no viewport transform
+    // applied), the paper-space bounds are meaningless for the actual geometry.
+    // Fall back to model-space default view to avoid a blank display.
+    if (active_layout_index >= 0) {
+        bool has_paper_space_batches = false;
+        for (const auto& b : batches) {
+            if (!b.vertex_data.empty() && b.space == DrawingSpace::PaperSpace) {
+                has_paper_space_batches = true;
+                break;
+            }
+        }
+        if (!has_paper_space_batches) {
+            active_layout = nullptr;
+            active_layout_index = -1;
+            presentation_bounds = output_bounds;
+            active_view_id = active_model_viewport_index >= 0
+                ? ("model-vport-" + std::to_string(active_model_viewport_index))
+                : "default";
+            default_view_bounds = (!paper_fallback_sheet_bounds.empty
+                ? paper_fallback_sheet_bounds : output_bounds);
+        }
+    }
+
     out << "{\n";
     out << "  \"filename\": \"" << escape_json(meta.filename) << "\",\n";
     out << "  \"acadVersion\": \"" << escape_json(meta.acad_version) << "\",\n";
     out << "  \"entityCount\": " << entities.size() << ",\n";
+    // Entity type counts for comparison testing
+    {
+        std::unordered_map<std::string, size_t> tc;
+        for (const auto& e : entities) {
+            switch (e.type()) {
+                case EntityType::Line: tc["Line"]++; break;
+                case EntityType::Circle: tc["Circle"]++; break;
+                case EntityType::Arc: tc["Arc"]++; break;
+                case EntityType::Polyline: tc["Polyline"]++; break;
+                case EntityType::LwPolyline: tc["LwPolyline"]++; break;
+                case EntityType::Spline: tc["Spline"]++; break;
+                case EntityType::Text: tc["Text"]++; break;
+                case EntityType::MText: tc["MText"]++; break;
+                case EntityType::Dimension: tc["Dimension"]++; break;
+                case EntityType::Hatch: tc["Hatch"]++; break;
+                case EntityType::Insert: tc["Insert"]++; break;
+                case EntityType::Point: tc["Point"]++; break;
+                case EntityType::Ellipse: tc["Ellipse"]++; break;
+                case EntityType::Ray: tc["Ray"]++; break;
+                case EntityType::XLine: tc["XLine"]++; break;
+                case EntityType::Viewport: tc["Viewport"]++; break;
+                case EntityType::Solid: tc["Solid"]++; break;
+            }
+        }
+        out << "  \"entityTypeCounts\": {";
+        bool first_ec = true;
+        for (const auto& [name, count] : tc) {
+            if (!first_ec) out << ",";
+            out << "\"" << name << "\":" << count;
+            first_ec = false;
+        }
+        out << "},\n";
+    }
     out << "  \"bounds\": {\n";
     if (!default_view_bounds.empty) {
         out << "    \"minX\": " << default_view_bounds.min_x << ",\n";
@@ -2870,7 +2934,7 @@ int main(int argc, char** argv) {
             if (!std::isfinite(vx) || !std::isfinite(vy) ||
                 std::abs(vx) > 1.0e8 || std::abs(vy) > 1.0e8) continue;
             if (first_valid > 0) out << ",";
-            out << "[" << vx << "," << vy << "]";
+            out << fmt_coord(vx) << "," << fmt_coord(vy);
             first_valid++;
         }
         out << "]}";

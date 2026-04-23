@@ -17,8 +17,8 @@ export function computeBatchBounds(batches: Batch[]): (BatchBounds | null)[] {
     if (!verts || verts.length === 0) return null;
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
-    for (const v of verts) {
-      const x = v[0], y = v[1];
+    for (let i = 0; i < verts.length; i += 2) {
+      const x = verts[i], y = verts[i + 1];
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (x > maxX) maxX = x;
@@ -67,6 +67,19 @@ export function getPreferredViewBounds(drawData: DrawData): Bounds | undefined {
     if (candidate && !candidate.isEmpty &&
         candidate.minX < candidate.maxX && candidate.minY < candidate.maxY &&
         [candidate.minX, candidate.maxX, candidate.minY, candidate.maxY].every(Number.isFinite)) {
+      // Safety check: verify that at least some batch geometry actually falls
+      // within these bounds. A layout view may have paper-space bounds that
+      // don't contain any of the model-space vertex data.
+      if (drawData.batches?.length) {
+        const hasGeometryInView = drawData.batches.some((b) => {
+          if (!b.vertices?.length) return false;
+          const bb = b.bounds;
+          if (!bb || bb.isEmpty) return false;
+          return bb.maxX >= candidate.minX && bb.minX <= candidate.maxX &&
+                 bb.maxY >= candidate.minY && bb.minY <= candidate.maxY;
+        });
+        if (!hasGeometryInView) return undefined;
+      }
       return candidate;
     }
   }
@@ -74,8 +87,11 @@ export function getPreferredViewBounds(drawData: DrawData): Bounds | undefined {
 }
 
 /**
- * Compute outlier-resistant bounds from batch vertices using adaptive
- * percentile expansion. Used for both fitView and artifact segment detection.
+ * Compute outlier-resistant bounds from batch vertices using RANSAC.
+ *
+ * Strategy: randomly sample 2 points → fit axis-aligned bounding box → count
+ * inliers (points within adaptive threshold). Iterate, keep best consensus set.
+ * Refit with all inliers from the best model.
  */
 export function computeOutlierResistantBounds(
   batches: Batch[],
@@ -87,70 +103,106 @@ export function computeOutlierResistantBounds(
     const batch = batches[i];
     if (!bb || !batch?.vertices?.length) continue;
     if (![bb.minX, bb.maxX, bb.minY, bb.maxY].every(Number.isFinite)) continue;
-    validEntries.push({ bb, verts: batch.vertices.length, idx: i });
+    validEntries.push({ bb, verts: batch.vertices.length / 2, idx: i });
   }
   if (validEntries.length === 0) return undefined;
 
   let totalVerts = 0;
   for (const entry of validEntries) totalVerts += entry.verts;
 
+  // Collect sample points
   const sampleSize = Math.min(totalVerts, 10000);
   const sampleInterval = Math.max(1, Math.floor(totalVerts / sampleSize));
 
-  const samplesX: number[] = [];
-  const samplesY: number[] = [];
+  const pts: [number, number][] = [];
   let globalIdx = 0;
   for (const entry of validEntries) {
     const batch = batches[entry.idx];
-    for (const v of batch.vertices) {
+    const verts = batch.vertices;
+    for (let fi = 0; fi < verts.length; fi += 2) {
       if (globalIdx % sampleInterval === 0 &&
-          Number.isFinite(v[0]) && Number.isFinite(v[1])) {
-        samplesX.push(v[0]);
-        samplesY.push(v[1]);
+          Number.isFinite(verts[fi]) && Number.isFinite(verts[fi + 1])) {
+        pts.push([verts[fi], verts[fi + 1]]);
       }
       globalIdx++;
     }
   }
 
-  if (samplesX.length === 0) return undefined;
+  if (pts.length === 0) return undefined;
+  if (pts.length <= 4) {
+    // Too few points for RANSAC, use simple bounds
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of pts) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return { minX, minY, maxX, maxY, isEmpty: false };
+  }
 
-  samplesX.sort((a, b) => a - b);
-  samplesY.sort((a, b) => a - b);
+  // Compute adaptive inlier threshold from IQR
+  const xs = pts.map(p => p[0]).sort((a, b) => a - b);
+  const ys = pts.map(p => p[1]).sort((a, b) => a - b);
+  const iqrX = pct(xs, 0.75) - pct(xs, 0.25);
+  const iqrY = pct(ys, 0.75) - pct(ys, 0.25);
+  const threshold = Math.max(iqrX + iqrY, Math.max(
+    pct(xs, 0.95) - pct(xs, 0.05),
+    pct(ys, 0.95) - pct(ys, 0.05),
+  ) * 0.25, 10);
 
-  const q25x = pct(samplesX, 0.25), q75x = pct(samplesX, 0.75);
-  const q25y = pct(samplesY, 0.25), q75y = pct(samplesY, 0.75);
-  const q10x = pct(samplesX, 0.10), q90x = pct(samplesX, 0.90);
-  const q10y = pct(samplesY, 0.10), q90y = pct(samplesY, 0.90);
-  const q05x = pct(samplesX, 0.05), q95x = pct(samplesX, 0.95);
-  const q05y = pct(samplesY, 0.05), q95y = pct(samplesY, 0.95);
+  const n = pts.length;
+  const maxIterations = 100;
+  const minInlierRatio = 0.6;
 
-  const iqrX = q75x - q25x;
-  const iqrY = q75y - q25y;
-  const minGapX = Math.max(iqrX * 1.5, 1);
-  const minGapY = Math.max(iqrY * 1.5, 1);
+  let bestInliers: [number, number][] = [];
+  let bestCount = 0;
 
-  let loX = q25x, hiX = q75x;
-  let loY = q25y, hiY = q75y;
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Sample 2 random distinct points
+    const i1 = Math.floor(Math.random() * n);
+    let i2 = Math.floor(Math.random() * n);
+    if (i2 === i1) i2 = (i2 + 1) % n;
+    const [x1, y1] = pts[i1];
+    const [x2, y2] = pts[i2];
 
-  if (q25x - q10x < minGapX) loX = q10x;
-  if (q90x - q75x < minGapX) hiX = q90x;
-  if (q25y - q10y < minGapY) loY = q10y;
-  if (q90y - q75y < minGapY) hiY = q90y;
+    // Fit AABB from 2 points
+    const loX = Math.min(x1, x2);
+    const hiX = Math.max(x1, x2);
+    const loY = Math.min(y1, y2);
+    const hiY = Math.max(y1, y2);
 
-  if (loX === q10x && q10x - q05x < minGapX) loX = q05x;
-  if (hiX === q90x && q95x - q90x < minGapX) hiX = q95x;
-  if (loY === q10y && q10y - q05y < minGapY) loY = q05y;
-  if (hiY === q90y && q95y - q90y < minGapY) hiY = q95y;
+    // Count inliers: points within threshold of the bounding box
+    const inliers: [number, number][] = [];
+    for (const [px, py] of pts) {
+      const dx = px < loX ? loX - px : px > hiX ? px - hiX : 0;
+      const dy = py < loY ? loY - py : py > hiY ? py - hiY : 0;
+      if (dx + dy <= threshold) inliers.push([px, py]);
+    }
+
+    if (inliers.length > bestCount) {
+      bestCount = inliers.length;
+      bestInliers = inliers;
+      if (bestCount >= n * minInlierRatio) break; // good enough
+    }
+  }
+
+  if (bestInliers.length === 0) return undefined;
+
+  // Refit with all inliers from best model
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of bestInliers) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
 
   // Expand by 60% on each side to include drawing border entities and
   // annotation margins that fall outside the dense content core.
-  const rangeX = (hiX - loX) || 1;
-  const rangeY = (hiY - loY) || 1;
+  const rangeX = (maxX - minX) || 1;
+  const rangeY = (maxY - minY) || 1;
   return {
-    minX: loX - rangeX * 0.6,
-    minY: loY - rangeY * 0.6,
-    maxX: hiX + rangeX * 0.6,
-    maxY: hiY + rangeY * 0.6,
+    minX: minX - rangeX * 0.6,
+    minY: minY - rangeY * 0.6,
+    maxX: maxX + rangeX * 0.6,
+    maxY: maxY + rangeY * 0.6,
     isEmpty: false,
   };
 }

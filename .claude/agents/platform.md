@@ -43,6 +43,7 @@ type: agent
 8. **视锥裁剪**：批次级别用预计算的 world coords bounds
 9. **预览 JSON 不提交**：预览器选择文件后生成的 JSON 属于构建/缓存数据，必须留在 `/tmp`、IndexedDB 或 ignored 路径
 10. **AutoCAD 预览级 fitView**：初始视图优先 Layout/Plot Window → 图框/标题栏 → 布局视口内容 → 模型主实体 bounds → raw scene bounds fallback
+10a. **RANSAC 离群检测**：`geometry.ts` 的 `computeOutlierResistantBounds()` 使用 RANSAC（100 次迭代）替代百分位/IQR 算法，自适应阈值从 IQR 派生，内点比 ≥0.6
 11. **空间语义不可混用**：Model Space、Paper Space、Layout Viewport 不得合并成一个 raw bounds 作为主预览范围
 12. **机械图视觉验收**：Drawing2 类图纸必须检查图框水平完整、主视图/详图在图框内、标注/引线/气泡/文字可读且位置正确
 13. **水印不是目标**：参考图水印不属于 DWG 渲染还原目标，不得驱动 UI 或解析逻辑

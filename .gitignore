@@ -38,6 +38,13 @@ platforms/electron/*_preview.json
 # Cache
 .cache/
 
+# Python
+.venv/
+
+# Test reference data (regenerated)
+test_reference/odafc/
+test_reference/ezdxf/
+
 # Compiled
 *.o
 *.a

@@ -1,5 +1,5 @@
-import { Upload, Typography, Tag, Space, List, Button } from 'antd';
-import { FileImageOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Upload, Typography, Tag, Space, List } from 'antd';
+import { FileImageOutlined } from '@ant-design/icons';
 import type { RecentFile } from '../../app/types';
 
 interface Props {
@@ -48,7 +48,7 @@ export default function LandingPage({ onFile, recentFiles, onOpenRecent }: Props
         <Upload.Dragger
           accept={ACCEPT}
           showUploadList={false}
-          beforeUpload={handleUpload}
+          beforeUpload={(f) => handleUpload(f as File)}
           multiple={false}
           style={{ background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.15)', width: 360 }}
         >

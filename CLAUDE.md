@@ -103,7 +103,7 @@ python3 -m http.server 8080
 - **Block cache**: `m_block_cache` (cleared each `begin_frame`). Tessellate once, reuse for all INSERT instances of that block.
 - Color resolution: entity ACI override (color_override != 256 && != 0) → layer color fallback.
 - TEXT/MTEXT entities: render thin underline in vertex data (actual text rendered by viewer via `fillText()`).
-- Output format: raw JSON or gzip (auto-detected by `.gz` suffix). Coordinates written with `%.4g` precision.
+- Output format: raw JSON or gzip (auto-detected by `.gz` suffix). Coordinates written with `%.3g` precision. Vertices are flat arrays `[x0,y0,x1,y1,...]` (not nested `[[x,y],...]`).
 
 ### Block / INSERT Handling
 - **Block definition entities must be filtered** when iterating — they are rendered ONLY through INSERT references with transforms applied. Use `EntityHeader.in_block` flag.
@@ -304,3 +304,66 @@ Every DWG change summary should include version family, object family, affected 
 2. **跨模块变更需协调** — 新增实体类型需 Parser → Scene/Infra → Renderer → Platform 串行配合
 3. **变更通知链**：核心结构变更（EntityVariant、RenderBatch 格式、SceneGraph 接口）必须通知所有受影响的 Agent
 4. **QA Agent 有只读全局权限** — 可审读任何模块代码，但不得修改生产代码，发现问题报给对应 Agent
+5. **主 Agent 统一审查** — 跨模块变更由主 Agent 审查，子 Agent 并行执行不越界
+6. **DWG 攻坚小组并行约束** — Infra 子 Agent 完成后，Geometry/Annotation/Insert 才可并行
+
+## v0.10.0 Architecture & Performance Rules
+
+### 通用性原则（Generality Principle）
+- DWG 解析器是**通用工具**，禁止针对特定测试文件的 hack
+- 所有修复必须是通用算法/数学改进
+- Bug 根因分析从"为什么解析器无法兼容此模式"角度思考，而非"为什么这个文件解析不了"
+- 新增实体类型或版本支持时，必须考虑该模式在其他版本/文件中的普遍性
+
+### 模块化原则（Modularity — 硬约束）
+- **每个源文件硬上限 1,000 行**。超过必须拆分
+- 解析/渲染/场景/平台各模块只修改自己负责的文件
+- 解析器内部按**版本族**（R2000/R2004/R2007/R2010+）和**功能域**（容器/头部/对象映射/实体/诊断）拆分
+- 实体解析按**几何/标注/填充/块参照**四域拆分
+- 新增 `EntitySink` 接口解耦 Parser↔SceneGraph，解析器不直接操作 SceneGraph
+- codec/decoder 模块不依赖 SceneGraph，只接收 raw buffer，返回结构化数据
+
+### 数学优先原则（Math-First Principle）
+复杂计算优先使用数学方法，而非暴力/启发式方法：
+
+| 问题 | 数学方法 | 替代 |
+|------|---------|------|
+| 弧线细分段数 | 弦高误差公式 `N >= π / arccos(1 - T/(R·ppu))` | 固定段数/启发式 |
+| 大弧线 tessellation | 递归中点自适应细分 | 均匀角度细分 |
+| 离群几何检测 | RANSAC（随机抽样一致性） | 百分位/启发式 |
+| 空间查询 | Quadtree O(log N) | 暴力遍历 |
+| LOD 选择 | screen-space error metric | circumference_pixels / 8 |
+| fitView 边界 | RANSAC + 最小包围矩形 | 简单 min/max |
+
+### 性能基线（Performance Baselines）
+- Canvas 预览器：**60fps @ fitView**、首帧 < 3s、图层切换 < 16ms
+- 输出体积：每个实体平均 < 120 bytes JSON
+- 渲染管线使用 **rAF + dirty flag** 模式，禁止 useEffect 直接触发全量重绘
+- 文本测量必须缓存（`TextMeasureCache`），禁止每帧重复 `measureText()`
+- 空间索引必须在解析完成后构建，裁剪管线必须使用索引查询
+
+### 文件体积管控（File Size Control）
+- 代码文件每个 < 1,000 行
+- 输出 JSON gzip 压缩后 < 原始 DWG 文件大小
+- `test_dwg/` 目录禁止存放生成文件（JSON/gzip 属于 `/tmp` 或 `.gitignore`）
+- 顶点精度使用 `%.3g`（视觉无损），避免不必要的精度浪费
+- 块定义几何在 INSERT 展开后省略，避免重复输出
+
+### DWG Parser 模块结构（v0.10.0 拆分后）
+```
+core/src/parser/
+├── dwg_parser.cpp          (~800 行) 版本检测 + 模块编排 + parse_buffer 入口
+├── dwg_r2007_codec.cpp     (~800 行) R2007/R21 容器解码
+├── dwg_r2004_decoder.cpp   (~600 行) R2004 头部解密 + LZ77
+├── dwg_object_map.cpp      (~400 行) 对象偏移映射 + handle 流
+├── dwg_header_vars.cpp     (~500 行) 头部变量 + 类段
+├── dwg_diagnostics.cpp     (~400 行) 辅助段诊断
+├── dwg_entity_sink.h/cpp   (~140 行) EntitySink 接口 + 适配器
+├── dwg_objects.cpp          (~300 行) 实体分发 + CED 公共头
+├── dwg_entity_geometry.cpp  (~600 行) LINE/ARC/CIRCLE/POLYLINE/LWPOLYLINE/ELLIPSE/SPLINE/SOLID
+├── dwg_entity_annotation.cpp (~500 行) TEXT/MTEXT/DIMENSION/ATTRIB/LEADER/MULTILEADER
+├── dwg_entity_hatch.cpp     (~400 行) HATCH 边界环 + 边细分
+├── dwg_entity_insert.cpp    (~400 行) INSERT/MINSERT + 块解析
+├── dxg_entities_reader.cpp  (保持) DXF 实体读取
+└── dwg_reader.cpp           (保持) DWG bitstream 读取
+```

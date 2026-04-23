@@ -60,14 +60,21 @@ C++ core outputs RenderBatch with vertex data + topology. Platform renderers con
 - [ ] Layer color/brightness management for text visibility
 - [ ] Measurement tools (distance, angle, area)
 
-### Phase 3: Performance Optimization — PENDING
+### Phase 3: Performance Optimization — IN PROGRESS (v0.10.0)
 
 - [ ] Arena allocator for parse-time entity allocation
 - [ ] String pool for layer/block name deduplication
-- [ ] LOD system for adaptive curve tessellation at different zoom levels
-- [ ] Quadtree spatial index for O(log N) viewport culling
+- [x] Quadtree spatial index implementation (exists in `spatial_index.cpp`)
+- [ ] Wire Quadtree into SceneGraph + FrustumCuller pipeline
+- [ ] Chord-height error LOD selection (replace heuristic)
+- [ ] Adaptive arc tessellation (recursive midpoint subdivision)
+- [ ] RANSAC outlier detection for fitView
 - [ ] Vertex buffer reuse across frames (incremental update)
 - [ ] Batch sorting and merging optimization
+- [ ] React preview: rAF + dirty flag render loop
+- [ ] React preview: component-level React.memo
+- [ ] React preview: TextMeasureCache for measureText()
+- [ ] React preview: Web Worker JSON parsing
 - [ ] Target: 500K entities at 60fps
 
 ### Phase 4: DWG Support — IN PROGRESS
@@ -191,9 +198,48 @@ family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 
 ---
 
-## Current Metrics (as of 2026-04-17)
+## Current Metrics (as of 2026-04-23)
 
-### DXF Performance
+### Automated Regression System
+
+**Tools**: `scripts/run_regression.py`, `scripts/compare_entities.py`, `scripts/visual_compare.py`
+**Reference**: libredwg (DWG→DXF, GPLv3, test-only) + ezdxf (MIT, entity extraction)
+**Comparison**: Entity-level (type, coordinates, properties) with tolerance-based spatial matching.
+
+#### DXF Fixtures — All PASS
+
+| Fixture | Status |
+|---------|--------|
+| basic_primitives.dxf | PASS |
+| campus_masterplan.dxf | PASS |
+| edge_cases.dxf | PASS |
+| insert_blocks.dxf | PASS |
+| lwpolyline.dxf | PASS |
+| minimal.dxf | PASS |
+| stress_50k.dxf | PASS |
+| text_entities.dxf | PASS |
+
+#### DWG Fixtures — Entity Comparison Results (2026-04-23)
+
+| Fixture | Version | Match Rate | Key Issues |
+|---------|---------|-----------|------------|
+| big.dwg | R2010 | 99.8% (42619/42698) | 2622 extra POINT from *D blocks, HATCH pattern name, coord precision |
+| Drawing2.dwg | R2013 | 99.99% (25049/25051) | 33 CIRCLE+33 TEXT block leak (AM_5 layer), 2 missing ELLIPSE |
+| zj-02-00-1.dwg | R2007 | 97.0% (358/369) | 5 missing DIMENSION, 4 LINE coord swaps |
+| 新块.dwg | R2004 | 37.8% (1480/3913) | Major object map gap: TEXT 1579→262, LINE 1329→611, INSERT 62→16 |
+| Other DWGs | Various | — | Parsing works; comparison pending timeout optimization |
+
+#### Browser Rendering — All Visible
+
+All DWG fixtures render visible drawing content in the browser (verified via Playwright headless testing).
+
+### Known Gaps (Priority Order)
+
+1. **新块.dwg (R2004) — 62% entity loss**: Object map decoding incomplete for this file. Only 1536 of 3913 entities resolved. Block/INSERT resolution also partial (16/62). Root cause: R2004 section/page map may not fully decode all object sections.
+2. **big.dwg — POINT overflow (2622 extra)**: Anonymous *D DIMENSION blocks not tracked as `in_block`. Block boundary detection misses DIMENSION definition POINT entities on DEFPOINTS layer.
+3. **zj-02-00-1.dwg — 5 missing DIMENSION**: DIMENSION subtype parsing may skip certain types due to stream read errors or unhandled type-specific data.
+4. **Drawing2.dwg — 33 CIRCLE/TEXT block leak**: AM_5 layer entities from AutoCAD Mechanical block definitions not marked as `in_block`.
+5. **Coordinate precision**: LWPOLYLINE/DIMENSION coordinates show ~10-unit deviations from reference — float precision or OCS/WCS transform gap.
 
 | File | Entities | Batches | Vertices |
 |------|----------|---------|----------|
@@ -243,7 +289,7 @@ family, diagnostics, Layout/Paper Space semantics, and visual acceptance.
 |------|-------|
 | Language | C++20 |
 | Build system | CMake |
-| DWG parser code | 4,821 lines (6 files) |
+| DWG parser code | 9,814 lines (11 files, split from 2 monolithic files in v0.10.0) |
 | Remote | gitee.com/smarthhc/ft_model.git |
 
 ---
@@ -297,12 +343,17 @@ BLOCK_HEADER (type 49) stores truncated names for anonymous dimension blocks: `*
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `core/src/parser/dwg_parser.cpp` | 2,048 | Container: decrypt, sections, object map, CED, prepare_object |
-| `core/src/parser/dwg_objects.cpp` | 1,346 | Entity-specific parsers (LINE, ARC, HATCH, DIMENSION, etc.) |
-| `core/src/parser/dwg_reader.cpp` | 869 | Bit-level reader (BS/BL/BD/BOT/CMC/MC/UMC) + LZ77 + CRC |
-| `core/include/cad/parser/dwg_parser.h` | 219 | DwgParser class, DwgVersion enum, section structs |
-| `core/include/cad/parser/dwg_reader.h` | 195 | DwgBitReader class with all DWG encoding methods |
-| `core/include/cad/parser/dwg_objects.h` | 38 | Entity dispatch entry point |
+| `core/src/parser/dwg_parser.cpp` | 3,160 | Version detection + module orchestration + parse_objects main loop |
+| `core/src/parser/dwg_objects.cpp` | 783 | Entity dispatch + CED common header + INSERT/viewport parsers |
+| `core/src/parser/dwg_r2007_codec.cpp` | 1,068 | R2007/R21 container decoding (Reed-Solomon, LZ77, page codec) |
+| `core/src/parser/dwg_r2004_decoder.cpp` | 885 | R2004 header decryption + section page map + LZ77 |
+| `core/src/parser/dwg_entity_geometry.cpp` | 865 | 16 geometry entity parsers (LINE/ARC/CIRCLE/POLYLINE/ELLIPSE/SPLINE/SOLID) |
+| `core/src/parser/dwg_diagnostics.cpp` | 567 | Auxiliary section diagnostics + printable string extraction |
+| `core/src/parser/dwg_entity_annotation.cpp` | 510 | TEXT/MTEXT/DIMENSION/HATCH annotation parsers |
+| `core/src/parser/dwg_header_vars.cpp` | 388 | Header variables ($ACADVER, INSUNITS, EXTMIN/MAX) + classes section |
+| `core/src/parser/dwg_parse_helpers.cpp` | 284 | Shared helper functions (read_2rd, parse_layout, resolve_handle) |
+| `core/src/parser/dwg_object_map.cpp` | 161 | Object offset mapping + handle stream |
+| `core/src/parser/dwg_reader.cpp` | 1,143 | Bit-level reader (BS/BL/BD/BOT/CMC/MC/UMC) + LZ77 + CRC |
 
 ### DXF Parser + Renderer
 
@@ -338,7 +389,28 @@ BLOCK_HEADER (type 49) stores truncated names for anonymous dimension blocks: `*
 - `test_dwg/big.dwg` — R2010/AC1024 campus masterplan (9.6MB, 109K objects, primary DWG test)
 - `test_dwg/big.png` — Reference image for visual comparison
 - `test_dwg/Drawing2.dwg` — Mechanical/Layout/Paper Space visual sentinel
-- `test_dwg/zj-02-00-1.dwg` — DWG fixture catalog candidate; domain and gate pending classification
-- `test_dwg/新块.dwg` — DWG fixture catalog candidate for block/reference behavior; gate pending classification
+- `test_dwg/zj-02-00-1.dwg` — R2007/AC1021, fixture catalog candidate; domain and gate pending classification
+- `test_dwg/新块.dwg` — R2004/AC1018, fixture catalog candidate for block/reference behavior; gate pending classification
+- `test_dwg/好世凤凰城74号302.dwg` — R2004/AC1018, interior design drawing
+- `test_dwg/平立剖，分析图_t3.dwg` — R2004/AC1018, architectural plan/section/analysis
+- `test_dwg/设计图纸20240718.dwg` — R2004/AC1018, design drawing
+- `test_dwg/张江之尚地下一层图纸.dwg` — R2007/AC1021, basement floor plan
+- `test_dwg/泰国网格屏施工图.dwg` — R2018+/AC1032, construction drawing (29MB, largest fixture)
+- `test_dwg/2026040913_69d73f952f59f.dwg` — R2018+/AC1032, external drawing
+
+**Missing fixtures**: R2000(AC1015), R14(AC1014), R13(AC1012), R12(AC1009)
+
+**DWG version coverage**:
+| Version | AC Code | Fixtures | Status |
+|---------|---------|----------|--------|
+| R2004 | AC1018 | 3 | Covered |
+| R2007 | AC1021 | 2 | Covered |
+| R2010 | AC1024 | 1 (big.dwg) | Covered |
+| R2013 | AC1027 | 1 (Drawing2.dwg) | Covered |
+| R2018+ | AC1032 | 2 | Covered |
+| R2000 | AC1015 | 0 | **Missing** |
+| R14 | AC1014 | 0 | **Missing** |
+| R13 | AC1012 | 0 | **Missing** |
+| R12 | AC1009 | 0 | **Missing** |
 - `test_data/campus_masterplan.dxf` — DXF version of campus plan
 - Various synthetic DXF files in `test_data/` generated via ezdxf (MIT)

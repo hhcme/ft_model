@@ -58,12 +58,44 @@ type: agent
 - AutoCAD Mechanical objects (`ACMDATUMTARGET`, `AMDTNOTE`, `ACDBLINERES`, `ACMDETAIL*`, `FIELD`, `AcDsPrototype` 等) 是优先解析对象族。
 - FIELD/FIELDLIST/CONTEXTDATA、Xref、image/underlay/font 缺失应进入 diagnostics，不得导致崩溃或飞线。
 
+## DWG Parser Module Structure (v0.10.0)
+
+`dwg_parser.cpp` is decomposed into focused modules. Each file is <1,000 lines.
+
+```
+core/src/parser/
+├── dwg_parser.cpp              (~950)  Version detection + parse_buffer entry + parse_objects main loop
+├── dwg_r2000_decoder.cpp       (~110)  R2000/AC1015 flat section reader (sentinel-delimited)
+├── dwg_r2004_decoder.cpp       (~600)  R2004 header decryption + LZ77
+├── dwg_r2007_codec.cpp         (~870)  R2007/R21 container reader (Reed-Solomon de-interleave)
+├── dwg_r2007_page_decode.cpp   (~210)  R2007 page decode/validation helpers
+├── dwg_object_map.cpp          (~400)  Object offset mapping + handle stream
+├── dwg_header_vars.cpp         (~500)  Header variables + class section
+├── dwg_parse_helpers.cpp       (~300)  Shared helpers (is_graphic_entity, resolve_handle_ref, etc.)
+├── dwg_object_recovery.cpp     (~240)  Object framing, candidate recovery, page-scan recovery
+├── dwg_table_prescan.cpp       (~200)  LTYPE/LAYER/BLOCK_HEADER table pre-scan
+├── dwg_block_tracking.cpp      (~120)  BLOCK/ENDBLK stream marker handling
+├── dwg_handle_stream.cpp       (~260)  Role-based handle stream decoding
+├── dwg_custom_annotation_proxy.cpp (~500) Custom annotation detection + proxy creation
+├── dwg_parse_diagnostics_emit.cpp  (~560) Diagnostic record emission
+├── dwg_post_processing.cpp     (~500)  INSERT block_index resolution, layout, owner resolution
+├── dwg_objects.cpp             (~300)  Entity dispatch + CED common header
+├── dwg_entity_geometry.cpp     (~600)  LINE/ARC/CIRCLE/POLYLINE/LWPOLYLINE/ELLIPSE/SPLINE/SOLID
+├── dwg_entity_annotation.cpp   (~500)  TEXT/MTEXT/DIMENSION/ATTRIB/LEADER/MULTILEADER
+└── dwg_diagnostics.cpp         (~400)  Auxiliary section diagnostics
+```
+
+Key interfaces:
+- `EntitySink` — abstract output interface decoupling Parser from SceneGraph
+- `ParseObjectsContext` — bundles ~50 shared variables for parse_objects() loop + post-processing
+- `DwgVersion` enum — R2000=1, R2004=2, R2007=3, R2010=4, R2013=5, R2018=6
+
 ## Common Tasks
 
 - 添加新的 DXF 实体类型解析（如 LEADER, MLINE）
 - 修复特定 DXF 文件的解析错误
 - 优化解析性能（减少字符串拷贝、预分配内存）
-- DWG 二进制格式解析器开发（Phase 4）
+- DWG 版本兼容：R2000/AC1015 已支持（sentinel-based flat sections），R2004+ 已支持
 - 增强对非标准 DXF 文件的容错能力
 
 ## Testing
