@@ -2292,6 +2292,8 @@ int main(int argc, char** argv) {
     // all exported batches are in model-space coordinates (no viewport transform
     // applied), the paper-space bounds are meaningless for the actual geometry.
     // Fall back to model-space default view to avoid a blank display.
+    // Exception: keep the layout if it has valid paper bounds so the user still
+    // sees the paper canvas and viewport frames.
     if (active_layout_index >= 0) {
         bool has_paper_space_batches = false;
         for (const auto& b : batches) {
@@ -2300,7 +2302,10 @@ int main(int argc, char** argv) {
                 break;
             }
         }
-        if (!has_paper_space_batches) {
+        const bool keep_layout_for_paper_canvas = active_layout &&
+            !active_layout->paper_bounds.is_empty() &&
+            (active_layout->paper_bounds.max.x - active_layout->paper_bounds.min.x) > 1.0f;
+        if (!has_paper_space_batches && !keep_layout_for_paper_canvas) {
             active_layout = nullptr;
             active_layout_index = -1;
             presentation_bounds = output_bounds;
