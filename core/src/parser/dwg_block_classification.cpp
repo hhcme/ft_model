@@ -55,7 +55,17 @@ bool should_render_direct(
     const float cx = (bounds.min.x + bounds.max.x) * 0.5f;
     const float cy = (bounds.min.y + bounds.max.y) * 0.5f;
     const float centroid_dist = std::sqrt(cx * cx + cy * cy);
-    if (block.entity_indices.size() > 50 && centroid_dist > 5000.0f) {
+
+    // Large world-space blocks: geometry is in absolute coordinates,
+    // rendering through INSERT with transforms produces wrong results.
+    if (centroid_dist > 5000.0f && block.entity_indices.size() > 50) {
+        return true;
+    }
+    // Non-anonymous blocks with world-space geometry and significant extent.
+    // These blocks contain entities parsed at absolute coordinates (e.g. R2004
+    // blocks populated via header-owned entity resolution).  Expanding through
+    // INSERT would apply a redundant transform to absolute coordinates.
+    if (!block.is_anonymous && centroid_dist > 5000.0f && major > 1000.0f) {
         return true;
     }
     if (!block.is_anonymous && has_scaled_insert && centroid_dist > 5000.0f) {

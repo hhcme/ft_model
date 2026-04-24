@@ -711,10 +711,6 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         double cy = cache_it->second.centroid_y;
         double centroid_dist = cache_it->second.centroid_dist;
 
-        // World-space DWG blocks with many entities are usually already emitted
-        // directly; expanding them through INSERT creates duplicate/huge geometry.
-        if (centroid_dist > 5000.0 && block.entity_indices.size() > 50) break;
-
         float bpx = std::isfinite(block.base_point.x) ? block.base_point.x : 0.0f;
         float bpy = std::isfinite(block.base_point.y) ? block.base_point.y : 0.0f;
         if (bpx == 0.0f && bpy == 0.0f && centroid_dist > 5000.0) {

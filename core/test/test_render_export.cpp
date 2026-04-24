@@ -1083,6 +1083,27 @@ int main(int argc, char** argv) {
                 block.header_owned_entity_indices.size() >= 1) {
                 merge_header_owned = true;
             }
+
+            // For non-direct blocks, merge header-owned entities into
+            // entity_indices BEFORE the should_render_direct check so the
+            // bounds evaluation sees all block geometry.  (Direct blocks keep
+            // header-owned entities separate for the local-insert path.)
+            block_should_direct[bi] = false;
+            if (merge_header_owned) {
+                // Tentatively merge to check direct-ness.
+                std::unordered_set<int32_t> existing(
+                    block.entity_indices.begin(), block.entity_indices.end());
+                for (int32_t eidx : block.header_owned_entity_indices) {
+                    if (eidx < 0 || static_cast<size_t>(eidx) >= entities.size()) continue;
+                    if (!existing.insert(eidx).second) continue;
+                    block.entity_indices.push_back(eidx);
+                    const Bounds3d entity_bounds = entities[static_cast<size_t>(eidx)].bounds();
+                    if (!entity_bounds.is_empty()) {
+                        block.bounds.expand(entity_bounds.min);
+                        block.bounds.expand(entity_bounds.max);
+                    }
+                }
+            }
             block_should_direct[bi] =
                 should_render_dwg_block_direct(block, entities, scaled_insert);
 
@@ -1130,19 +1151,6 @@ int main(int argc, char** argv) {
                         }
                     }
                     local_insert_block_indices[bi] = scene.add_block(std::move(local_block));
-                }
-            } else if (merge_header_owned) {
-                std::unordered_set<int32_t> existing(
-                    block.entity_indices.begin(), block.entity_indices.end());
-                for (int32_t eidx : block.header_owned_entity_indices) {
-                    if (eidx < 0 || static_cast<size_t>(eidx) >= entities.size()) continue;
-                    if (!existing.insert(eidx).second) continue;
-                    block.entity_indices.push_back(eidx);
-                    const Bounds3d entity_bounds = entities[static_cast<size_t>(eidx)].bounds();
-                    if (!entity_bounds.is_empty()) {
-                        block.bounds.expand(entity_bounds.min);
-                        block.bounds.expand(entity_bounds.max);
-                    }
                 }
             }
         }
