@@ -278,27 +278,6 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                       ctx.entity_object_handles.size());
     }
 
-    // Reconcile: entities resolved to model/paper space must be removed
-    // from block membership to prevent double-rendering through both
-    // top-level iteration and block INSERT expansion.
-    {
-        auto& all_entities = scene.entities();
-        auto& all_blocks_mut = const_cast<std::vector<Block>&>(scene.blocks());
-        size_t removed = 0;
-        for (size_t bi = 0; bi < all_blocks_mut.size(); ++bi) {
-            auto& block = all_blocks_mut[bi];
-            size_t before = block.header_owned_entity_indices.size();
-            std::erase_if(block.header_owned_entity_indices, [&](int32_t eidx) {
-                if (eidx < 0 || static_cast<size_t>(eidx) >= all_entities.size()) return true;
-                return !all_entities[static_cast<size_t>(eidx)].header.in_block;
-            });
-            removed += before - block.header_owned_entity_indices.size();
-        }
-        if (removed > 0) {
-            dwg_debug_log("[DWG] block membership reconciliation: removed %zu entries from blocks\n", removed);
-        }
-    }
-
     size_t default_model_space = 0;
     if (block_header_model == 0 && block_header_paper == 0 && !scene.layouts().empty()) {
         auto& all_entities = scene.entities();

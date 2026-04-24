@@ -1177,17 +1177,9 @@ void RenderBatcher::end_frame() {
             if (lengths.empty()) continue;
             std::sort(lengths.begin(), lengths.end());
             const float median = lengths[lengths.size() / 2];
-            const float q25 = lengths[lengths.size() / 4];
-            const float q75 = lengths[std::min(lengths.size() - 1,
-                                               static_cast<size_t>(lengths.size() * 3 / 4))];
             const float q95 = lengths[std::min(lengths.size() - 1,
                                                static_cast<size_t>(lengths.size() * 0.95f))];
             float threshold = std::max({median * 200.0f, q95 * 50.0f, std::max(median * 10.0f, 500.0f)});
-            const float iqr = q75 - q25;
-            const float tukey_fence = q75 + iqr * 3.0f;
-            if (tukey_fence > 0.0f && tukey_fence < threshold) {
-                threshold = tukey_fence;
-            }
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 3 < vd.size(); i += 4) {
@@ -1205,17 +1197,9 @@ void RenderBatcher::end_frame() {
             if (extents.empty()) continue;
             std::sort(extents.begin(), extents.end());
             const float median = extents[extents.size() / 2];
-            const float q25 = extents[extents.size() / 4];
-            const float q75 = extents[std::min(extents.size() - 1,
-                                               static_cast<size_t>(extents.size() * 3 / 4))];
             const float q95 = extents[std::min(extents.size() - 1,
                                                static_cast<size_t>(extents.size() * 0.95f))];
             float threshold = std::max({median * 100.0f, q95 * 20.0f, std::max(median * 10.0f, 500.0f)});
-            const float iqr = q75 - q25;
-            const float tukey_fence = q75 + iqr * 3.0f;
-            if (tukey_fence > 0.0f && tukey_fence < threshold) {
-                threshold = tukey_fence;
-            }
 
             std::vector<float> filtered;
             for (size_t i = 0; i + 5 < vd.size(); i += 6) {
@@ -1242,17 +1226,9 @@ void RenderBatcher::end_frame() {
             for (auto& r : ranges) extents.push_back(entity_extent(r.vstart, r.vend));
             std::sort(extents.begin(), extents.end());
             const float median = extents[extents.size() / 2];
-            const float q25 = extents[extents.size() / 4];
-            const float q75 = extents[std::min(extents.size() - 1,
-                                               static_cast<size_t>(extents.size() * 3 / 4))];
             const float q95 = extents[std::min(extents.size() - 1,
                                                static_cast<size_t>(extents.size() * 0.95f))];
             float threshold = std::max({median * 100.0f, q95 * 20.0f, std::max(median * 10.0f, 500.0f)});
-            const float iqr = q75 - q25;
-            const float tukey_fence = q75 + iqr * 3.0f;
-            if (tukey_fence > 0.0f && tukey_fence < threshold) {
-                threshold = tukey_fence;
-            }
 
             // Filter: keep entities within threshold
             std::vector<float> filtered_vd;
