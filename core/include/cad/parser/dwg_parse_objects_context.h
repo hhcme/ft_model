@@ -26,6 +26,7 @@ struct ParseObjectsContext {
 
     // ---- Maps (loop body) ----
     std::unordered_map<uint64_t, std::string> block_names_from_entities;
+    std::unordered_map<uint64_t, int32_t> block_handle_to_index;
     std::unordered_map<size_t, std::vector<uint64_t>> insert_handles;
     std::unordered_map<size_t, std::vector<uint64_t>> insert_handle_fallback_candidates;
     std::unordered_map<size_t, std::vector<uint64_t>> entity_common_handles;

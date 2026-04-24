@@ -111,7 +111,12 @@ std::string DwgBitReader::read_tv()
         }
     }
 
-    return tv_to_utf8(result);
+    auto decoded = tv_to_utf8(result);
+    // DWG TV length includes the null terminator — strip it.
+    while (!decoded.empty() && decoded.back() == '\0') {
+        decoded.pop_back();
+    }
+    return decoded;
 }
 
 std::string DwgBitReader::read_tu()
@@ -157,6 +162,10 @@ std::string DwgBitReader::read_tu()
         }
     }
 
+    // DWG TU length may include a trailing null code unit — strip it.
+    while (!result.empty() && result.back() == '\0') {
+        result.pop_back();
+    }
     return result;
 }
 

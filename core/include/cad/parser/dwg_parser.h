@@ -405,6 +405,7 @@ private:
     Vec3 m_current_block_base_point = Vec3::zero();
     size_t m_block_entity_start = 0;
     uint64_t m_current_block_handle = 0;
+    uint64_t m_current_block_header_handle = 0;
 
     // ---- DWG table handle tracking ----
     // Maps table object handles → SceneGraph indices. Populated during table

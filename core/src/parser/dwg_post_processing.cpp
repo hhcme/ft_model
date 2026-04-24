@@ -58,6 +58,16 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                 if (!ins || ins->block_index >= 0) continue;
 
                 for (uint64_t h : handles) {
+                    // Primary: handle-based lookup (handles anonymous blocks
+                    // like *D where name alone is ambiguous).
+                    auto hbi = ctx.block_handle_to_index.find(h);
+                    if (hbi != ctx.block_handle_to_index.end() && hbi->second >= 0) {
+                        ins->block_index = hbi->second;
+                        all_entities[eidx].header.block_index = hbi->second;
+                        resolved++;
+                        break;
+                    }
+                    // Fallback: name-based lookup
                     std::string name;
                     auto it1 = ctx.block_names_from_entities.find(h);
                     if (it1 != ctx.block_names_from_entities.end()) {
@@ -236,7 +246,15 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                 block_header_paper++;
                 block_header_space_resolved++;
             } else if (!name.empty()) {
-                int32_t block_idx = scene.find_block(name);
+                // Prefer handle-based lookup for anonymous blocks
+                int32_t block_idx = -1;
+                auto hbi = ctx.block_handle_to_index.find(block_header_handle);
+                if (hbi != ctx.block_handle_to_index.end()) {
+                    block_idx = hbi->second;
+                }
+                if (block_idx < 0) {
+                    block_idx = scene.find_block(name);
+                }
                 if (block_idx >= 0) {
                     header.owner_block_index = block_idx;
                     header.in_block = true;
@@ -362,7 +380,16 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
             const bool is_model_space_owner = (upper_name == "*MODEL_SPACE");
             const bool is_paper_space_owner = (upper_name == "*PAPER_SPACE");
 
-            int32_t block_idx = scene.find_block(name);
+            int32_t block_idx = -1;
+            {
+                auto hbi = ctx.block_handle_to_index.find(owner_handle);
+                if (hbi != ctx.block_handle_to_index.end()) {
+                    block_idx = hbi->second;
+                }
+            }
+            if (block_idx < 0) {
+                block_idx = scene.find_block(name);
+            }
             if (block_idx < 0 && !is_model_space_owner && !is_paper_space_owner) continue;
 
             auto& header = all_entities[eidx].header;

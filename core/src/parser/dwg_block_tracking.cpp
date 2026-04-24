@@ -26,6 +26,7 @@ bool DwgParser::process_block_endblk(
     if (obj_type == 4) { // BLOCK
         m_block_entity_start = scene.entities().size();
         m_current_block_handle = handle;
+        m_current_block_header_handle = 0;
         m_current_block_name = "__pending__";
         // First check pre-scan mapping (BLOCK_HEADER handle stream → name)
         auto bn_pre = ctx.block_names_from_entities.find(handle);
@@ -37,6 +38,7 @@ bool DwgParser::process_block_endblk(
             auto bn_direct = m_sections.block_names.find(handle);
             if (bn_direct != m_sections.block_names.end() && !bn_direct->second.empty()) {
                 m_current_block_name = bn_direct->second;
+                m_current_block_header_handle = handle;
             }
         }
         // Try handle stream bridge to find BLOCK_HEADER name.
@@ -59,6 +61,7 @@ bool DwgParser::process_block_endblk(
                         auto bn_it = m_sections.block_names.find(abs_handle);
                         if (bn_it != m_sections.block_names.end() && !bn_it->second.empty()) {
                             m_current_block_name = bn_it->second;
+                            m_current_block_header_handle = abs_handle;
                             ctx.block_names_from_entities[abs_handle] = bn_it->second;
                             ctx.block_names_from_entities[handle] = bn_it->second;
                         }
@@ -79,6 +82,9 @@ bool DwgParser::process_block_endblk(
                 auto bn_it = m_sections.block_names.find(probe);
                 if (bn_it != m_sections.block_names.end() && !bn_it->second.empty()) {
                     m_current_block_name = bn_it->second;
+                    if (m_current_block_header_handle == 0) {
+                        m_current_block_header_handle = probe;
+                    }
                     ctx.block_names_from_entities[m_current_block_handle] = bn_it->second;
                     break;
                 }
@@ -97,7 +103,23 @@ bool DwgParser::process_block_endblk(
             for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                 block.entity_indices.push_back(static_cast<int32_t>(i));
             }
+            // Anonymous block names (*D, *U, *X, etc.) are not unique in DWG —
+            // the same name is reused for all blocks of that anonymous type.
+            // Disambiguate by appending the handle so SceneGraph entries stay unique.
+            if (!block.name.empty() && block.name[0] == '*') {
+                if (scene.find_block(block.name) >= 0) {
+                    block.name += std::to_string(m_current_block_handle);
+                }
+            }
             int32_t block_idx = scene.add_block(block);
+            // Record handle → block_index mapping for INSERT resolution.
+            // INSERT handle streams reference BLOCK_HEADER handles, so map both
+            // the BLOCK entity handle and the BLOCK_HEADER handle.
+            ctx.block_handle_to_index[m_current_block_handle] = block_idx;
+            if (m_current_block_header_handle != 0 &&
+                m_current_block_header_handle != m_current_block_handle) {
+                ctx.block_handle_to_index[m_current_block_header_handle] = block_idx;
+            }
             const auto& added_block = scene.blocks()[static_cast<size_t>(block_idx)];
             for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                 auto& child = scene.entities()[i].header;
@@ -112,6 +134,7 @@ bool DwgParser::process_block_endblk(
             m_current_block_name.clear();
             m_current_block_base_point = Vec3::zero();
             m_current_block_handle = 0;
+            m_current_block_header_handle = 0;
         }
         return true; // ENDBLK handled
     }
