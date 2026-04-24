@@ -212,12 +212,23 @@ bool DwgParser::try_recover_object(uint64_t target_handle, size_t primary_offset
     if (++m_object_recovery_scans > 64) {
         return false;
     }
+    // Byte budget: cap total scanned bytes across all recovery attempts to
+    // prevent multi-minute hangs on large R2004/R2007 files with many bad offsets.
+    static constexpr size_t kMaxTotalRecoveryBytes = 64 * 1024 * 1024;
+    static constexpr size_t kMaxPerScanBytes = 4 * 1024 * 1024;
+    if (m_object_recovery_bytes_scanned >= kMaxTotalRecoveryBytes) {
+        return false;
+    }
 
     bool found = false;
     PreparedObject candidate;
+    size_t scan_budget = std::min(kMaxPerScanBytes,
+                                  kMaxTotalRecoveryBytes - m_object_recovery_bytes_scanned);
     auto scan_range = [&](size_t begin, size_t end) {
         end = std::min(end, obj_data_size);
+        size_t bytes_scanned = 0;
         for (size_t pos = begin; pos < end; ++pos) {
+            if (++bytes_scanned > scan_budget) break;
             PreparedObject current;
             if (!prepare_object_at_offset(obj_data, obj_data_size, is_r2010_plus,
                                           pos, current, true, true)) {
@@ -237,6 +248,7 @@ bool DwgParser::try_recover_object(uint64_t target_handle, size_t primary_offset
             candidate = current;
             found = true;
         }
+        m_object_recovery_bytes_scanned += bytes_scanned;
         return true;
     };
 

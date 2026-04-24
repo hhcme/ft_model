@@ -417,6 +417,7 @@ private:
     // Limits total recovery scans across all objects within a single
     // parse_objects() call.  Reset at the start of each call.
     size_t m_object_recovery_scans = 0;
+    size_t m_object_recovery_bytes_scanned = 0;
 };
 
 } // namespace cad
