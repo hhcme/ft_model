@@ -324,12 +324,16 @@ Result DwgParser::parse_objects(EntitySink& scene)
     prescan_table_objects(obj_data, obj_data_size, is_r2007_plus, is_r2010_plus,
                           scene, ctx.block_names_from_entities);
 
-    // Iterate in handle-sorted order so BLOCK/ENDBLK markers correctly
-    // bracket the entities that belong to each block definition.
-    // unordered_map iteration is hash-order which scrambles entity grouping.
+    // Iterate in handle-sorted order. BLOCK entities have lower handles
+    // than their corresponding ENDBLK, and entities within a block
+    // definition have handles between the BLOCK and ENDBLK handles.
+    // This ensures BLOCK/ENDBLK markers correctly bracket their entities.
     std::vector<std::pair<uint64_t, size_t>> sorted_handles(
         m_sections.handle_map.begin(), m_sections.handle_map.end());
-    std::sort(sorted_handles.begin(), sorted_handles.end());
+    std::sort(sorted_handles.begin(), sorted_handles.end(),
+              [](const auto& a, const auto& b) {
+                  return a.first < b.first;
+              });
     for (const auto& sorted_entry : sorted_handles) {
         uint64_t handle = sorted_entry.first;
         size_t offset = sorted_entry.second;
@@ -388,6 +392,20 @@ Result DwgParser::parse_objects(EntitySink& scene)
         const size_t entity_bits = record.entity_bits;
         const size_t main_data_bits = record.main_data_bits;
         const uint32_t obj_type = record.obj_type;
+
+        // Debug: show RL/framing for R2004 entities + first entity byte
+        static int rl_debug_count = 0;
+        if (dwg_debug_enabled() && m_version == DwgVersion::R2004 && rl_debug_count < 40 &&
+            is_graphic_entity(obj_type)) {
+            size_t hs_bits = (entity_bits > main_data_bits) ? (entity_bits - main_data_bits) : 0;
+            uint8_t first_byte = (entity_data_bytes > 0) ?
+                obj_data[offset + ms_bytes + umc_bytes] : 0;
+            dwg_debug_log("[DWG] rl_framing: handle=%llu type=%u offset=%zu ms=%zu entity_bytes=%zu entity_bits=%zu main_data_bits=%zu hs_bits=%zu first_byte=0x%02X\n",
+                          static_cast<unsigned long long>(handle), obj_type,
+                          offset, ms_bytes, entity_data_bytes, entity_bits,
+                          main_data_bits, hs_bits, first_byte);
+            rl_debug_count++;
+        }
         if (!record.handle_stream_valid) {
             ctx.invalid_handle_stream_framing++;
         }
@@ -663,10 +681,11 @@ Result DwgParser::parse_objects(EntitySink& scene)
             if (m_version >= DwgVersion::R2000) {
                 (void)reader.read_b();  // xref_loaded
             }
-            uint32_t num_owned = 0;
-            if (!blkisxref && !xrefoverlaid) {
-                num_owned = reader.read_bl();
-            }
+            // R2004 BLOCK_HEADER field layout after T(name):
+            //   BS(is_xref_resolved), BB anonymous/hasattrs, BB blkisxref/xrefoverlaid,
+            //   [B xref_loaded (R2000+)], [BL num_owned if !blkisxref && !xrefoverlaid]
+            // For R2004 the field boundaries can shift, so we skip the remaining
+            // main-data fields and read directly from the handle stream instead.
             (void)anonymous;
             (void)hasattrs;
 
@@ -674,7 +693,9 @@ Result DwgParser::parse_objects(EntitySink& scene)
                 m_sections.block_names[handle] = block_name;
             }
 
-            if (num_owned < 0x0f00000u) {
+            // Always read handles from the handle stream regardless of num_owned
+            // (num_owned may be misaligned for R2004).
+            {
                 size_t hs_bit_start = main_data_bits;
                 size_t hs_bit_end   = entity_bits;
                 size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
@@ -683,6 +704,7 @@ Result DwgParser::parse_objects(EntitySink& scene)
                     hreader.set_bit_offset(hs_bit_start);
                     hreader.set_bit_limit(hs_bit_end);
 
+                    // First handle in stream = BLOCK entity handle
                     auto block_entity_ref = hreader.read_h();
                     if (!hreader.has_error()) {
                         uint64_t block_entity_handle = resolve_handle_ref(handle, block_entity_ref);
@@ -691,8 +713,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
                         }
                     }
 
+                    // Remaining handles = entities owned by this block.
+                    // Read until stream exhausted (don't trust num_owned for R2004).
                     uint32_t collected = 0;
-                    for (uint32_t i = 0; i < num_owned && !hreader.has_error(); ++i) {
+                    for (int h_idx = 0; h_idx < 4096 && !hreader.has_error(); ++h_idx) {
                         auto entity_ref = hreader.read_h();
                         if (hreader.has_error()) break;
                         uint64_t entity_handle = resolve_handle_ref(handle, entity_ref);
@@ -701,12 +725,12 @@ Result DwgParser::parse_objects(EntitySink& scene)
                             collected++;
                         }
                     }
-                    if (dwg_debug_enabled() && (!block_name.empty() || collected > 0 || num_owned > 1000)) {
-                        dwg_debug_log("[DWG] block_header handle=%llu name='%s' owned=%u collected=%u\n",
+                    if (dwg_debug_enabled() && (!block_name.empty() || collected > 0)) {
+                        dwg_debug_log("[DWG] block_header handle=%llu name='%s' collected=%u hs_bits=%zu\n",
                                       static_cast<unsigned long long>(handle),
                                       block_name.c_str(),
-                                      num_owned,
-                                      collected);
+                                      collected,
+                                      hs_bits);
                     }
                 }
             }

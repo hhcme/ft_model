@@ -1118,8 +1118,16 @@ int main(int argc, char** argv) {
             auto& block = blocks[bi];
             const bool scaled_insert =
                 bi < block_has_scaled_insert.size() && block_has_scaled_insert[bi];
-            const bool merge_header_owned =
+            bool merge_header_owned =
                 should_merge_dwg_block_header_entities(block, entities, scaled_insert);
+            // When BLOCK/ENDBLK bracketing produced empty entity_indices,
+            // header_owned_entity_indices is the only source of block entities.
+            // Always merge in this case regardless of other merge conditions.
+            if (!merge_header_owned &&
+                block.entity_indices.empty() &&
+                block.header_owned_entity_indices.size() >= 1) {
+                merge_header_owned = true;
+            }
             block_should_direct[bi] =
                 should_render_dwg_block_direct(block, entities, scaled_insert);
 

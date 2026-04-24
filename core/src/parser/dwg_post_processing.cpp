@@ -189,11 +189,66 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                     static_cast<uint32_t>(existing_eidx));
             }
         }
+        // Debug: dump sample handles from both maps
+        if (dwg_debug_enabled()) {
+            size_t bh_sample = 0;
+            for (const auto& [eh, bh] : ctx.entity_handle_to_block_header) {
+                if (bh_sample++ >= 20) break;
+                dwg_debug_log("[DWG] bh_map_sample: entity_handle=%llu -> block_header=%llu\n",
+                              static_cast<unsigned long long>(eh),
+                              static_cast<unsigned long long>(bh));
+            }
+            size_t eo_sample = 0;
+            for (const auto& [eidx, eh] : ctx.entity_object_handles) {
+                if (eo_sample++ >= 10) break;
+                dwg_debug_log("[DWG] eo_map_sample: eidx=%zu entity_handle=%llu type=%d\n",
+                              eidx,
+                              static_cast<unsigned long long>(eh),
+                              static_cast<int>(all_entities[eidx].header.type));
+            }
+            // Dump entity_owner_handles for comparison
+            size_t owner_sample = 0;
+            for (const auto& [eidx, owner] : ctx.entity_owner_handles) {
+                if (owner_sample++ >= 10) break;
+                auto obj_it = ctx.entity_object_handles.find(eidx);
+                uint64_t ehandle = (obj_it != ctx.entity_object_handles.end()) ? obj_it->second : 0;
+                auto type_it = ctx.handle_object_types.find(owner);
+                uint32_t owner_type = (type_it != ctx.handle_object_types.end()) ? type_it->second : 0;
+                dwg_debug_log("[DWG] owner_map_sample: eidx=%zu ehandle=%llu owner=%llu owner_type=%u\n",
+                              eidx,
+                              static_cast<unsigned long long>(ehandle),
+                              static_cast<unsigned long long>(owner),
+                              owner_type);
+            }
+        }
+        // Debug: count overlap between bh_map and eo_map
+        if (dwg_debug_enabled()) {
+            std::unordered_set<uint64_t> eo_handles;
+            for (const auto& [eidx, eh] : ctx.entity_object_handles) {
+                eo_handles.insert(eh);
+            }
+            size_t overlap = 0;
+            for (const auto& [eh, bh] : ctx.entity_handle_to_block_header) {
+                if (eo_handles.count(eh)) overlap++;
+            }
+            dwg_debug_log("[DWG] bh_eo_overlap: bh_map=%zu eo_map=%zu overlap=%zu\n",
+                          ctx.entity_handle_to_block_header.size(),
+                          ctx.entity_object_handles.size(),
+                          overlap);
+        }
         for (const auto& [eidx, entity_handle] : ctx.entity_object_handles) {
             if (eidx >= all_entities.size()) continue;
             auto owner_it = ctx.entity_handle_to_block_header.find(entity_handle);
             if (owner_it == ctx.entity_handle_to_block_header.end()) continue;
-
+            static int attach_debug = 0;
+            if (dwg_debug_enabled() && attach_debug < 5) {
+                dwg_debug_log("[DWG] block_header_attach: eidx=%zu ehandle=%llu bh_handle=%llu name='%s'\n",
+                              eidx,
+                              static_cast<unsigned long long>(entity_handle),
+                              static_cast<unsigned long long>(owner_it->second),
+                              block_name_for_handle(owner_it->second).c_str());
+                attach_debug++;
+            }
             const uint64_t block_header_handle = owner_it->second;
             std::string name = block_name_for_handle(block_header_handle);
             std::string upper_name = name;
@@ -249,6 +304,12 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                         block.header_owned_entity_indices.push_back(static_cast<int32_t>(eidx));
                         block_header_entities_attached++;
                     }
+                } else {
+                    dwg_debug_log("[DWG] block_header_no_block: eidx=%zu ehandle=%llu bh_handle=%llu name='%s'\n",
+                                  eidx,
+                                  static_cast<unsigned long long>(entity_handle),
+                                  static_cast<unsigned long long>(block_header_handle),
+                                  name.c_str());
                 }
             }
         }

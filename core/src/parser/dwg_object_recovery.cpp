@@ -118,18 +118,6 @@ bool DwgParser::prepare_object_at_offset(const uint8_t* obj_data, size_t obj_dat
             framed_main_data_bits <= reader.bit_offset()) {
             return fail("invalid_object_end_bit");
         }
-        // R2004 handle stream heuristic: for most objects the handle stream
-        // contains at least owner handle (typically 16-40 bits). Streams
-        // smaller than 12 bits or larger than 256 bits are suspicious and
-        // likely indicate an interior object-map offset.
-        if (m_version == DwgVersion::R2004) {
-            size_t hs_bits = (entity_bits > framed_main_data_bits)
-                                 ? (entity_bits - framed_main_data_bits)
-                                 : 0;
-            if (hs_bits < 12 || hs_bits > 256) {
-                return fail("r2004_handle_stream_heuristic");
-            }
-        }
         reader.set_bit_limit(framed_main_data_bits);
     }
     if (reader.has_error() || (require_known_type && !is_known_object_type(obj_type))) {

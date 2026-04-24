@@ -27,6 +27,9 @@ bool DwgParser::process_block_endblk(
         m_block_entity_start = scene.entities().size();
         m_current_block_handle = handle;
         m_current_block_name = "__pending__";
+        dwg_debug_log("[DWG] BLOCK handle=%llu entities_before=%zu\n",
+                      static_cast<unsigned long long>(handle),
+                      m_block_entity_start);
         // First check pre-scan mapping (BLOCK_HEADER handle stream → name)
         auto bn_pre = ctx.block_names_from_entities.find(handle);
         if (bn_pre != ctx.block_names_from_entities.end() && !bn_pre->second.empty()) {
@@ -90,6 +93,13 @@ bool DwgParser::process_block_endblk(
         // Always mark entities as in_block — we know they're inside a block
         // definition regardless of whether the name was resolved.
         {
+            size_t entity_count = scene.entities().size() - m_block_entity_start;
+            dwg_debug_log("[DWG] ENDBLK name='%s' entities=%zu (start=%zu total=%zu) handle=%llu\n",
+                          m_current_block_name.c_str(),
+                          entity_count,
+                          m_block_entity_start,
+                          scene.entities().size(),
+                          static_cast<unsigned long long>(m_current_block_handle));
             Block block;
             block.name = m_current_block_name;
             block.base_point = m_current_block_base_point;
