@@ -738,6 +738,29 @@ def create_edge_cases_v2():
     return path
 
 
+def create_simple_r2000():
+    """R2000 format DXF with LINE/CIRCLE/ARC/TEXT/INSERT/BLOCK — version coverage."""
+    doc = ezdxf.new('R2000')
+    msp = doc.modelspace()
+
+    msp.add_line((0, 0), (100, 50))
+    msp.add_circle((50, 50), radius=25)
+    msp.add_arc((150, 50), radius=30, start_angle=0, end_angle=180)
+
+    text = msp.add_text('Hello R2000', height=5)
+    text.set_placement((10, 80))
+
+    block = doc.blocks.new('TEST_BLOCK')
+    block.add_line((0, 0), (20, 20))
+    block.add_circle((10, 10), radius=5)
+    msp.add_blockref('TEST_BLOCK', insert=(200, 50))
+
+    path = os.path.join(OUTPUT_DIR, 'simple_r2000.dxf')
+    doc.saveas(path)
+    print(f'  Created: {path}')
+    return path
+
+
 def create_stress_mixed():
     """50K entities including all types for stress testing."""
     doc = ezdxf.new('R2010')
@@ -876,6 +899,9 @@ def main():
     create_insert_test()
     create_text_test()
     create_edge_cases()
+
+    # Version coverage
+    create_simple_r2000()
 
     # Phase 2: new entity type coverage
     create_advanced_primitives()
