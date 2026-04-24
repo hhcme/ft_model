@@ -475,7 +475,14 @@ static int32_t parse_ltype_object(DwgBitReader& r, EntitySink& scene,
     Linetype lt;
     lt.name = name;
     lt.description = description;
-    if (!dash_lengths.empty()) {
+    // Filter out corrupt dash data: if any entry is inf/nan, the LTYPE
+    // fields are misaligned (common for R2007 when string stream is off).
+    // Treat as continuous (solid line).
+    bool corrupt = false;
+    for (auto d : dash_lengths) {
+        if (!std::isfinite(d)) { corrupt = true; break; }
+    }
+    if (!corrupt && !dash_lengths.empty()) {
         lt.pattern.dash_array = std::move(dash_lengths);
     }
 
