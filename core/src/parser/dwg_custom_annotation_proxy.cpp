@@ -433,6 +433,26 @@ void DwgParser::process_custom_annotation_proxy(
                 visual_leader_path.push_back(leader_start);
                 visual_leader_path.push_back(callout_target);
 
+                // If the leader is very short, the raw binary extraction likely
+                // missed the geometry-end point.  Extrapolate the leader to a
+                // minimum useful length so it reaches toward drawing geometry.
+                {
+                    const float vl_dx = callout_target.x - leader_start.x;
+                    const float vl_dy = callout_target.y - leader_start.y;
+                    const float vl_len = std::sqrt(vl_dx * vl_dx + vl_dy * vl_dy);
+                    constexpr float kMinVisualLeaderLen = 400.0f;
+                    if (std::isfinite(vl_len) && vl_len > 1.0f && vl_len < kMinVisualLeaderLen) {
+                        const float extension = kMinVisualLeaderLen - vl_len;
+                        const float nd_x = vl_dx / vl_len;
+                        const float nd_y = vl_dy / vl_len;
+                        Vec3 extended_target{
+                            callout_target.x + nd_x * extension,
+                            callout_target.y + nd_y * extension,
+                            0.0f};
+                        visual_leader_path.back() = extended_target;
+                    }
+                }
+
                 for (size_t pi = 1; pi < visual_leader_path.size(); ++pi) {
                     LineEntity leader;
                     leader.start = visual_leader_path[pi - 1];

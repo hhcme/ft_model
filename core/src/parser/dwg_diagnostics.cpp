@@ -418,7 +418,53 @@ std::vector<Vec3> unique_annotation_world_points(
         if (duplicate) continue;
 
         out.push_back(candidate);
-        if (out.size() >= limit) break;
+    }
+
+    // Statistical outlier removal via MAD (median absolute deviation).
+    // Raw binary scans extract garbage coordinates (e.g. internal field values
+    // that happen to be > 100) alongside genuine world coordinates.  MAD-based
+    // filtering is robust: a single cluster of real coordinates will survive
+    // while isolated outliers are removed.
+    if (out.size() >= 4) {
+        const size_t mid = out.size() / 2;
+
+        std::vector<float> xs, ys;
+        xs.reserve(out.size());
+        ys.reserve(out.size());
+        for (const Vec3& p : out) { xs.push_back(p.x); ys.push_back(p.y); }
+
+        std::nth_element(xs.begin(), xs.begin() + static_cast<std::ptrdiff_t>(mid), xs.end());
+        std::nth_element(ys.begin(), ys.begin() + static_cast<std::ptrdiff_t>(mid), ys.end());
+        const float med_x = xs[mid];
+        const float med_y = ys[mid];
+
+        std::vector<float> dev_x, dev_y;
+        dev_x.reserve(out.size());
+        dev_y.reserve(out.size());
+        for (const Vec3& p : out) {
+            dev_x.push_back(std::abs(p.x - med_x));
+            dev_y.push_back(std::abs(p.y - med_y));
+        }
+        std::nth_element(dev_x.begin(), dev_x.begin() + static_cast<std::ptrdiff_t>(mid), dev_x.end());
+        std::nth_element(dev_y.begin(), dev_y.begin() + static_cast<std::ptrdiff_t>(mid), dev_y.end());
+        const float mad_x = std::max(dev_x[mid], 1.0f);
+        const float mad_y = std::max(dev_y[mid], 1.0f);
+
+        std::vector<Vec3> filtered;
+        for (const Vec3& p : out) {
+            if (std::abs(p.x - med_x) / mad_x > 10.0f ||
+                std::abs(p.y - med_y) / mad_y > 10.0f) {
+                continue;
+            }
+            filtered.push_back(p);
+        }
+        if (filtered.size() >= 2) {
+            out = std::move(filtered);
+        }
+    }
+
+    if (out.size() > limit) {
+        out.resize(limit);
     }
     return out;
 }
@@ -431,32 +477,93 @@ std::vector<Vec3> select_annotation_leader_path(
     if (candidates.size() < 2) return path;
 
     const float med_nn = median_nearest_neighbor_distance(candidates);
-    const float max_segment = std::clamp(med_nn * 50.0f, 2000.0f, 50000.0f);
-    const float min_ref = std::clamp(med_nn * 0.5f, 5.0f, 200.0f);
-    const float max_step_mult = 2.5f;
-    const float min_step_fallback = std::clamp(med_nn * 5.0f, 50.0f, 1000.0f);
+    const float max_segment = std::clamp(med_nn * 80.0f, 500.0f, 100000.0f);
 
-    path.push_back(candidates[0]);
-    float reference_len = 0.0f;
-    for (size_t i = 1; i < candidates.size(); ++i) {
+    // Nearest-neighbor chaining: build a geometrically coherent path instead
+    // of relying on byte-offset order from the raw binary scan.
+    // Pick the endpoint with the fewest close neighbors as the start — this
+    // is typically the leader's "arrow" tip far from the callout cluster.
+    std::vector<bool> visited(candidates.size(), false);
+
+    // Find the point with the largest nearest-neighbor distance — likely a
+    // leader endpoint rather than a cluster center.
+    size_t start_idx = 0;
+    float max_nn_dist = 0.0f;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        float best = 1.0e9f;
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            if (i == j) continue;
+            const float dx = candidates[i].x - candidates[j].x;
+            const float dy = candidates[i].y - candidates[j].y;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < best) best = d;
+        }
+        if (best > max_nn_dist) {
+            max_nn_dist = best;
+            start_idx = i;
+        }
+    }
+
+    path.push_back(candidates[start_idx]);
+    visited[start_idx] = true;
+
+    for (size_t step = 1; step < candidates.size() && path.size() < 8; ++step) {
         const Vec3& prev = path.back();
-        const Vec3& next = candidates[i];
-        const float dx = next.x - prev.x;
-        const float dy = next.y - prev.y;
-        const float len = std::sqrt(dx * dx + dy * dy);
-        if (!std::isfinite(len) || len < 1.0f) continue;
-        if (len > max_segment) break;
+        float best_dist = 1.0e9f;
+        size_t best_idx = candidates.size();
 
-        if (reference_len <= 0.0f && len >= min_ref) {
-            reference_len = len;
-        }
-        const float max_step = std::max(reference_len * max_step_mult, min_step_fallback);
-        if (path.size() >= 2 && len > max_step) {
-            break;
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            if (visited[j]) continue;
+            const float dx = prev.x - candidates[j].x;
+            const float dy = prev.y - candidates[j].y;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < best_dist) {
+                best_dist = d;
+                best_idx = j;
+            }
         }
 
-        path.push_back(next);
-        if (path.size() >= 6) break;
+        if (best_idx >= candidates.size()) break;
+        if (!std::isfinite(best_dist) || best_dist < 1.0f) {
+            visited[best_idx] = true;
+            continue;
+        }
+        if (best_dist > max_segment) break;
+
+        visited[best_idx] = true;
+        path.push_back(candidates[best_idx]);
+    }
+
+    // If the path is very short (< 400 units total), the raw binary extraction
+    // likely missed the geometry-end point.  Extrapolate the leader in the
+    // dominant path direction to reach a minimum useful length.
+    if (path.size() >= 2) {
+        float total_len = 0.0f;
+        for (size_t i = 1; i < path.size(); ++i) {
+            const float dx = path[i].x - path[i-1].x;
+            const float dy = path[i].y - path[i-1].y;
+            total_len += std::sqrt(dx * dx + dy * dy);
+        }
+        constexpr float kMinLeaderLen = 400.0f;
+        if (total_len < kMinLeaderLen) {
+            // Compute dominant direction (first → last point)
+            const Vec3& p0 = path.front();
+            const Vec3& pN = path.back();
+            float dir_x = pN.x - p0.x;
+            float dir_y = pN.y - p0.y;
+            float dir_len = std::sqrt(dir_x * dir_x + dir_y * dir_y);
+            if (std::isfinite(dir_len) && dir_len > 1.0f) {
+                dir_x /= dir_len;
+                dir_y /= dir_len;
+                // Extend the last point outward
+                float extension = kMinLeaderLen - total_len;
+                Vec3 extended{
+                    pN.x + dir_x * extension,
+                    pN.y + dir_y * extension,
+                    0.0f};
+                path.push_back(extended);
+            }
+        }
     }
 
     if (path.size() < 2) path.clear();
