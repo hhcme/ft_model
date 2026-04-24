@@ -165,15 +165,8 @@ Result DwgParser::parse_header_variables(EntitySink& scene)
         "HEADER",
     });
 
-    if (dwg_debug_enabled()) {
-        for (const auto& p : points) {
-            dwg_debug_log("[DWG] header_vars point: offset=0x%zx x=%.6f y=%.6f\n",
-                          p.offset, p.x, p.y);
-        }
-        for (const auto& s : strings) {
-            dwg_debug_log("[DWG] header_vars string: %s\n", s.c_str());
-        }
-    }
+    (void)points;
+    (void)strings;
     return Result::success();
 }
 
@@ -204,15 +197,6 @@ Result DwgParser::parse_classes(EntitySink& scene)
     uint32_t max_num = 0;
     size_t class_string_start = 0;
     if (m_version >= DwgVersion::R2004) {
-        if (dwg_debug_enabled() && data_size >= 32) {
-            std::string hex_dump = "[DWG] classes_raw: ";
-            for (size_t i = 0; i < 32 && i < data_size; ++i) {
-                char buf[4];
-                std::snprintf(buf, sizeof(buf), "%02x ", data[i]);
-                hex_dump += buf;
-            }
-            dwg_debug_log("%s\n", hex_dump.c_str());
-        }
         uint32_t data_area_size = reader.read_rl();
         (void)data_area_size;
         uint32_t hsize = 0;
@@ -225,9 +209,6 @@ Result DwgParser::parse_classes(EntitySink& scene)
         (void)reader.read_raw_char();
         (void)reader.read_raw_char();
         (void)reader.read_b();
-        dwg_debug_log("[DWG] classes_header: data_size=%zu area=%u hsize=%u bits=%u max=%u pos=%zu ver=%d\n",
-                      data_size, data_area_size, hsize, bitsize, max_num, reader.bit_offset(),
-                      static_cast<int>(m_version));
         if (!reader.has_error() && bitsize > 0 && bitsize <= data_size * 8) {
             reader.set_bit_limit(bitsize);
             auto looks_like_class_string_start = [&](size_t start) -> bool {
@@ -287,10 +268,6 @@ Result DwgParser::parse_classes(EntitySink& scene)
             if (class_string_start != 0) {
                 class_data_limit = class_string_start;
             }
-            dwg_debug_log("[DWG] classes_string_stream: active=%u start=%zu limit=%zu err=%u\n",
-                          class_string_start != 0 ? 1u : 0u,
-                          class_string_start, class_data_limit,
-                          reader.has_error() ? 1u : 0u);
         }
     } else {
         max_num = reader.read_rl();
@@ -340,8 +317,6 @@ Result DwgParser::parse_classes(EntitySink& scene)
         if (reader.has_error() || class_strings.has_error()) break;
 
         m_sections.class_map[class_type] = {dxf_name, is_entity};
-        dwg_debug_log("[DWG] class type=%u dxf='%s' entity=%u\n",
-                      class_type, dxf_name.c_str(), is_entity ? 1u : 0u);
         (void)entry_start;
         (void)proxy_flags;
     }

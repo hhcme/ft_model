@@ -171,7 +171,6 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
     if (m_version == DwgVersion::R2007) {
         r = read_r2007_container(data, size, scene);
         if (!r) return r;
-
         r = parse_header_variables(scene);
         if (!r) return r;
 
@@ -225,7 +224,6 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
 
     r = read_section_page_map(data, size);
     if (!r) return r;
-
     r = read_section_info(data, size);
     if (!r) {
         // Fallback: try to discover sections by scanning page headers
@@ -235,7 +233,6 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
 
     r = read_sections(data, size);
     if (!r) return r;
-
     r = parse_header_variables(scene);
     if (!r) return r;
 
@@ -246,7 +243,6 @@ Result DwgParser::parse_buffer(const uint8_t* data, size_t size, SceneGraph& sce
 
     r = parse_object_map(data, size);
     if (!r) return r;
-
     r = parse_objects(scene);
     if (!r) return r;
 
@@ -323,7 +319,6 @@ Result DwgParser::parse_objects(EntitySink& scene)
     // Pre-scan LTYPE/LAYER/BLOCK_HEADER table objects before the main loop.
     prescan_table_objects(obj_data, obj_data_size, is_r2007_plus, is_r2010_plus,
                           scene, ctx.block_names_from_entities);
-
     // Iterate in handle-sorted order. BLOCK entities have lower handles
     // than their corresponding ENDBLK, and entities within a block
     // definition have handles between the BLOCK and ENDBLK handles.
@@ -367,13 +362,6 @@ Result DwgParser::parse_objects(EntitySink& scene)
                             const uint64_t self_abs = cand_ok
                                 ? resolve_handle_ref(handle, cand_record.self_handle)
                                 : 0;
-                            dwg_debug_log("[DWG]   candidate[%zu] offset=%zu ok=%u type=%u self=%llu reason=%s\n",
-                                          ci,
-                                          cand_offset,
-                                          cand_ok ? 1u : 0u,
-                                          cand_ok ? cand_record.obj_type : 0u,
-                                          static_cast<unsigned long long>(self_abs),
-                                          cand_reason ? cand_reason : "");
                         }
                     }
                 }
@@ -410,13 +398,6 @@ Result DwgParser::parse_objects(EntitySink& scene)
                 ctx.r2007_primary_self_recovered++;
                 ctx.recovered_object_offsets++;
             } else {
-                if (dwg_debug_enabled() && ctx.primary_self_handle_mismatches < 20) {
-                    dwg_debug_log("[DWG] object-map self mismatch: map_handle=%llu self=%llu offset=%zu type=%u\n",
-                                  static_cast<unsigned long long>(handle),
-                                  static_cast<unsigned long long>(primary_self_handle),
-                                  offset,
-                                  obj_type);
-                }
                 ctx.primary_self_handle_mismatches++;
                 continue;
             }
@@ -712,13 +693,8 @@ Result DwgParser::parse_objects(EntitySink& scene)
                             collected++;
                         }
                     }
-                    if (dwg_debug_enabled() && (!block_name.empty() || collected > 0)) {
-                        dwg_debug_log("[DWG] block_header handle=%llu name='%s' collected=%u hs_bits=%zu\n",
-                                      static_cast<unsigned long long>(handle),
-                                      block_name.c_str(),
-                                      collected,
-                                      hs_bits);
-                    }
+                    (void)block_name;
+                    (void)hs_bits;
                 }
             }
 

@@ -113,48 +113,13 @@ Result DwgParser::parse_object_map(const uint8_t* /*data*/, size_t /*size*/)
         off = section_data_end + 2;
     }
 
-    // TEMP: dump object_map to file for analysis
-    {
-        FILE* fmap = fopen("/tmp/dwg_object_map.bin", "wb");
-        if (fmap) {
-            fwrite(data, 1, data_size, fmap);
-            fclose(fmap);
-        }
-    }
     dwg_debug_log("[DWG] object_map: %llu entries unique=%zu (data_size=%zu, final_off=%zu)\n",
             (unsigned long long)total_objects,
             m_sections.handle_map.size(),
             data_size, off);
-    dwg_debug_log("[DWG] object_map offsets: in_object_data=%llu negative=%llu out_of_range=%llu object_data_size=%zu\n",
-                  static_cast<unsigned long long>(offsets_in_object_data_range),
-                  static_cast<unsigned long long>(offsets_negative),
-                  static_cast<unsigned long long>(offsets_out_of_object_data_range),
-                  m_sections.object_data.size());
-    if (dwg_debug_enabled()) {
-        size_t debug_off = 0;
-        size_t debug_count = 0;
-        while (debug_off + 2 <= data_size && debug_count < 20) {
-            uint16_t ss = (static_cast<uint16_t>(data[debug_off]) << 8) |
-                          static_cast<uint16_t>(data[debug_off + 1]);
-            debug_off += 2;
-            if (ss == 0 || ss > 2040) break;
-            size_t ss_end = debug_off - 2 + ss;
-            if (ss_end > data_size) break;
-            uint64_t ha = 0;
-            int64_t oa = 0;
-            while (debug_off < ss_end && debug_count < 20) {
-                uint32_t hd = read_modular_char(data, data_size, debug_off);
-                if (debug_off >= ss_end) break;
-                int32_t od = read_modular_char_signed(data, data_size, debug_off);
-                ha += hd;
-                oa += od;
-                dwg_debug_log("[DWG] object_map pair %zu: handle=%llu offset=%lld\n",
-                              debug_count, (unsigned long long)ha, (long long)oa);
-                debug_count++;
-            }
-            debug_off = ss_end + 2;
-        }
-    }
+    (void)offsets_in_object_data_range;
+    (void)offsets_negative;
+    (void)offsets_out_of_object_data_range;
     return Result::success();
 }
 
