@@ -1050,8 +1050,8 @@ int main(int argc, char** argv) {
         const size_t original_block_count = blocks.size();
         const RenderBounds raw_scene_bounds = bounds3d_to_render_bounds(scene.total_bounds());
         const float scene_extent = raw_scene_bounds.empty ? 5000.0f :
-            std::max(raw_scene_bounds.maxX - raw_scene_bounds.minX,
-                     raw_scene_bounds.maxY - raw_scene_bounds.minY);
+            std::max(raw_scene_bounds.max_x - raw_scene_bounds.min_x,
+                     raw_scene_bounds.max_y - raw_scene_bounds.min_y);
         std::vector<bool> block_has_scaled_insert(original_block_count, false);
         std::vector<int32_t> representative_scaled_insert(original_block_count, -1);
         std::vector<bool> block_should_direct(original_block_count, false);
