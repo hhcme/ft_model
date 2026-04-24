@@ -1,4 +1,5 @@
 #include "cad/cad_errors.h"
+#include "cad/parser/dwg_block_classification.h"
 #include "cad/parser/dwg_parser.h"
 #include "cad/parser/dxf_parser.h"
 #include "cad/renderer/camera.h"
@@ -59,58 +60,6 @@ bool is_dwg_path(const std::string& path) {
     return *ext == '.' && strcasecmp(ext, ".dwg") == 0;
 }
 
-std::string uppercase_ascii(std::string s) {
-    for (char& c : s) {
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    }
-    return s;
-}
-
-bool is_model_or_paper_space_block(const std::string& name) {
-    std::string upper = uppercase_ascii(name);
-    return upper == "*MODEL_SPACE" || upper == "*PAPER_SPACE";
-}
-
-bool valid_coord(float x, float y) {
-    return std::isfinite(x) && std::isfinite(y) &&
-           std::abs(x) <= 1.0e8f && std::abs(y) <= 1.0e8f;
-}
-
-bool should_render_dwg_block_direct(const Block& block,
-                                    const std::vector<EntityVariant>& entities) {
-    if (is_model_or_paper_space_block(block.name)) return true;
-
-    bool empty = true;
-    float min_x = 0.0f, min_y = 0.0f, max_x = 0.0f, max_y = 0.0f;
-    auto expand = [&](float x, float y) {
-        if (!valid_coord(x, y)) return;
-        if (empty) {
-            min_x = max_x = x;
-            min_y = max_y = y;
-            empty = false;
-            return;
-        }
-        min_x = std::min(min_x, x);
-        min_y = std::min(min_y, y);
-        max_x = std::max(max_x, x);
-        max_y = std::max(max_y, y);
-    };
-
-    for (int32_t idx : block.entity_indices) {
-        if (idx < 0 || static_cast<size_t>(idx) >= entities.size()) continue;
-        const auto& b = entities[static_cast<size_t>(idx)].bounds();
-        if (b.is_empty()) continue;
-        expand(b.min.x, b.min.y);
-        expand(b.max.x, b.max.y);
-    }
-    if (empty || block.entity_indices.empty()) return false;
-
-    const float cx = (min_x + max_x) * 0.5f;
-    const float cy = (min_y + max_y) * 0.5f;
-    const float centroid_dist = std::sqrt(cx * cx + cy * cy);
-    return block.entity_indices.size() > 50 && centroid_dist > 5000.0f;
-}
-
 size_t collect_text_count(const SceneGraph& scene) {
     size_t count = 0;
     for (const auto& entity : scene.entities()) {
@@ -165,7 +114,7 @@ Summary summarize_scene(SceneGraph& scene, bool is_dwg) {
         const auto& blocks = scene.blocks();
         for (size_t bi = 0; bi < blocks.size(); ++bi) {
             const auto& block = blocks[bi];
-            if (should_render_dwg_block_direct(block, entities)) {
+            if (block_classify::should_render_direct(block, entities, false)) {
                 direct_block_indices.insert(static_cast<int32_t>(bi));
                 for (int32_t ei : block.entity_indices) {
                     if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
@@ -383,15 +332,15 @@ int main() {
          .min_entities = 49000,
          .min_batches = 5,
          .min_vertices = 200000,
-         .optional = true,
-         .expect_bounds_empty = false},
+         .expect_bounds_empty = false,
+         .optional = true},
         {.path = "test_data/simple_r2000.dxf",
          .min_entities = 7, .max_entities = 7,
          .min_batches = 2, .max_batches = 4,
          .min_vertices = 100,
          .min_texts = 1, .max_texts = 1,
          .expect_bounds_empty = false},
-        // === DWG: real-world fixtures ===
+        // === DWG: real-world fixtures (R2010) ===
         {.path = "test_dwg/big.dwg",
          .min_entities = 95000,
          .min_batches = 50,
@@ -400,6 +349,7 @@ int main() {
          .expect_bounds_empty = false,
          .optional = true,
          .expected_diagnostics = {"dwg_classes_partial_fallback"}},
+        // === DWG: R2013 ===
         {.path = "test_dwg/Drawing2.dwg",
          .min_entities = 15000,
          .min_batches = 5,
@@ -410,6 +360,7 @@ int main() {
          .expect_bounds_empty = false,
          .optional = true,
          .expected_diagnostics = {"dwg_classes_partial_fallback"}},
+        // === DWG: R2007 ===
         {.path = "test_dwg/zj-02-00-1.dwg",
          .min_entities = 400, .max_entities = 600,
          .min_batches = 10, .max_batches = 30,
@@ -417,12 +368,26 @@ int main() {
          .expect_bounds_empty = false,
          .optional = true,
          .expected_diagnostics = {"dwg_r2007_container_decoded"}},
+        // === DWG: R2004 fixtures — multiple files to validate version family ===
         {.path = "test_dwg/新块.dwg",
          .min_entities = 1000,
          .min_batches = 10,
          .min_vertices = 2000,
          .expect_bounds_empty = false,
          .optional = true},
+        {.path = "test_dwg/好世凤凰城74号302（陈先生）.dwg",
+         .min_entities = 5000,
+         .min_batches = 50,
+         .min_vertices = 4000,
+         .expect_bounds_empty = false,
+         .optional = true},
+        {.path = "test_dwg/平立剖，分析图_t3.dwg",
+         .min_entities = 15000,
+         .min_batches = 100,
+         .min_vertices = 10000,
+         .expect_bounds_empty = false,
+         .optional = true},
+        // === DWG: R2018 fixtures ===
         {.path = "test_dwg/2026040913_69d73f952f59f.dwg",
          .min_entities = 8000,
          .min_batches = 10,
@@ -432,6 +397,12 @@ int main() {
          .expect_bounds_empty = false,
          .optional = true,
          .expected_diagnostics = {"dwg_classes_partial_fallback"}},
+        {.path = "test_dwg/泰国网格屏施工图.dwg",
+         .min_entities = 300000,
+         .min_batches = 50,
+         .min_vertices = 7000000,
+         .expect_bounds_empty = false,
+         .optional = true},
     };
 
     bool ok = true;
