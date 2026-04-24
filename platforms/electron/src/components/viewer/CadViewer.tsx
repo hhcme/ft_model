@@ -30,7 +30,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
   useEffect(() => {
     if (!drawData.layers) return;
     const m = new Map<string, boolean>();
-    for (const l of drawData.layers) m.set(l.name, !l.frozen && !l.off && l.plotEnabled !== false);
+    for (const l of drawData.layers) m.set(l.name, !l.frozen && !l.off);
     setLayerVisible(m);
   }, [drawData]);
 
