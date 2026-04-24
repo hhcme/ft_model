@@ -387,6 +387,7 @@ function AppInner() {
           referenceMeta={compareResult.referenceMeta}
           fileName={activeFileName || loader.fileName}
           onOpenFile={(f) => handleFile(f, 'compare')}
+          onReparse={handleReparse}
         />
       )}
     </div>

@@ -4,7 +4,7 @@ import type { CompareResult, DrawData, Viewport } from '../../app/types';
 import CadCanvas from './CadCanvas';
 import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
 import { Alert, Button, Space, Badge, Tag, Tooltip } from 'antd';
-import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined } from '@ant-design/icons';
+import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined, SyncOutlined } from '@ant-design/icons';
 
 interface Props {
   ours: DrawData | null;
@@ -19,6 +19,7 @@ interface Props {
   referenceMeta?: CompareResult['referenceMeta'];
   fileName: string;
   onOpenFile: (file: File) => void;
+  onReparse?: () => void;
 }
 
 function statusColor(status?: string): string {
@@ -70,7 +71,7 @@ function fitReferenceImage(imageWidth: number, imageHeight: number, paneWidth: n
 }
 
 export default function CompareViewer({
-  ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile,
+  ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile, onReparse,
 }: Props) {
   const [layerVisible, setLayerVisible] = useState<Map<string, boolean>>(new Map());
   const [hideBubble, setHideBubble] = useState(false);
@@ -284,6 +285,18 @@ export default function CompareViewer({
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'row', background: '#121223' }}>
+      {onReparse && (
+        <div style={{
+          position: 'absolute', bottom: 12, left: 12, zIndex: 20,
+          background: 'rgba(0,0,0,0.45)', padding: '4px 8px', borderRadius: 6,
+          display: 'flex', gap: 8, alignItems: 'center',
+        }}>
+          <Tooltip title="重新解析">
+            <Button type="text" icon={<SyncOutlined />} size="small" onClick={onReparse}
+              style={{ color: 'rgba(255,255,255,0.72)' }} />
+          </Tooltip>
+        </div>
+      )}
       {!hideBubble && <div style={{
         position: 'absolute',
         top: 12,
