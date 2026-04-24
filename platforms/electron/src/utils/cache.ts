@@ -4,7 +4,7 @@ const DB_NAME = 'cad-preview-cache';
 const STORE = 'drawings';
 const RECENT_KEY = 'cad-recent-files';
 const LAST_KEY = 'cad-last-file';
-const CACHE_SCHEMA_VERSION = 'dwg-fidelity-0.8.10';
+const CACHE_SCHEMA_VERSION = 'dwg-fidelity-0.8.11';
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
