@@ -774,16 +774,19 @@ Result DwgParser::parse_objects(EntitySink& scene)
 
         // ---- Dispatch to entity-specific parser ----
         size_t entities_before = scene.entities().size();
+        size_t entity_reader_end_offset = 0;
         {
             DwgBitReader entity_reader = make_reader();
             parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version);
+            entity_reader_end_offset = entity_reader.bit_offset();
         }
 
         // ---- Role-based handle stream decoding ----
         decode_role_handles(ctx, obj_type, handle, scene,
                              obj_data, obj_data_size, offset, entity_data_bytes,
                              ms_bytes, umc_bytes, main_data_bits, entity_bits,
-                             entities_before, saved_num_reactors, saved_is_xdic_missing);
+                             entities_before, saved_num_reactors, saved_is_xdic_missing,
+                             entity_reader_end_offset);
 
         ctx.graphic_count++;
     }

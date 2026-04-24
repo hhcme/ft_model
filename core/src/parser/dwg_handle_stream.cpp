@@ -25,7 +25,8 @@ void DwgParser::decode_role_handles(
     size_t main_data_bits, size_t entity_bits,
     size_t entities_before,
     uint32_t saved_num_reactors,
-    bool saved_is_xdic_missing)
+    bool saved_is_xdic_missing,
+    size_t entity_data_end_offset)
 {
     if (scene.entities().size() <= entities_before) return;
 
@@ -60,6 +61,14 @@ void DwgParser::decode_role_handles(
     const size_t hs_bit_start = main_data_bits;
     const size_t hs_bit_end   = entity_bits;
     const size_t hs_bits      = (hs_bit_end > hs_bit_start) ? (hs_bit_end - hs_bit_start) : 0;
+
+    // R2000 inline handle path: handles are embedded after entity-specific data.
+    // entity_data_end_offset is the reader position after entity-specific parsing.
+    const bool use_r2000_inline = (hs_bits < 8) &&
+        (entity_data_end_offset > 0) &&
+        (entity_data_end_offset + 8 <= entity_bits) &&
+        (m_version == DwgVersion::R2000);
+
     if (hs_bits >= 8 && (hs_bit_end + 7) / 8 <= entity_data_bytes) {
         DwgBitReader hreader(entity_ptr, entity_data_bytes);
         hreader.set_bit_offset(hs_bit_start);
@@ -82,7 +91,7 @@ void DwgParser::decode_role_handles(
             roles.layer = read_abs_handle(hreader);
         }
 
-        // Debug: dump handle stream for first few entities
+        // Entity-specific handles
         for (int h_idx = 0; h_idx < 30 && !hreader.has_error(); ++h_idx) {
             uint64_t abs_handle = read_abs_handle(hreader);
             if (abs_handle == 0) {
@@ -92,6 +101,36 @@ void DwgParser::decode_role_handles(
         }
         roles.ok = !hreader.has_error();
 
+    } else if (use_r2000_inline) {
+        // R2000: handles are inline in entity data, after entity-specific fields.
+        DwgBitReader hreader(entity_ptr, entity_data_bytes);
+        hreader.set_bit_offset(entity_data_end_offset);
+        hreader.set_bit_limit(entity_bits);
+
+        roles.owner = read_abs_handle(hreader);
+        const uint32_t reactor_limit = std::min<uint32_t>(saved_num_reactors, 1024u);
+        roles.reactors.reserve(reactor_limit);
+        for (uint32_t ri = 0; ri < reactor_limit && !hreader.has_error(); ++ri) {
+            uint64_t reactor_handle = read_abs_handle(hreader);
+            if (reactor_handle != 0) {
+                roles.reactors.push_back(reactor_handle);
+            }
+        }
+        if (!saved_is_xdic_missing && !hreader.has_error()) {
+            roles.extension_dictionary = read_abs_handle(hreader);
+        }
+        if (!hreader.has_error()) {
+            roles.layer = read_abs_handle(hreader);
+        }
+
+        for (int h_idx = 0; h_idx < 30 && !hreader.has_error(); ++h_idx) {
+            uint64_t abs_handle = read_abs_handle(hreader);
+            if (abs_handle == 0) {
+                break;
+            }
+            roles.entity_specific.push_back(abs_handle);
+        }
+        roles.ok = !hreader.has_error();
     }
 
     for (size_t eidx = entities_before; eidx < scene.entities().size(); ++eidx) {

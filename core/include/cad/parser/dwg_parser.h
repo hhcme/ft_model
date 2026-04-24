@@ -253,7 +253,8 @@ private:
                               size_t main_data_bits, size_t entity_bits,
                               size_t entities_before,
                               uint32_t saved_num_reactors,
-                              bool saved_is_xdic_missing);
+                              bool saved_is_xdic_missing,
+                              size_t entity_data_end_offset = 0);
 
     // Detect custom annotation/detail objects and emit proxy geometry.
     void process_custom_annotation_proxy(ParseObjectsContext& ctx,
