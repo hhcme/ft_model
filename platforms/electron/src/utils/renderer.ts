@@ -52,8 +52,8 @@ export function renderGrid(ctx: Ctx, vp: Viewport, theme: 'dark' | 'light' = 'da
 }
 
 function boostColor(r: number, g: number, b: number): [number, number, number] {
-  if ((r + g + b) / 3 < 30) {
-    return [Math.max(r, 60), Math.max(g, 60), Math.max(b, 60)];
+  if ((r + g + b) / 3 < 25) {
+    return [Math.max(r, 50), Math.max(g, 50), Math.max(b, 50)];
   }
   return [r, g, b];
 }
@@ -159,7 +159,7 @@ function isArtifactSegment(
   const diag = Math.hypot(w, h);
   if (!Number.isFinite(diag) || diag <= 0) return false;
 
-  const padded = expandBounds(presentationBounds, 0.12);
+  const padded = expandBounds(presentationBounds, 0.20);
   const intersectsPresentation = segmentIntersectsBounds(x0, y0, x1, y1, padded);
 
   const len = Math.hypot(x1 - x0, y1 - y0);
@@ -168,9 +168,9 @@ function isArtifactSegment(
   const inside1 = pointInBounds(x1, y1, padded);
   if (inside0 && inside1) return false;
   if (!intersectsPresentation) {
-    // Match the export-side filter: nearby off-window geometry may be valid
-    // content reached by panning or by enabling all layers, while long isolated
-    // segments are usually decoded flying-line artifacts.
+    // Short segments near the border are legitimate edge geometry.
+    if (len < diag * 0.05) return false;
+    // Long isolated segments are usually decoded flying-line artifacts.
     return len > diag * 0.05;
   }
 
@@ -179,7 +179,7 @@ function isArtifactSegment(
   // Filter if the segment is much longer than the drawing diagonal.
   if (len > diag * 1.0) return true;
   if (len > diag * 0.5) {
-    const farPad = expandBounds(presentationBounds, 0.4);
+    const farPad = expandBounds(presentationBounds, 0.60);
     return !pointInBounds(x0, y0, farPad) || !pointInBounds(x1, y1, farPad);
   }
   return false;

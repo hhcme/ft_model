@@ -18,7 +18,8 @@ Bounds3d bounds_for_indices(
 bool should_render_direct(
     const Block& block,
     const std::vector<EntityVariant>& entities,
-    bool has_scaled_insert);
+    bool has_scaled_insert,
+    float scene_extent = 5000.0f);
 
 bool should_merge_header_entities(
     const Block& block,

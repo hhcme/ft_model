@@ -45,7 +45,8 @@ static float bounds_major_extent(const Bounds3d& b) {
 bool should_render_direct(
     const Block& block,
     const std::vector<EntityVariant>& entities,
-    bool has_scaled_insert) {
+    bool has_scaled_insert,
+    float scene_extent) {
     if (is_model_or_paper_space(block.name)) return true;
 
     const Bounds3d bounds = bounds_for_indices(entities, block.entity_indices);
@@ -56,19 +57,18 @@ bool should_render_direct(
     const float cy = (bounds.min.y + bounds.max.y) * 0.5f;
     const float centroid_dist = std::sqrt(cx * cx + cy * cy);
 
+    const float threshold = std::max(5000.0f, scene_extent * 0.4f);
+
     // Large world-space blocks: geometry is in absolute coordinates,
     // rendering through INSERT with transforms produces wrong results.
-    if (centroid_dist > 5000.0f && block.entity_indices.size() > 50) {
+    if (centroid_dist > threshold && block.entity_indices.size() > 50) {
         return true;
     }
     // Non-anonymous blocks with world-space geometry and significant extent.
-    // These blocks contain entities parsed at absolute coordinates (e.g. R2004
-    // blocks populated via header-owned entity resolution).  Expanding through
-    // INSERT would apply a redundant transform to absolute coordinates.
-    if (!block.is_anonymous && centroid_dist > 5000.0f && major > 1000.0f) {
+    if (!block.is_anonymous && centroid_dist > threshold && major > 1000.0f) {
         return true;
     }
-    if (!block.is_anonymous && has_scaled_insert && centroid_dist > 5000.0f) {
+    if (!block.is_anonymous && has_scaled_insert && centroid_dist > threshold) {
         return true;
     }
     return !block.is_anonymous &&

@@ -175,6 +175,18 @@ std::string DwgBitReader::read_t()
         return read_tu();
     }
     if (m_is_r2007_plus) {
+        // Fallback: some R2007+ entities may have TV-encoded text in the
+        // main stream when the string stream setup failed or is not
+        // applicable for this object type.  Attempt read_tv() with
+        // state-restore on failure.
+        if (remaining_bits() >= 32) {
+            size_t saved_pos = m_bit_pos;
+            bool saved_error = m_error;
+            std::string result = read_tv();
+            if (!m_error && !result.empty()) return result;
+            m_bit_pos = saved_pos;
+            m_error = saved_error;
+        }
         return {};
     }
     return read_tv();

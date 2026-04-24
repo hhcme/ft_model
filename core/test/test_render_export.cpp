@@ -837,8 +837,9 @@ static std::vector<int32_t> local_entities_for_scaled_dwg_insert(
 static bool should_render_dwg_block_direct(
     const Block& block,
     const std::vector<EntityVariant>& entities,
-    bool has_scaled_insert) {
-    return block_classify::should_render_direct(block, entities, has_scaled_insert);
+    bool has_scaled_insert,
+    float scene_extent = 5000.0f) {
+    return block_classify::should_render_direct(block, entities, has_scaled_insert, scene_extent);
 }
 
 static bool should_merge_dwg_block_header_entities(
@@ -1048,6 +1049,9 @@ int main(int argc, char** argv) {
         auto& blocks = scene.blocks();
         const size_t original_block_count = blocks.size();
         const RenderBounds raw_scene_bounds = bounds3d_to_render_bounds(scene.total_bounds());
+        const float scene_extent = raw_scene_bounds.empty ? 5000.0f :
+            std::max(raw_scene_bounds.maxX - raw_scene_bounds.minX,
+                     raw_scene_bounds.maxY - raw_scene_bounds.minY);
         std::vector<bool> block_has_scaled_insert(original_block_count, false);
         std::vector<int32_t> representative_scaled_insert(original_block_count, -1);
         std::vector<bool> block_should_direct(original_block_count, false);
@@ -1105,7 +1109,7 @@ int main(int argc, char** argv) {
                 }
             }
             block_should_direct[bi] =
-                should_render_dwg_block_direct(block, entities, scaled_insert);
+                should_render_dwg_block_direct(block, entities, scaled_insert, scene_extent);
 
             if (block_should_direct[bi] && scaled_insert &&
                 representative_scaled_insert[bi] >= 0 &&
@@ -2195,8 +2199,14 @@ int main(int argc, char** argv) {
         // the DWG layout viewport and owner graph are complete. Do not use a
         // metadata-only sheet as the active export window, or model-space
         // content is incorrectly clipped to paper millimetres.
-        if (active_layout_visible_entities < 25 &&
-            active_layout_viewport_entities == 0) {
+        const bool has_valid_paper_bounds = active_layout &&
+            !active_layout->paper_bounds.is_empty() &&
+            (active_layout->paper_bounds.max.x - active_layout->paper_bounds.min.x) > 1.0f;
+        const float relative_threshold = std::max(5.0f,
+            static_cast<float>(scene.entities().size()) * 0.001f);
+        if (active_layout_visible_entities < static_cast<size_t>(relative_threshold) &&
+            active_layout_viewport_entities == 0 &&
+            !has_valid_paper_bounds) {
             rejected_metadata_only_layout = true;
             active_layout = nullptr;
             active_layout_index = -1;

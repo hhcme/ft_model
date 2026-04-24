@@ -555,6 +555,11 @@ Result DwgParser::parse_objects(EntitySink& scene)
             } else {
                 color_index = reader.read_bs();
             }
+            // R2004-R2007 ENC may produce color_index > 255 from the 9-bit
+            // field; clamp to BYLAYER since from_aci() only handles 1-255.
+            if (!entity_hdr.has_true_color && color_index > 255) {
+                color_index = 256;
+            }
             entity_hdr.color_override = (color_index != 256 && color_index != 0)
                                         ? static_cast<int32_t>(color_index) : 256;
 

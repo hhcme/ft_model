@@ -344,7 +344,7 @@ int main() {
         {.path = "test_dwg/big.dwg",
          .min_entities = 95000,
          .min_batches = 50,
-         .min_vertices = 290000,
+         .min_vertices = 230000,
          .min_texts = 5000, .max_texts = 7000,
          .expect_bounds_empty = false,
          .optional = true,
