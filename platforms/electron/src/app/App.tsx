@@ -321,25 +321,53 @@ function AppInner() {
   const handleReparse = useCallback(async () => {
     const key = getLastCacheKey();
     if (!key) return;
-    setPhase('parsing');
+    const isCompare = phase === 'compare';
+    if (isCompare) {
+      setCompareResult((prev) => prev ? {
+        ...prev,
+        loading: { ...(prev.loading ?? {}), ours: true },
+      } : prev);
+    } else {
+      setPhase('parsing');
+    }
     try {
       const data = await loader.reparse(key);
       setDrawData(data);
-      setPhase('viewer');
-      refreshRecent();
-      message.success(`重新解析完成 — ${data.entityCount} entities`);
-    } catch (err: any) {
-      if (err.message === 'NO_FILE') {
-        setPhase('viewer');
-        message.warning('原始文件缓存不存在，请重新选择文件');
-      } else if (err.name === 'AbortError') {
-        setPhase('viewer');
+      if (isCompare) {
+        setCompareResult((prev) => prev ? {
+          ...prev,
+          ours: data,
+          ourError: null,
+          loading: { ...(prev.loading ?? {}), ours: false },
+          refInfo: {
+            ...(prev.refInfo ?? {}),
+            ourEntityCount: data.entityCount ?? 0,
+          },
+        } : prev);
+        message.success(`重新解析完成 — ${data.entityCount} 实体`);
       } else {
         setPhase('viewer');
+        message.success(`重新解析完成 — ${data.entityCount} 实体`);
+      }
+      refreshRecent();
+    } catch (err: any) {
+      if (err.message === 'NO_FILE') {
+        if (!isCompare) setPhase('viewer');
+        message.warning('原始文件缓存不存在，请重新选择文件');
+      } else if (err.name === 'AbortError') {
+        if (!isCompare) setPhase('viewer');
+      } else {
+        if (!isCompare) setPhase('viewer');
         message.error(err.message || '重新解析失败');
       }
+      if (isCompare) {
+        setCompareResult((prev) => prev ? {
+          ...prev,
+          loading: { ...(prev.loading ?? {}), ours: false },
+        } : prev);
+      }
     }
-  }, [loader, message, refreshRecent]);
+  }, [loader, message, refreshRecent, phase]);
 
   const handleCancel = useCallback(() => {
     referenceAbortRef.current?.abort();

@@ -4,7 +4,7 @@ import type { CompareResult, DrawData, Viewport } from '../../app/types';
 import CadCanvas from './CadCanvas';
 import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
 import { Alert, Button, Space, Badge, Tag, Tooltip } from 'antd';
-import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined, SyncOutlined } from '@ant-design/icons';
+import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined, SyncOutlined, FolderOpenOutlined } from '@ant-design/icons';
 
 interface Props {
   ours: DrawData | null;
@@ -287,14 +287,20 @@ export default function CompareViewer({
     <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'row', background: '#121223' }}>
       {onReparse && (
         <div style={{
-          position: 'absolute', bottom: 12, left: 12, zIndex: 20,
-          background: 'rgba(0,0,0,0.45)', padding: '4px 8px', borderRadius: 6,
-          display: 'flex', gap: 8, alignItems: 'center',
+          position: 'absolute', top: 12, left: 12, zIndex: 20,
+          display: 'flex', gap: 6, alignItems: 'center',
         }}>
-          <Tooltip title="重新解析">
-            <Button type="text" icon={<SyncOutlined />} size="small" onClick={onReparse}
-              style={{ color: 'rgba(255,255,255,0.72)' }} />
-          </Tooltip>
+          <Button size="small" icon={<FolderOpenOutlined />} onClick={() => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.dwg,.dxf';
+            input.onchange = (e) => {
+              const f = (e.target as HTMLInputElement).files?.[0];
+              if (f) onOpenFile(f);
+            };
+            input.click();
+          }}>打开文件</Button>
+          <Button size="small" icon={<SyncOutlined />} onClick={onReparse}>重新解析</Button>
         </div>
       )}
       {!hideBubble && <div style={{
@@ -312,18 +318,18 @@ export default function CompareViewer({
         padding: '6px 10px',
         boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
       }}>
-        <Tag color={statusColor(entityCompare?.status)}>Entity {entityCompare?.status || '—'}</Tag>
+        <Tag color={statusColor(entityCompare?.status)}>实体 {entityCompare?.status || '—'}</Tag>
         <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
-          ours {fmtNum(entityCompare?.ourEntityCount ?? refInfo.ourEntityCount ?? ours?.entityCount)}
-          {' / ref '}
+          自研 {fmtNum(entityCompare?.ourEntityCount ?? refInfo.ourEntityCount ?? ours?.entityCount)}
+          {' / 参考 '}
           {fmtNum(entityCompare?.refEntityCount ?? refInfo.refEntityCount ?? refInfo.entityCount)}
         </span>
         <span style={{ color: 'rgba(255,255,255,0.36)' }}>|</span>
         <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
-          missing {fmtNum(entityCompare?.missing ?? refInfo.missing)} · extra {fmtNum(entityCompare?.extra ?? refInfo.extra)}
+          缺失 {fmtNum(entityCompare?.missing ?? refInfo.missing)} · 多余 {fmtNum(entityCompare?.extra ?? refInfo.extra)}
         </span>
-        <Tag color={statusColor(visualCompare?.status)}>Visual {visualCompare?.status || '—'}</Tag>
-        <Tooltip title={`Diff pixels: ${fmtPct(visualCompare?.diffPct !== undefined ? visualCompare.diffPct / 100 : undefined)}`}>
+        <Tag color={statusColor(visualCompare?.status)}>视觉 {visualCompare?.status || '—'}</Tag>
+        <Tooltip title={`差异像素: ${fmtPct(visualCompare?.diffPct !== undefined ? visualCompare.diffPct / 100 : undefined)}`}>
           <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
             SSIM {visualCompare?.ssim !== undefined ? visualCompare.ssim.toFixed(3) : '—'}
           </span>
@@ -377,28 +383,18 @@ export default function CompareViewer({
               )}
             </div>
           )}
-          {/* Mini toolbar */}
-          <div style={{ position: 'absolute', top: 12, left: 12, zIndex: 10 }}>
+          {/* Mini toolbar — only fit button (open/reparse are in the global toolbar) */}
+          <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10 }}>
             <Space>
-              <Badge count="ours" style={{ backgroundColor: '#00ff88', color: '#000' }} />
-              {ours && <Button size="small" icon={<EyeOutlined />} onClick={handleFit}>Fit</Button>}
-              <Button size="small" icon={<UploadOutlined />} onClick={() => {
-                const input = document.createElement('input');
-                input.type = 'file';
-                input.accept = '.dwg,.dxf';
-                input.onchange = (e) => {
-                  const f = (e.target as HTMLInputElement).files?.[0];
-                  if (f) onOpenFile(f);
-                };
-                input.click();
-              }}>Open</Button>
+              <Badge count="自研" style={{ backgroundColor: '#00ff88', color: '#000' }} />
+              {ours && <Button size="small" icon={<EyeOutlined />} onClick={handleFit}>适应</Button>}
             </Space>
           </div>
           {/* File info */}
           <div style={{ position: 'absolute', bottom: 8, left: 12, zIndex: 10 }}>
             <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
               {fileName}
-              {ours ? ` — ${ours.entityCount} entities — ${refInfo.ourRenderTimeMs}ms` : ` — ${refInfo.ourRenderTimeMs}ms`}
+              {ours ? ` — ${ours.entityCount} 实体 — ${refInfo.ourRenderTimeMs}ms` : ` — ${refInfo.ourRenderTimeMs}ms`}
             </span>
           </div>
         </div>
@@ -485,7 +481,7 @@ export default function CompareViewer({
           {/* Reference badge */}
           <div style={{ position: 'absolute', top: 12, left: 12, zIndex: 10 }}>
             <Space>
-              <Badge count={referenceProvider} style={{ backgroundColor: '#ff6b6b', color: '#fff' }} />
+              <Badge count="参考" style={{ backgroundColor: '#ff6b6b', color: '#fff' }} />
               {refPng && (
                 <Button
                   size="small"
@@ -493,18 +489,18 @@ export default function CompareViewer({
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); resetReferenceFit(); }}
                 >
-                  Fit
+                  适应
                 </Button>
               )}
               <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
-                参考渲染{referenceMeta?.cacheHit ? ' · cache' : ''} · {referenceRenderer}
+                参考渲染{referenceMeta?.cacheHit ? ' · 缓存' : ''} · {referenceRenderer}
               </span>
             </Space>
           </div>
           {/* Ref info */}
           <div style={{ position: 'absolute', bottom: 8, left: 12, zIndex: 10 }}>
             <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-              {refPng ? `${fmtNum(refInfo.refEntityCount ?? refInfo.entityCount)} ref entities — ${refInfo.renderTimeMs}ms` : `${refInfo.renderTimeMs}ms`}
+              {refPng ? `${fmtNum(refInfo.refEntityCount ?? refInfo.entityCount)} 参考实体 — ${refInfo.renderTimeMs}ms` : `${refInfo.renderTimeMs}ms`}
             </span>
           </div>
         </div>
