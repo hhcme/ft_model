@@ -4,7 +4,7 @@ import type { CompareResult, DrawData, Viewport } from '../../app/types';
 import CadCanvas from './CadCanvas';
 import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
 import { Alert, Button, Space, Badge, Tag, Tooltip } from 'antd';
-import { EyeOutlined, UploadOutlined, WarningOutlined } from '@ant-design/icons';
+import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined } from '@ant-design/icons';
 
 interface Props {
   ours: DrawData | null;
@@ -73,6 +73,7 @@ export default function CompareViewer({
   ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile,
 }: Props) {
   const [layerVisible, setLayerVisible] = useState<Map<string, boolean>>(new Map());
+  const [hideBubble, setHideBubble] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({
     centerX: 0, centerY: 0, zoom: 1,
     canvasWidth: 0, canvasHeight: 0, dpr: 1,
@@ -283,7 +284,7 @@ export default function CompareViewer({
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'row', background: '#121223' }}>
-      <div style={{
+      {!hideBubble && <div style={{
         position: 'absolute',
         top: 12,
         left: '50%',
@@ -314,7 +315,8 @@ export default function CompareViewer({
             SSIM {visualCompare?.ssim !== undefined ? visualCompare.ssim.toFixed(3) : '—'}
           </span>
         </Tooltip>
-      </div>
+        <CloseOutlined onClick={() => setHideBubble(true)} style={{ color: 'rgba(255,255,255,0.45)', cursor: 'pointer', marginLeft: 4 }} />
+      </div>}
       {(errors?.entityCompare || errors?.visualCompare) && (
         <div style={{ position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)', zIndex: 30, width: 'min(720px, 80vw)' }}>
           <Alert
