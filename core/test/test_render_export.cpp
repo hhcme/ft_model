@@ -1477,7 +1477,7 @@ int main(int argc, char** argv) {
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
     if (is_dwg) {
-        batcher.set_tessellation_quality(4.0f);
+        batcher.set_tessellation_quality(8.0f);
     }
     batcher.begin_frame(camera);
     const char* outlier_env = std::getenv("FT_DWG_OUTLIER_FILTER");

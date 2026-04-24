@@ -17,7 +17,7 @@ public:
     // Compute the number of segments for a spline with the given control point count.
     static int compute_spline_segments(int num_control_points, float pixels_per_unit);
 
-    static constexpr int k_min_segments = 8;
+    static constexpr int k_min_segments = 24;
     static constexpr int k_max_segments = 512;
 };
 
