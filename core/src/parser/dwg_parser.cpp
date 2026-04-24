@@ -568,8 +568,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
                 entity_hdr.linetype_index = -2;  // BYBLOCK
             }
 
-            // plotstyle flags (BB)
-            (void)reader.read_bits(2);
+            // R2004+: plotstyle flags (BB) — not present in R2000
+            if (m_version >= DwgVersion::R2004) {
+                (void)reader.read_bits(2);
+            }
 
             // R2004+: material flags (BB)
             if (m_version >= DwgVersion::R2004) {
