@@ -112,13 +112,21 @@ bool DwgParser::prepare_object_at_offset(const uint8_t* obj_data, size_t obj_dat
     // R2004-R2007: bitsize (RL) indicates end of main data / start of handle stream.
     // R2010+: handle_stream_size (UMC) is read separately before object data.
     if (!is_r2010_plus && m_version >= DwgVersion::R2004) {
-        framed_main_data_bits = reader.read_rl();
-        if (reader.has_error() || framed_main_data_bits == 0 ||
-            framed_main_data_bits > entity_bits ||
-            framed_main_data_bits <= reader.bit_offset()) {
-            return fail("invalid_object_end_bit");
+        uint32_t rl_value = reader.read_rl();
+        if (!reader.has_error() && rl_value > 0 &&
+            rl_value <= entity_bits &&
+            rl_value > reader.bit_offset()) {
+            framed_main_data_bits = rl_value;
+            reader.set_bit_limit(framed_main_data_bits);
+        } else {
+            // RL is unreliable for this object — fall back to treating the
+            // entire entity data as main data.  Handle stream parsing will be
+            // skipped (handle_stream_bits == 0), but geometric data is still
+            // usable.  This prevents discarding valid entities whose RL field
+            // happens to be corrupted or uses an unfamiliar encoding.
+            framed_main_data_bits = entity_bits;
+            handle_stream_valid = false;
         }
-        reader.set_bit_limit(framed_main_data_bits);
     }
     if (reader.has_error() || (require_known_type && !is_known_object_type(obj_type))) {
         return fail(reader.has_error() ? "object_type_read_failed" : "unknown_object_type");

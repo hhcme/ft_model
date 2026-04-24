@@ -14,6 +14,8 @@ add_library(cad_core STATIC
     src/parser/dxf_entities_reader.cpp
     src/parser/dxf_objects_reader.cpp
     src/parser/dwg_reader.cpp
+    src/parser/dwg_reader_stream.cpp
+    src/parser/dwg_reader_crc_lz77.cpp
     src/parser/dwg_parser.cpp
     src/parser/dwg_diagnostics.cpp
     src/parser/dwg_r2004_decoder.cpp
@@ -25,6 +27,7 @@ add_library(cad_core STATIC
     src/parser/dwg_parse_helpers.cpp
     src/parser/dwg_table_prescan.cpp
     src/parser/dwg_block_tracking.cpp
+    src/parser/dwg_block_classification.cpp
     src/parser/dwg_handle_stream.cpp
     src/parser/dwg_custom_annotation_proxy.cpp
     src/parser/dwg_parse_diagnostics_emit.cpp

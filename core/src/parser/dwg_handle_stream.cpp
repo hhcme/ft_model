@@ -65,32 +65,6 @@ void DwgParser::decode_role_handles(
         hreader.set_bit_offset(hs_bit_start);
         hreader.set_bit_limit(hs_bit_end);
 
-        // Debug: dump raw bytes at handle stream offset for first few entities
-        static int hs_raw_debug = 0;
-        if (dwg_debug_enabled() && hs_raw_debug < 5 && obj_type != 4 && obj_type != 5) {
-            size_t byte_start = hs_bit_start / 8;
-            size_t byte_end = (hs_bit_end + 7) / 8;
-            std::string hex;
-            for (size_t bi = byte_start; bi < byte_end && bi < entity_data_bytes; ++bi) {
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%02X ", entity_ptr[bi]);
-                hex += buf;
-            }
-            // Dump full entity data for first entity to compare
-            std::string full_hex;
-            for (size_t bi = 0; bi < entity_data_bytes && bi < 64; ++bi) {
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%02X ", entity_ptr[bi]);
-                full_hex += buf;
-            }
-            dwg_debug_log("[DWG] hs_raw: handle=%llu type=%u offset=%zu hs_bits=%zu main_bits=%zu entity_bits=%zu eptr=%p full=%s\n",
-                          static_cast<unsigned long long>(handle), obj_type,
-                          offset,
-                          hs_bits, main_data_bits, entity_bits,
-                          static_cast<const void*>(entity_ptr),
-                          full_hex.c_str());
-            hs_raw_debug++;
-        }
 
         roles.owner = read_abs_handle(hreader);
         const uint32_t reactor_limit = std::min<uint32_t>(saved_num_reactors, 1024u);
@@ -118,23 +92,6 @@ void DwgParser::decode_role_handles(
         }
         roles.ok = !hreader.has_error();
 
-        // Debug: dump handle stream for first few entities
-        static int hs_debug_count = 0;
-        if (dwg_debug_enabled() && hs_debug_count < 10 && obj_type != 4 && obj_type != 5) {
-            auto owner_type_it = ctx.handle_object_types.find(roles.owner);
-            uint32_t owner_type = (owner_type_it != ctx.handle_object_types.end()) ? owner_type_it->second : 0;
-            auto layer_type_it = ctx.handle_object_types.find(roles.layer);
-            uint32_t layer_type = (layer_type_it != ctx.handle_object_types.end()) ? layer_type_it->second : 0;
-            dwg_debug_log("[DWG] hs_decode: handle=%llu type=%u hs_start=%zu hs_end=%zu reactors=%u xdic_missing=%d "
-                          "owner=%llu(owner_type=%u) xdic=%llu layer=%llu(layer_type=%u)\n",
-                          static_cast<unsigned long long>(handle), obj_type,
-                          hs_bit_start, hs_bit_end,
-                          saved_num_reactors, saved_is_xdic_missing ? 1 : 0,
-                          static_cast<unsigned long long>(roles.owner), owner_type,
-                          static_cast<unsigned long long>(roles.extension_dictionary),
-                          static_cast<unsigned long long>(roles.layer), layer_type);
-            hs_debug_count++;
-        }
     }
 
     for (size_t eidx = entities_before; eidx < scene.entities().size(); ++eidx) {

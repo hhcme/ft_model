@@ -393,19 +393,6 @@ Result DwgParser::parse_objects(EntitySink& scene)
         const size_t main_data_bits = record.main_data_bits;
         const uint32_t obj_type = record.obj_type;
 
-        // Debug: show RL/framing for R2004 entities + first entity byte
-        static int rl_debug_count = 0;
-        if (dwg_debug_enabled() && m_version == DwgVersion::R2004 && rl_debug_count < 40 &&
-            is_graphic_entity(obj_type)) {
-            size_t hs_bits = (entity_bits > main_data_bits) ? (entity_bits - main_data_bits) : 0;
-            uint8_t first_byte = (entity_data_bytes > 0) ?
-                obj_data[offset + ms_bytes + umc_bytes] : 0;
-            dwg_debug_log("[DWG] rl_framing: handle=%llu type=%u offset=%zu ms=%zu entity_bytes=%zu entity_bits=%zu main_data_bits=%zu hs_bits=%zu first_byte=0x%02X\n",
-                          static_cast<unsigned long long>(handle), obj_type,
-                          offset, ms_bytes, entity_data_bytes, entity_bits,
-                          main_data_bits, hs_bits, first_byte);
-            rl_debug_count++;
-        }
         if (!record.handle_stream_valid) {
             ctx.invalid_handle_stream_framing++;
         }

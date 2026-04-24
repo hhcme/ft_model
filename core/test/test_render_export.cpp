@@ -7,6 +7,7 @@
 
 #include "cad/parser/dxf_parser.h"
 #include "cad/parser/dwg_parser.h"
+#include "cad/parser/dwg_block_classification.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/entity.h"
 #include "cad/renderer/render_batcher.h"
@@ -612,8 +613,7 @@ static std::string uppercase_ascii(std::string s) {
 }
 
 static bool is_model_or_paper_space_block(const std::string& name) {
-    std::string upper = uppercase_ascii(name);
-    return upper == "*MODEL_SPACE" || upper == "*PAPER_SPACE";
+    return block_classify::is_model_or_paper_space(name);
 }
 
 static RenderBounds adaptive_visible_bounds(const std::vector<BoundsPoint>& points,
@@ -838,59 +838,14 @@ static bool should_render_dwg_block_direct(
     const Block& block,
     const std::vector<EntityVariant>& entities,
     bool has_scaled_insert) {
-    if (is_model_or_paper_space_block(block.name)) return true;
-
-    RenderBounds bounds = bounds_for_entity_indices(entities, block.entity_indices);
-    if (bounds.empty || block.entity_indices.empty()) return false;
-
-    const float w = bounds.max_x - bounds.min_x;
-    const float h = bounds.max_y - bounds.min_y;
-    const float major_extent = std::max(w, h);
-    const float cx = (bounds.min_x + bounds.max_x) * 0.5f;
-    const float cy = (bounds.min_y + bounds.max_y) * 0.5f;
-    const float centroid_dist = std::sqrt(cx * cx + cy * cy);
-    if (block.entity_indices.size() > 50 && centroid_dist > 5000.0f) {
-        return true;
-    }
-    if (!block.is_anonymous && has_scaled_insert && centroid_dist > 5000.0f) {
-        return true;
-    }
-    // Some DWGs, especially generated mechanical drawing views, store block
-    // children in paper/model coordinates while INSERT carries an additional
-    // presentation transform. Treat sheet-scale block definitions as already
-    // placed so they do not get expanded a second time far outside the page.
-    return !block.is_anonymous &&
-           has_scaled_insert &&
-           major_extent > 1000.0f;
+    return block_classify::should_render_direct(block, entities, has_scaled_insert);
 }
 
 static bool should_merge_dwg_block_header_entities(
     const Block& block,
     const std::vector<EntityVariant>& entities,
     bool has_scaled_insert) {
-    if (block.is_anonymous || !has_scaled_insert ||
-        block.header_owned_entity_indices.size() < 2) {
-        return false;
-    }
-    const RenderBounds header_bounds =
-        bounds_for_entity_indices(entities, block.header_owned_entity_indices);
-    if (header_bounds.empty) {
-        return false;
-    }
-    const float header_w = header_bounds.max_x - header_bounds.min_x;
-    const float header_h = header_bounds.max_y - header_bounds.min_y;
-    const float header_major = std::max(header_w, header_h);
-    if (!std::isfinite(header_major) || header_major <= 0.0f) {
-        return false;
-    }
-    // BLOCK_HEADER owner recovery is only safe when the recovered children
-    // look like a compact local block definition. Very large owner buckets are
-    // usually table/model-space ownership noise and must not be transformed
-    // through every INSERT reference.
-    if (header_major > 50000.0f) {
-        return false;
-    }
-    return true;
+    return block_classify::should_merge_header_entities(block, entities, has_scaled_insert);
 }
 
 static std::string escape_json(const std::string& s) {
