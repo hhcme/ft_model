@@ -559,7 +559,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
             // field. from_aci(>255) returns white; keep that behavior to avoid
             // turning invisible white-on-white geometry into visible noise when
             // the layer colour is dark.
-            if (!entity_hdr.has_true_color && color_index > 255) {
+            // 256 = ByLayer (use layer color), 0 = ByBlock — these are special
+            // values and must NOT be clamped. Only truly invalid indices (>256)
+            // get clamped to white (7).
+            if (!entity_hdr.has_true_color && color_index > 256) {
                 color_index = 7; // white, consistent with old from_aci() fallback
             }
             entity_hdr.color_override = (color_index != 256 && color_index != 0)
