@@ -169,6 +169,20 @@ void DwgParser::decode_role_handles(
             added_header.layer_index = resolved_layer_index;
             ctx.g_layer_resolved++;
         }
+
+        // Linetype resolution: the first entity-specific handle is typically
+        // the linetype when the entity has an explicit linetype override
+        // (ltype_flags != 0 in CED).  Try to resolve it against the linetype map.
+        if (added_header.linetype_index == -1 && !roles.entity_specific.empty()) {
+            for (uint64_t spec_handle : roles.entity_specific) {
+                auto lt_it = m_linetype_handle_to_index.find(spec_handle);
+                if (lt_it != m_linetype_handle_to_index.end()) {
+                    added_header.linetype_index = lt_it->second;
+                    ctx.g_linetype_resolved++;
+                    break;
+                }
+            }
+        }
     }
 
     if (obj_type == 7 || obj_type == 8) {

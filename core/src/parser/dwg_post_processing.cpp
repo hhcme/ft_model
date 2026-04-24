@@ -437,8 +437,9 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
             });
         }
     }
-    dwg_debug_log("[DWG] Layer resolution: resolved=%zu map_size=%zu\n",
-            ctx.g_layer_resolved, m_layer_handle_to_index.size());
+    dwg_debug_log("[DWG] Layer resolution: resolved=%zu map_size=%zu  Linetype resolution: resolved=%zu map_size=%zu\n",
+            ctx.g_layer_resolved, m_layer_handle_to_index.size(),
+            ctx.g_linetype_resolved, m_linetype_handle_to_index.size());
 }
 
 } // namespace cad

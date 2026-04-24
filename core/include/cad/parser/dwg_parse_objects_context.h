@@ -19,6 +19,7 @@ struct ParseObjectsContext {
     size_t non_graphic_count = 0;
     size_t error_count = 0;
     size_t g_layer_resolved = 0;
+    size_t g_linetype_resolved = 0;
     std::unordered_map<uint32_t, size_t> object_type_counts;
 
     size_t processed = 0;
