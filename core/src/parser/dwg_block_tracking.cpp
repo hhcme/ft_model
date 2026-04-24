@@ -100,6 +100,8 @@ bool DwgParser::process_block_endblk(
             block.name = m_current_block_name;
             block.base_point = m_current_block_base_point;
             block.dwg_block_handle = m_current_block_handle;
+            block.is_model_space = (m_current_block_name == "*MODEL_SPACE");
+            block.is_paper_space = (m_current_block_name == "*PAPER_SPACE");
             for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                 block.entity_indices.push_back(static_cast<int32_t>(i));
             }

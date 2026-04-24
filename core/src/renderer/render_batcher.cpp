@@ -493,7 +493,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
 
         // For large screen-space circles, use adaptive recursive midpoint subdivision.
-        const float kAdaptiveThresholdPx = 250.0f / std::max(1.0f, m_tessellation_quality);
+        const float kAdaptiveThresholdPx = 100.0f / std::max(1.0f, m_tessellation_quality);
         if (screen_radius > kAdaptiveThresholdPx) {
             tessellate_arc_adaptive(circle->center, circle->radius,
                                     0.0f, math::TWO_PI, *batch, xform);
@@ -519,7 +519,7 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
 
         // For large screen-space arcs, use adaptive recursive midpoint subdivision.
         // For small arcs, use uniform subdivision from chord-height LOD.
-        const float kAdaptiveThresholdPx = 250.0f / std::max(1.0f, m_tessellation_quality);
+        const float kAdaptiveThresholdPx = 100.0f / std::max(1.0f, m_tessellation_quality);
         if (screen_radius > kAdaptiveThresholdPx) {
             tessellate_arc_adaptive(arc->center, arc->radius,
                                     arc->start_angle, arc->end_angle,

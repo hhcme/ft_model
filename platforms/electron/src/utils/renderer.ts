@@ -318,8 +318,8 @@ export function renderPaper(ctx: Ctx, view: ViewDefinition | undefined, vp: View
   if (plot) {
     const [px0, py0] = worldToScreen(plot.minX, plot.maxY, vp);
     const [px1, py1] = worldToScreen(plot.maxX, plot.minY, vp);
-    ctx.strokeStyle = 'rgba(20,20,20,0.72)';
-    ctx.lineWidth = Math.max(1, vp.dpr);
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = Math.max(1.5, vp.dpr * 1.5);
     ctx.strokeRect(
       Math.min(px0, px1),
       Math.min(py0, py1),

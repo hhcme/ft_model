@@ -297,6 +297,14 @@ const Layout* SceneGraph::active_layout() const {
             return &layout;
         }
     }
+    // Final fallback: any non-model layout, even without presentation bounds.
+    // Layouts with zero paper dimensions (no page setup configured) still own
+    // paper-space entities that should be rendered.
+    for (const auto& layout : m_impl->layouts) {
+        if (!layout.is_model_layout) {
+            return &layout;
+        }
+    }
     return nullptr;
 }
 
