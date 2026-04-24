@@ -422,6 +422,10 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     // Helper: find or create a batch with matching visible CAD appearance.
     auto find_batch = [this, line_width, &line_pattern, &entity](
         PrimitiveTopology topo, const Color& col) -> RenderBatch* {
+        // Max vertices per batch — prevents single giant batches that stall
+        // GPU upload and prevent per-entity frustum culling. 512K vertices
+        // ≈ 4 MB vertex data, well within typical GPU buffer limits.
+        static constexpr size_t kMaxBatchVertices = 512 * 1024;
         for (auto& b : m_batches) {
             if (b.topology == topo && b.color == col &&
                 b.line_width == line_width &&
@@ -429,7 +433,9 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
                 b.space == entity.header.space &&
                 b.layout_index == entity.header.layout_index &&
                 b.viewport_index == entity.header.viewport_index) {
-                return &b;
+                if (b.vertex_data.size() / 2 < kMaxBatchVertices) {
+                    return &b;
+                }
             }
         }
         m_batches.push_back(RenderBatch{});
