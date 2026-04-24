@@ -133,6 +133,13 @@ void DwgParser::decode_role_handles(
     }
 
     if (obj_type == 7 || obj_type == 8) {
+        // INSERT/MINSERT block-header handle resolution.
+        // R2004 (exact): RL bitsize is unreliable, handle stream may be
+        // misaligned — needs extended scan window and multiple fallbacks.
+        // R2000: no separate handle stream at all — handles are embedded
+        // in entity data (block_index stays -1 for DWG; DXF path is fine).
+        // R2007/R2010+: UMC handle_stream_size is reliable — the default
+        // scan at lines 86-93 finds block-header handles correctly.
         std::vector<uint64_t> insert_specific = roles.entity_specific;
         const bool is_r2004_insert = (m_version == DwgVersion::R2004);
         if (insert_specific.empty()) {

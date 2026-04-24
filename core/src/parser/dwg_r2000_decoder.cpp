@@ -113,10 +113,12 @@ Result DwgParser::read_r2000_sections(const uint8_t* data, size_t size,
                 if (m_sections.object_data.empty()) {
                     m_sections.object_data_file_offset = data_start;
                 }
+                size_t page_offset = m_sections.object_data.size();
                 m_sections.object_data.insert(m_sections.object_data.end(),
                                               section_data, section_data + actual_size);
-                dwg_debug_log("[R2000] Section %u (object data): %zu bytes\n",
-                              section_num, actual_size);
+                m_sections.object_pages.emplace_back(page_offset, actual_size);
+                dwg_debug_log("[R2000] Section %u (object data): %zu bytes at page_offset=%zu\n",
+                              section_num, actual_size, page_offset);
             }
             break;
         }
