@@ -262,10 +262,13 @@ void parse_viewport(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
     vp_ent.center = center;
     vp_ent.width = static_cast<float>(paper_width);
     vp_ent.height = static_cast<float>(paper_height);
+    vp_ent.status = 1;
     vp_ent.target = Vec3{static_cast<float>(target_x),
                          static_cast<float>(target_y),
                          static_cast<float>(target_z)};
     vp_ent.view_height = static_cast<float>(view_height);
+    vp_ent.view_width = (view_height > 0.0 && paper_height > 0.0)
+        ? static_cast<float>(paper_width * view_height / paper_height) : 0.0f;
     vp_ent.twist_angle = static_cast<float>(twist);
     vp_ent.custom_scale = static_cast<float>(paper_height / view_height);
     vp_ent.has_custom_scale = true;

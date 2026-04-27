@@ -265,6 +265,26 @@ Result DwgParser::parse_classes(EntitySink& scene)
                 return size_t{0};
             };
             class_string_start = find_class_string_stream();
+
+            // Fallback: if scanner failed, try byte-aligned positions after
+            // the binary class data (bitsize boundary). The string stream
+            // typically starts right after the binary records.
+            if (class_string_start == 0) {
+                auto try_strings_at = [&](size_t pos) -> bool {
+                    if (pos >= data_size * 8) return false;
+                    SectionStringReader probe(data, data_size, pos);
+                    const std::string first = probe.read_tu();
+                    const std::string second = probe.read_tu();
+                    return !probe.has_error() && !first.empty() && !second.empty();
+                };
+                for (size_t base = bitsize; base < bitsize + 128 && base < data_size * 8; base += 8) {
+                    if (try_strings_at(base)) {
+                        class_string_start = base;
+                        break;
+                    }
+                }
+            }
+
             if (class_string_start != 0) {
                 class_data_limit = class_string_start;
             }
@@ -301,10 +321,13 @@ Result DwgParser::parse_classes(EntitySink& scene)
             (void)reader.read_bl();   // unknown_2
         } else {
             proxy_flags = reader.read_bs();
-            if (class_string_start == 0) break;
-            app_name = class_strings.read_tu();
-            cpp_name = class_strings.read_tu();
-            dxf_name = class_strings.read_tu();
+            if (class_string_start != 0) {
+                app_name = class_strings.read_tu();
+                cpp_name = class_strings.read_tu();
+                dxf_name = class_strings.read_tu();
+            }
+            // When string stream is unavailable, skip TU reads but
+            // main reader position is unaffected (strings are separate stream).
             uint16_t class_id = reader.read_bs();
             is_entity = (class_id == 0x1F2);
             (void)reader.read_bl();  // num_instances
@@ -314,7 +337,8 @@ Result DwgParser::parse_classes(EntitySink& scene)
             (void)reader.read_raw_char();
         }
 
-        if (reader.has_error() || class_strings.has_error()) break;
+        if (reader.has_error()) break;
+        if (class_string_start != 0 && class_strings.has_error()) break;
 
         m_sections.class_map[class_type] = {dxf_name, is_entity};
         (void)entry_start;
