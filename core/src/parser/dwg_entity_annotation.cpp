@@ -583,4 +583,52 @@ void parse_leader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
     scene.add_entity(make_entity<17>(leader_hdr, std::move(leader)));
 }
 
+void parse_tolerance(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                     DwgVersion version) {
+    (void)version;
+
+    // TOLERANCE (DWG type 46): geometric dimensioning and tolerancing frame.
+    // Fields per spec:
+    //   RC(class_version)
+    //   3BD(insertion_point)
+    //   3BD(direction) or BE(extrusion) depending on version
+    //   T(text_content) — the GD&T symbols and values
+
+    int class_ver = r.read_raw_char();
+    (void)class_ver;
+
+    double ins_x = r.read_bd();
+    double ins_y = r.read_bd();
+    double ins_z = r.read_bd();
+    if (!reader_ok(r)) return;
+
+    // direction / extrusion — skip
+    (void)r.read_bd();
+    (void)r.read_bd();
+    (void)r.read_bd();
+
+    // Text content — the actual GD&T value string
+    std::string text = r.read_t();
+    if (!reader_ok(r)) return;
+
+    if (text.empty()) {
+        text = "TOL";
+    }
+
+    float fx = safe_float(ins_x);
+    float fy = safe_float(ins_y);
+    if (!std::isfinite(fx) || !std::isfinite(fy)) return;
+
+    TextEntity tol;
+    tol.insertion_point = {fx, fy, 0.0f};
+    tol.height = 2.5f;
+    tol.text = std::move(text);
+
+    EntityHeader tol_hdr = hdr;
+    tol_hdr.type = EntityType::Tolerance;
+    tol_hdr.bounds = Bounds3d{{fx - 5, fy - 2, 0}, {fx + 20, fy + 5, 0}};
+
+    scene.add_entity(make_entity<18>(tol_hdr, std::move(tol)));
+}
+
 } // namespace cad

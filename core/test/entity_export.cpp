@@ -115,6 +115,9 @@ static const char* entity_type_name(EntityType t) {
         case EntityType::XLine:     return "XLINE";
         case EntityType::Viewport:  return "VIEWPORT";
         case EntityType::Solid:     return "SOLID";
+        case EntityType::Leader:    return "LEADER";
+        case EntityType::Tolerance: return "TOLERANCE";
+        case EntityType::MLine:     return "MLINE";
     }
     return "UNKNOWN";
 }
@@ -207,6 +210,22 @@ static void write_entity(JsonWriter& j, const EntityVariant& ev, const SceneGrap
         }
         break;
     }
+    case EntityType::MLine: {
+        auto* d = std::get_if<19>(&ev.data);
+        if (d && d->vertex_count >= 2) {
+            j.key("vertices"); j.arr_open();
+            auto& vb = scene.vertex_buffer();
+            for (int32_t i = 0; i < d->vertex_count && (d->vertex_offset + i) < (int32_t)vb.size(); ++i) {
+                if (i > 0) j.buf += ',';
+                const auto& v = vb[d->vertex_offset + i];
+                char tmp[96];
+                std::snprintf(tmp, sizeof(tmp), "[%s,%s,%s]", fmt(v.x).c_str(), fmt(v.y).c_str(), fmt(v.z).c_str());
+                j.buf += tmp;
+            }
+            j.arr_close();
+        }
+        break;
+    }
     case EntityType::Spline: {
         auto* d = ev.as_spline();
         if (d) {
@@ -246,8 +265,10 @@ static void write_entity(JsonWriter& j, const EntityVariant& ev, const SceneGrap
         break;
     }
     case EntityType::Text:
-    case EntityType::MText: {
+    case EntityType::MText:
+    case EntityType::Tolerance: {
         auto* d = ev.as_text();
+        if (!d) d = ev.get_if_at<18, TextEntity>();
         if (d) {
             j.key_val("text", d->text);
             j.key_val("x", (double)d->insertion_point.x);

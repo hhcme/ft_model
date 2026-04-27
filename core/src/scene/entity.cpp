@@ -92,6 +92,11 @@ const SolidEntity* EntityVariant::as_solid() const {
     return std::get_if<16>(&data);
 }
 
+const TextEntity* EntityVariant::as_tolerance() const {
+    if (header.type == EntityType::Tolerance) return std::get_if<18>(&data);
+    return nullptr;
+}
+
 // ============================================================
 // Entity bounds calculations
 // ============================================================
@@ -311,6 +316,11 @@ Bounds3d entity_bounds(const EntityVariant& entity) {
         break;
     case EntityType::Leader:
         break;  // Leader bounds require vertex buffer access (resolved at scene level)
+    case EntityType::Tolerance:
+        if (auto* e = std::get_if<18>(&entity.data)) result = entity_bounds_text(*e);
+        break;
+    case EntityType::MLine:
+        break;  // MLine bounds require vertex buffer access (resolved at scene level)
     }
 
     return result;

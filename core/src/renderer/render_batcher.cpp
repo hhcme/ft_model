@@ -1217,9 +1217,11 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
 
     // Text — render a thin underline indicator; actual text is emitted separately.
     case EntityType::Text:
-    case EntityType::MText: {
+    case EntityType::MText:
+    case EntityType::Tolerance: {
         auto* text = std::get_if<6>(&entity.data);
         if (!text) text = std::get_if<7>(&entity.data);
+        if (!text) text = std::get_if<18>(&entity.data);
         if (!text || text->height <= 0.0f) break;
 
         float x = text->insertion_point.x;
@@ -1310,6 +1312,29 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     }
 
     // Leader — render as linestrip from vertex buffer
+    case EntityType::MLine: {
+        auto* ml = std::get_if<19>(&entity.data);
+        if (!ml || ml->vertex_count < 2) break;
+        {
+            const auto& vb = scene.vertex_buffer();
+            if (ml->vertex_offset < 0 ||
+                static_cast<size_t>(ml->vertex_offset + ml->vertex_count) > vb.size()) break;
+
+            auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
+            batch->sort_key = RenderKey::make(layer_u16,
+                static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
+                depth_order);
+            batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
+
+            const Vec3* pts = vb.data() + ml->vertex_offset;
+            for (int32_t i = 0; i < ml->vertex_count; ++i) {
+                auto [px, py] = tx(pts[i].x, pts[i].y);
+                append_vertex(batch->vertex_data, px, py);
+            }
+        }
+        break;
+    }
+
     case EntityType::Leader: {
         auto* ld = std::get_if<17>(&entity.data);
         if (!ld || ld->vertex_count < 2) break;

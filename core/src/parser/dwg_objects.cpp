@@ -77,6 +77,8 @@ void parse_ray(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                DwgVersion version);
 void parse_xline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                  DwgVersion version);
+void parse_mline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                 DwgVersion version);
 void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                      DwgVersion version);
 void parse_polyline_2d(DwgBitReader& r, const EntityHeader& hdr,
@@ -767,6 +769,8 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
         case 41:  parse_xline(reader, header, scene, version);        break;  // XLINE
         case 44:  parse_mtext(reader, header, scene, version);        break;  // MTEXT
         case 45:  parse_leader(reader, header, scene, version);       break;  // LEADER
+        case 46:  parse_tolerance(reader, header, scene, version);    break;  // TOLERANCE
+        case 47:  parse_mline(reader, header, scene, version);       break;  // MLINE
         case 77:  parse_lwpolyline(reader, header, scene, version);   break;  // LWPOLYLINE
         case 78:  parse_hatch(reader, header, scene, version);        break;  // HATCH
 

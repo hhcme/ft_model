@@ -63,6 +63,9 @@ python3 -m http.server 8080
 - `LineEntity` reused for Ray (index 13) and XLine (index 14).
 - `Vec3` reused for Viewport (index 15) as placeholder center point.
 - `SolidEntity` at index 16 — filled 3/4 vertex polygon.
+- `LeaderEntity` at index 17 — leader line path + arrowhead.
+- `TextEntity` reused for Tolerance (index 18) — GD&T feature control frame.
+- `PolylineEntity` reused for MLine (index 19) — multiline entity.
 
 **EntityVariant index map (DO NOT REORDER):**
 | Index | Type | Data Struct |
@@ -78,12 +81,15 @@ python3 -m http.server 8080
 | 8 | Dimension | DimensionEntity |
 | 9 | Hatch | HatchEntity |
 | 10 | Insert | InsertEntity |
-| 11 | Point | Vec3 |
+| 11 | Point | PointEntity |
 | 12 | Ellipse | CircleEntity |
 | 13 | Ray | LineEntity |
 | 14 | XLine | LineEntity |
-| 15 | Viewport | Vec3 |
+| 15 | Viewport | ViewportEntity |
 | 16 | Solid | SolidEntity |
+| 17 | Leader | LeaderEntity |
+| 18 | Tolerance | TextEntity |
+| 19 | MLine | PolylineEntity |
 
 ### Math Types
 - All 3D types (Vec3, Matrix4x4, Bounds3d) — 2D is z=0 special case for future 3D extension.

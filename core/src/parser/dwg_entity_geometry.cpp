@@ -865,4 +865,67 @@ void parse_xline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
     scene.add_entity(make_entity<14>(xl_hdr, std::move(xline)));
 }
 
+// ============================================================
+// MLINE (DWG type 47) -> EntityVariant index 19 (PolylineEntity)
+// R2000+: BD(scale), BS(justification), [BS(flag)], [BD(start_angle)],
+//         [BD(end_angle)], [BS(num_lines)], [BS(num_params)], BL(num_points),
+//         num_points × 3BD(points)
+// ============================================================
+void parse_mline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                 DwgVersion /*version*/) {
+    double scale = r.read_bd();
+    (void)r.read_bs();  // justification
+    (void)r.read_bs();  // flags
+    (void)r.read_bd();  // start_angle
+    (void)r.read_bd();  // end_angle
+
+    uint32_t num_lines = r.read_bs();
+    if (num_lines > 0 && num_lines < 32) {
+        for (uint32_t i = 0; i < num_lines; ++i) {
+            (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd(); (void)r.read_bd();
+        }
+    }
+
+    uint32_t num_params = r.read_bs();
+    if (num_params > 0 && num_params < 32) {
+        for (uint32_t i = 0; i < num_params; ++i) {
+            (void)r.read_bd();
+        }
+    }
+
+    (void)r.read_bd();  // closed
+    (void)r.read_bs();  // style_name (empty for inline)
+
+    uint32_t num_points = r.read_bl();
+    if (!reader_ok(r) || num_points == 0 || num_points > 1000000) return;
+
+    std::vector<Vec3> vertices;
+    vertices.reserve(num_points);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        double x = r.read_bd();
+        double y = r.read_bd();
+        double z = r.read_bd();
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
+        if (std::abs(x) > 1e9 || std::abs(y) > 1e9) continue;
+        vertices.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+    }
+
+    if (vertices.size() < 2) return;
+
+    int32_t offset = scene.add_polyline_vertices(vertices.data(), vertices.size());
+
+    PolylineEntity poly;
+    poly.vertex_offset = offset;
+    poly.vertex_count  = static_cast<int32_t>(vertices.size());
+    poly.is_closed     = false;
+
+    EntityHeader mline_hdr = hdr;
+    mline_hdr.type = EntityType::MLine;
+    mline_hdr.bounds = Bounds3d::empty();
+    for (const auto& v : vertices) {
+        mline_hdr.bounds.expand(v);
+    }
+    scene.add_entity(make_entity<19>(mline_hdr, std::move(poly)));
+}
+
 } // namespace cad

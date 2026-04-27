@@ -993,6 +993,9 @@ int main(int argc, char** argv) {
                 case EntityType::XLine: type_counts["XLine"]++; break;
                 case EntityType::Viewport: type_counts["Viewport"]++; break;
                 case EntityType::Solid: type_counts["Solid"]++; break;
+                case EntityType::Leader: type_counts["Leader"]++; break;
+                case EntityType::Tolerance: type_counts["Tolerance"]++; break;
+                case EntityType::MLine: type_counts["MLine"]++; break;
             }
         }
         printf("Entity types:\n");
@@ -2346,6 +2349,9 @@ int main(int argc, char** argv) {
                 case EntityType::XLine: tc["XLine"]++; break;
                 case EntityType::Viewport: tc["Viewport"]++; break;
                 case EntityType::Solid: tc["Solid"]++; break;
+                case EntityType::Leader: tc["Leader"]++; break;
+                case EntityType::Tolerance: tc["Tolerance"]++; break;
+                case EntityType::MLine: tc["MLine"]++; break;
             }
         }
         out << "  \"entityTypeCounts\": {";

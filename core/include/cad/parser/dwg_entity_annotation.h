@@ -30,4 +30,7 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
 void parse_leader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                   DwgVersion version);
 
+void parse_tolerance(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                     DwgVersion version);
+
 } // namespace cad

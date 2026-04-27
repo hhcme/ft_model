@@ -31,6 +31,8 @@ enum class EntityType : uint8_t {
     Viewport,
     Solid,
     Leader,
+    Tolerance,
+    MLine,
 };
 
 enum class DrawingSpace : uint8_t {
@@ -213,7 +215,9 @@ using EntityData = std::variant<
     LineEntity,        // XLine reuses LineEntity
     ViewportEntity,    // Viewport
     SolidEntity,       // Solid — filled 3/4 vertex polygon
-    LeaderEntity       // Leader — leader line path + arrowhead
+    LeaderEntity,      // Leader — leader line path + arrowhead
+    TextEntity,        // Tolerance — GD&T feature control frame (reuses TextEntity)
+    PolylineEntity     // MLine — multiline entity (reuses PolylineEntity)
 >;
 
 struct EntityVariant {
@@ -260,6 +264,7 @@ struct EntityVariant {
     const ViewportEntity* as_viewport() const;
     const LeaderEntity* as_leader() const;
     const SolidEntity* as_solid() const;
+    const TextEntity* as_tolerance() const;
 };
 
 // ============================================================
