@@ -118,6 +118,7 @@ static const char* entity_type_name(EntityType t) {
         case EntityType::Leader:    return "LEADER";
         case EntityType::Tolerance: return "TOLERANCE";
         case EntityType::MLine:     return "MLINE";
+        case EntityType::Multileader: return "MULTILEADER";
     }
     return "UNKNOWN";
 }
@@ -342,6 +343,16 @@ static void write_entity(JsonWriter& j, const EntityVariant& ev, const SceneGrap
     case EntityType::Point: {
         auto* d = ev.get_if_at<11, PointEntity>();
         if (d) j.key_vec3("position", d->position);
+        break;
+    }
+    case EntityType::Multileader: {
+        auto* d = std::get_if<20>(&ev.data);
+        if (d) {
+            j.key_vec3("insertion_point", d->insertion_point);
+            if (!d->text.empty()) j.key_val("text", d->text);
+            if (d->text_height > 0) j.key_val("height", (double)d->text_height);
+            if (d->leader_line_count > 0) j.key_val("leader_lines", d->leader_line_count);
+        }
         break;
     }
     default:

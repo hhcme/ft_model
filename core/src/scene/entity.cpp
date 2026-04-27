@@ -97,6 +97,11 @@ const TextEntity* EntityVariant::as_tolerance() const {
     return nullptr;
 }
 
+const MultileaderEntity* EntityVariant::as_multileader() const {
+    if (header.type == EntityType::Multileader) return std::get_if<20>(&data);
+    return nullptr;
+}
+
 // ============================================================
 // Entity bounds calculations
 // ============================================================
@@ -257,6 +262,14 @@ Bounds3d entity_bounds_solid(const SolidEntity& solid) {
     return b;
 }
 
+Bounds3d entity_bounds_multileader(const MultileaderEntity& ml, const Vec3* vertices) {
+    Bounds3d b = Bounds3d::from_point(ml.insertion_point);
+    for (int32_t i = 0; i < ml.vertex_count && vertices; ++i) {
+        b.expand(vertices[i]);
+    }
+    return b;
+}
+
 // ============================================================
 // Dispatch bounds calculation based on entity type
 // ============================================================
@@ -321,6 +334,11 @@ Bounds3d entity_bounds(const EntityVariant& entity) {
         break;
     case EntityType::MLine:
         break;  // MLine bounds require vertex buffer access (resolved at scene level)
+    case EntityType::Multileader:
+        if (auto* e = std::get_if<20>(&entity.data)) {
+            result = entity_bounds_multileader(*e, nullptr);
+        }
+        break;
     }
 
     return result;

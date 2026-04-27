@@ -1388,6 +1388,40 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
+    case EntityType::Multileader: {
+        auto* ml = std::get_if<20>(&entity.data);
+        if (!ml) break;
+        // Render text at insertion point
+        if (!ml->text.empty() && ml->text_height > 0.0f) {
+            auto* text_batch = find_batch(PrimitiveTopology::LineList, draw_color);
+            text_batch->sort_key = RenderKey::make(layer_u16,
+                static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
+                depth_order);
+            auto [px, py] = tx(ml->insertion_point.x, ml->insertion_point.y);
+            float h = ml->text_height;
+            // Underline bar for text placement indicator
+            append_vertex(text_batch->vertex_data, px, py - h * 0.5f);
+            append_vertex(text_batch->vertex_data, px + static_cast<float>(ml->text.size()) * h * 0.6f, py - h * 0.5f);
+        }
+        // Render leader line vertices if present
+        if (ml->vertex_count >= 2 && ml->vertex_offset >= 0) {
+            const auto& vb = scene.vertex_buffer();
+            if (static_cast<size_t>(ml->vertex_offset + ml->vertex_count) <= vb.size()) {
+                auto* line_batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
+                line_batch->sort_key = RenderKey::make(layer_u16,
+                    static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
+                    depth_order);
+                line_batch->entity_starts.push_back(static_cast<uint32_t>(line_batch->vertex_data.size() / 2));
+                const Vec3* pts = vb.data() + ml->vertex_offset;
+                for (int32_t i = 0; i < ml->vertex_count; ++i) {
+                    auto [px, py] = tx(pts[i].x, pts[i].y);
+                    append_vertex(line_batch->vertex_data, px, py);
+                }
+            }
+        }
+        break;
+    }
+
     case EntityType::Ray:
     case EntityType::XLine:
     case EntityType::Viewport:

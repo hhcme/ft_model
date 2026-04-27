@@ -79,6 +79,8 @@ void parse_xline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                  DwgVersion version);
 void parse_mline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                  DwgVersion version);
+void parse_multileader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                       DwgVersion version);
 void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                      DwgVersion version);
 void parse_polyline_2d(DwgBitReader& r, const EntityHeader& hdr,
@@ -730,9 +732,23 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
 // ============================================================
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
                        const EntityHeader& header, EntitySink& scene,
-                       DwgVersion version) {
+                       DwgVersion version,
+                       const char* class_name) {
     g_dispatch_counts[obj_type]++;
     size_t before = scene.entities().size();
+
+    // Class-based entity dispatch (type >= 500, identified by class name)
+    if (obj_type >= 500 && class_name) {
+        if (std::strstr(class_name, "MULTILEADER") != nullptr) {
+            parse_multileader(reader, header, scene, version);
+            bool success = (scene.entities().size() > before);
+            if (success) g_success_counts[obj_type]++;
+            return;
+        }
+        // Unknown class entity — skip silently.
+        return;
+    }
+
     switch (obj_type) {
         case 1:   parse_text(reader, header, scene, version);         break;  // TEXT
         case 2:   parse_block(reader, header, scene, version);        break;  // ATTRIB (skip)

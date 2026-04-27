@@ -27,7 +27,8 @@ enum class DwgVersion : uint8_t;
 
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
                        const EntityHeader& header, EntitySink& scene,
-                       DwgVersion version);
+                       DwgVersion version,
+                       const char* class_name = nullptr);
 
 // Parse a DWG table/object entry (LAYER, LTYPE, STYLE, DIMSTYLE, VPORT).
 // The reader is positioned after the common object header.

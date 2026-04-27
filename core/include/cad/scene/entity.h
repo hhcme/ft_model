@@ -33,6 +33,7 @@ enum class EntityType : uint8_t {
     Leader,
     Tolerance,
     MLine,
+    Multileader,
 };
 
 enum class DrawingSpace : uint8_t {
@@ -194,6 +195,23 @@ struct LeaderEntity {
     float arrowhead_size = 0.0f;
 };
 
+struct MultileaderEntity {
+    Vec3 insertion_point;
+    std::string text;                  // text content if content_type == text
+    float text_height = 0.0f;
+    float arrowhead_size = 0.0f;
+    bool has_landing = false;
+    bool has_dogleg = false;
+    int32_t leader_type = 0;           // 0=straight, 1=spline
+    // Leader line vertices stored in scene vertex buffer.
+    // Each leader line is a contiguous run of vertices, terminated by
+    // a NaN sentinel in the x-coordinate (or just end-of-range).
+    int32_t vertex_offset = 0;
+    int32_t vertex_count = 0;
+    int32_t leader_line_count = 0;     // number of leader lines
+    std::vector<int32_t> leader_line_vertex_counts;  // vertices per line
+};
+
 // ============================================================
 // EntityVariant — tagged union via std::variant
 // ============================================================
@@ -217,7 +235,8 @@ using EntityData = std::variant<
     SolidEntity,       // Solid — filled 3/4 vertex polygon
     LeaderEntity,      // Leader — leader line path + arrowhead
     TextEntity,        // Tolerance — GD&T feature control frame (reuses TextEntity)
-    PolylineEntity     // MLine — multiline entity (reuses PolylineEntity)
+    PolylineEntity,    // MLine — multiline entity (reuses PolylineEntity)
+    MultileaderEntity  // Multileader — multi-leader annotation
 >;
 
 struct EntityVariant {
@@ -265,6 +284,7 @@ struct EntityVariant {
     const LeaderEntity* as_leader() const;
     const SolidEntity* as_solid() const;
     const TextEntity* as_tolerance() const;
+    const MultileaderEntity* as_multileader() const;
 };
 
 // ============================================================
@@ -287,5 +307,6 @@ Bounds3d entity_bounds_point(const PointEntity& pt);
 Bounds3d entity_bounds_viewport(const ViewportEntity& vp);
 Bounds3d entity_bounds_leader(const LeaderEntity& leader, const Vec3* vertices);
 Bounds3d entity_bounds_solid(const SolidEntity& solid);
+Bounds3d entity_bounds_multileader(const MultileaderEntity& ml, const Vec3* vertices);
 
 } // namespace cad

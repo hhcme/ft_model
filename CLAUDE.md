@@ -90,6 +90,7 @@ python3 -m http.server 8080
 | 17 | Leader | LeaderEntity |
 | 18 | Tolerance | TextEntity |
 | 19 | MLine | PolylineEntity |
+| 20 | Multileader | MultileaderEntity |
 
 ### Math Types
 - All 3D types (Vec3, Matrix4x4, Bounds3d) — 2D is z=0 special case for future 3D extension.

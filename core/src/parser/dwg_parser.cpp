@@ -789,7 +789,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
         size_t entity_reader_end_offset = 0;
         {
             DwgBitReader entity_reader = make_reader();
-            parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version);
+            auto class_it = m_sections.class_map.find(obj_type);
+            const char* cname = (class_it != m_sections.class_map.end())
+                ? class_it->second.first.c_str() : nullptr;
+            parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version, cname);
             entity_reader_end_offset = entity_reader.bit_offset();
         }
 
