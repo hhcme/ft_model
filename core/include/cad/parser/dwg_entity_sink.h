@@ -69,6 +69,7 @@ public:
     virtual std::vector<Viewport>& viewports() = 0;
     virtual const std::vector<Viewport>& viewports() const = 0;
     virtual const std::vector<Layer>& layers() const = 0;
+    virtual const std::vector<TextStyle>& text_styles() const = 0;
     virtual const std::vector<SceneDiagnostic>& diagnostics() const = 0;
 };
 

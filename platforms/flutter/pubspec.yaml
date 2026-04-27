@@ -1,0 +1,19 @@
+name: cad_viewer
+description: CAD DWG/DXF viewer with Flutter + C++ FFI
+version: 0.1.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  ffigen: ^11.0.0
+
+flutter:
+  uses-material-design: true

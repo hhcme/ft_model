@@ -282,6 +282,38 @@ const auto& all_entities = scene.entities();
     if (uname == "*MODEL_SPACE" || uname == "*PAPER_SPACE") return;
 }
 
+// Xref blocks: render a dashed bounding box instead of geometry
+if (block.is_xref) {
+    const Bounds3d& bb = block.bounds;
+    if (bb.is_empty()) return;
+    RenderBatch xref_batch;
+    xref_batch.sort_key = RenderKey::make(
+        static_cast<uint16_t>(entity.header.layer_index), 0, 0,
+        static_cast<uint8_t>(entity.header.type),
+        entity.header.draw_order);
+    xref_batch.topology = PrimitiveTopology::LineList;
+    xref_batch.color = {255, 255, 255};
+    xref_batch.line_width = 1.0f;
+    xref_batch.space = entity.header.space;
+    xref_batch.layout_index = entity.header.layout_index;
+    xref_batch.viewport_index = entity.header.viewport_index;
+    xref_batch.draw_order = entity.header.draw_order;
+    Vec3 corners[4] = {
+        {bb.min.x, bb.min.y, 0}, {bb.max.x, bb.min.y, 0},
+        {bb.max.x, bb.max.y, 0}, {bb.min.x, bb.max.y, 0},
+    };
+    for (int i = 0; i < 4; ++i) {
+        Vec3 tp0 = xform.transform_point(corners[i]);
+        Vec3 tp1 = xform.transform_point(corners[(i + 1) % 4]);
+        append_vertex(xref_batch.vertex_data, tp0.x, tp0.y);
+        append_vertex(xref_batch.vertex_data, tp1.x, tp1.y);
+    }
+    if (!xref_batch.vertex_data.empty()) {
+        m_batches.push_back(std::move(xref_batch));
+    }
+    return;
+}
+
 int32_t bk_idx = ins->block_index;
 
 constexpr size_t MAX_BLOCK_VERTICES = 500000;

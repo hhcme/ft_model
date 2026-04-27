@@ -447,6 +447,83 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
     dwg_debug_log("[DWG] Layer resolution: resolved=%zu map_size=%zu  Linetype resolution: resolved=%zu map_size=%zu\n",
             ctx.g_layer_resolved, m_layer_handle_to_index.size(),
             ctx.g_linetype_resolved, m_linetype_handle_to_index.size());
+
+    // Xref diagnostics: emit one diagnostic per external reference block
+    {
+        int32_t xref_count = 0;
+        std::string xref_names;
+        for (const auto& blk : scene.blocks()) {
+            if (!blk.is_xref) continue;
+            xref_count++;
+            if (xref_names.size() < 200) {
+                if (!xref_names.empty()) xref_names += ", ";
+                xref_names += blk.name;
+            }
+        }
+        if (xref_count > 0) {
+            std::string msg = "Drawing contains ";
+            msg += std::to_string(xref_count);
+            msg += " external reference(s): ";
+            msg += xref_names;
+            msg += ". Referenced geometry is shown as bounding boxes; "
+                   "load the referenced files separately for full content.";
+            scene.add_diagnostic({
+                "dwg_xref_detected",
+                "External dependency",
+                msg,
+                xref_count,
+                version_family_name(m_version),
+                "Blocks",
+            });
+        }
+    }
+
+    // SHX font diagnostics: report fonts that require vector glyph support
+    {
+        int32_t shx_count = 0;
+        std::string shx_names;
+        for (size_t si = 0; si < scene.text_styles().size(); ++si) {
+            const auto& ts = scene.text_styles()[si];
+            if (!ts.is_shx) continue;
+            shx_count++;
+            if (shx_names.size() < 200) {
+                if (!shx_names.empty()) shx_names += ", ";
+                shx_names += ts.font_file.empty() ? ts.name : ts.font_file;
+            }
+        }
+        if (shx_count > 0) {
+            scene.add_diagnostic({
+                "dwg_shx_fonts",
+                "External dependency",
+                "Drawing uses " + std::to_string(shx_count) +
+                " SHX vector font(s): " + shx_names +
+                ". SHX glyphs are rendered using system font fallback; "
+                "stroke-accurate rendering requires SHX parsing.",
+                shx_count,
+                version_family_name(m_version),
+                "Text styles",
+            });
+        }
+    }
+
+    // Plot style (CTB/STB) diagnostics
+    {
+        const auto& meta = scene.drawing_info();
+        if (!meta.plot_style_table.empty()) {
+            const char* mode = meta.uses_named_plot_styles ? "named (STB)" : "color-dependent (CTB)";
+            scene.add_diagnostic({
+                "dwg_plot_style_table",
+                "External dependency",
+                "Drawing references plot style table '" + meta.plot_style_table +
+                "' (" + std::string(mode) +
+                "). Plot styles are not applied in viewer mode; "
+                "use Print/PDF export for plot-style output.",
+                1,
+                version_family_name(m_version),
+                "Plot styles",
+            });
+        }
+    }
 }
 
 } // namespace cad

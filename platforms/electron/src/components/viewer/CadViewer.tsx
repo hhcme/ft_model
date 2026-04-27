@@ -1,11 +1,14 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { DrawData, Viewport, RecentFile } from '../../app/types';
 import CadCanvas from './CadCanvas';
 import Toolbar from './Toolbar';
 import LayerPanel from './LayerPanel';
 import StatusBar from './StatusBar';
+import LayoutTabBar from './LayoutTabBar';
 import { useMeasurement } from '../../hooks/useMeasurement';
-import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
+import { useLayoutViews } from '../../hooks/useLayoutViews';
+import { useSelection } from '../../hooks/useSelection';
+import { computeBatchBounds, fitViewToBounds } from '../../utils/geometry';
 
 interface Props {
   drawData: DrawData;
@@ -25,6 +28,15 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
   });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const measure = useMeasurement();
+  const sel = useSelection();
+  const layout = useLayoutViews(drawData);
+
+  const filteredDrawData = useMemo(() => ({
+    ...drawData,
+    batches: layout.filteredBatches,
+    texts: layout.filteredTexts,
+    activeViewId: layout.currentViewId,
+  }), [drawData, layout.filteredBatches, layout.filteredTexts, layout.currentViewId]);
 
   // Init layers
   useEffect(() => {
@@ -34,30 +46,29 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
     setLayerVisible(m);
   }, [drawData]);
 
-  // Auto-fit viewport when a new file is loaded
+  // Auto-fit viewport when data or view changes
   useEffect(() => {
     const c = canvasRef.current;
-    if (!c || !drawData.batches.length) return;
+    if (!c || !layout.filteredBatches.length) return;
     const w = c.width, h = c.height;
     if (w === 0 || h === 0) return;
-    const bb = computeBatchBounds(drawData.batches);
-    const fit = fitViewToBounds(drawData.batches, bb, w, h, getPreferredViewBounds(drawData));
+    const bb = computeBatchBounds(layout.filteredBatches);
+    const fit = fitViewToBounds(layout.filteredBatches, bb, w, h, layout.fitBounds);
     setViewport((prev) => ({ ...prev, ...fit }));
-  }, [drawData]);
+  }, [layout.filteredBatches, layout.fitBounds]);
 
   const handleResize = useCallback((w: number, h: number) => {
     const dpr = window.devicePixelRatio;
     setViewport((prev) => {
       const next = { ...prev, canvasWidth: w, canvasHeight: h, dpr };
-      // First time or data changed: auto fit
-      if (prev.canvasWidth === 0 && w > 0 && h > 0 && drawData.batches.length > 0) {
-        const bb = computeBatchBounds(drawData.batches);
-        const fit = fitViewToBounds(drawData.batches, bb, w, h, getPreferredViewBounds(drawData));
+      if (prev.canvasWidth === 0 && w > 0 && h > 0 && layout.filteredBatches.length > 0) {
+        const bb = computeBatchBounds(layout.filteredBatches);
+        const fit = fitViewToBounds(layout.filteredBatches, bb, w, h, layout.fitBounds);
         return { ...next, ...fit };
       }
       return next;
     });
-  }, [drawData]);
+  }, [layout.filteredBatches, layout.fitBounds]);
 
   const handlePan = useCallback((dx: number, dy: number) => {
     setViewport((prev) => ({
@@ -82,15 +93,37 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
 
   const handleFit = useCallback(() => {
     const c = canvasRef.current;
-    if (!c || !drawData.batches.length) return;
-    const bb = computeBatchBounds(drawData.batches);
-    const fit = fitViewToBounds(drawData.batches, bb, c.width, c.height, getPreferredViewBounds(drawData));
+    if (!c || !layout.filteredBatches.length) return;
+    const bb = computeBatchBounds(layout.filteredBatches);
+    const fit = fitViewToBounds(layout.filteredBatches, bb, c.width, c.height, layout.fitBounds);
     setViewport((prev) => ({ ...prev, ...fit }));
-  }, [drawData]);
+  }, [layout.filteredBatches, layout.fitBounds]);
 
   const handleCanvasReady = useCallback((canvas: HTMLCanvasElement) => {
     canvasRef.current = canvas;
   }, []);
+
+  const handleSelect = useCallback((screenX: number, screenY: number) => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const r = c.getBoundingClientRect();
+    sel.pick(screenX - r.left, screenY - r.top, viewport, layout.filteredBatches, layout.filteredTexts);
+  }, [viewport, layout.filteredBatches, layout.filteredTexts]);
+
+  const handleExportPdf = useCallback(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const dataUrl = c.toDataURL('image/png');
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(`<!DOCTYPE html><html><head><title>${fileName || 'CAD Export'}</title>
+<style>@media print { @page { margin: 0; } body { margin: 0; } img { width: 100vw; height: 100vh; object-fit: contain; } }</style></head>
+<body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff">
+<img src="${dataUrl}" style="max-width:100%;max-height:100vh"/>
+<script>setTimeout(()=>window.print(),300)</script>
+</body></html>`);
+    w.document.close();
+  }, [fileName]);
 
   const toggleLayer = useCallback((name: string, visible: boolean) => {
     setLayerVisible((prev) => { const n = new Map(prev); n.set(name, visible); return n; });
@@ -108,18 +141,23 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1e1e2e' }}>
       <CadCanvas
-        drawData={drawData}
+        drawData={filteredDrawData}
         viewport={viewport}
         layerVisible={layerVisible}
         measurements={measure.measurements}
         measurePoints={measure.points}
         measurePreview={measure.preview}
         measureMode={measure.mode}
+        selection={sel.selection}
+        onSelect={handleSelect}
         onPan={handlePan}
         onZoom={handleZoom}
         onFit={handleFit}
         onResize={handleResize}
         onCanvasReady={handleCanvasReady}
+        onMeasureClick={measure.addPoint}
+        onMeasureMove={measure.setPreview}
+        onMeasureFinish={measure.finishArea}
       />
       <Toolbar
         onFit={handleFit}
@@ -133,6 +171,7 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
         onReparse={onReparse}
         recentFiles={recentFiles}
         onOpenRecent={onOpenRecent}
+        onExportPdf={handleExportPdf}
       />
       <LayerPanel
         open={layersOpen}
@@ -143,6 +182,11 @@ export default function CadViewer({ drawData, onOpenFile, fileName, recentFiles,
         onShowAll={showAll}
         onHideAll={hideAll}
         onInvert={invertAll}
+      />
+      <LayoutTabBar
+        tabs={layout.layoutTabs}
+        activeViewId={layout.currentViewId}
+        onSwitch={layout.switchView}
       />
       <StatusBar
         fileName={fileName || (drawData.entityCount + ' entities')}

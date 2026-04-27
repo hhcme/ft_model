@@ -114,6 +114,8 @@ export interface DrawingInfo {
   extents?: Bounds;
   insertionBase?: { x: number; y: number; z?: number };
   textSize?: number;
+  usesNamedPlotStyles?: boolean;
+  plotStyleTable?: string;
 }
 
 /** Full drawing data from render_export. */

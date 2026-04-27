@@ -30,6 +30,8 @@ struct DrawingMetadata {
     float text_size = 0.0f;
     std::string acad_version;
     size_t dwg_header_vars_bytes = 0;
+    bool uses_named_plot_styles = false;   // STB mode; false = CTB (color-dependent)
+    std::string plot_style_table;          // CTB/STB filename referenced by the drawing
 };
 
 struct Layout {
@@ -128,7 +130,7 @@ public:
 
     const std::vector<Layer>& layers() const override;
     const std::vector<Linetype>& linetypes() const;
-    const std::vector<TextStyle>& text_styles() const;
+    const std::vector<TextStyle>& text_styles() const override;
     const std::vector<Block>& blocks() const override;
     std::vector<Block>& blocks() override;
     const std::vector<Viewport>& viewports() const override;

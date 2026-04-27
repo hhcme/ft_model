@@ -549,7 +549,13 @@ static void parse_style_object(DwgBitReader& r, EntitySink& scene,
     style.font_file = font_name;
     style.fixed_height = static_cast<float>(height);
     style.width_factor = static_cast<float>(width);
-    style.is_shx = !bigfont_name.empty();
+    // SHX detection: either bigfont is present or font_file ends with .shx
+    {
+        std::string fl = font_name;
+        std::transform(fl.begin(), fl.end(), fl.begin(), ::tolower);
+        style.is_shx = !bigfont_name.empty() ||
+            (fl.size() > 4 && fl.compare(fl.size() - 4, 4, ".shx") == 0);
+    }
 
     scene.add_text_style(std::move(style));
 }

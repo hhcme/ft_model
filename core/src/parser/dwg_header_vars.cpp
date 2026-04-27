@@ -167,6 +167,24 @@ Result DwgParser::parse_header_variables(EntitySink& scene)
 
     (void)points;
     (void)strings;
+
+    // ---- Scan for plot style table references (CTB/STB) ----
+    // PSTYLENAME is stored as a string in the header; scan raw text for
+    // common plot style filenames.
+    for (const auto& s : strings) {
+        std::string lower = s;
+        for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower.size() > 4) {
+            if (lower.find(".ctb") != std::string::npos) {
+                scene.drawing_info().uses_named_plot_styles = false;
+                scene.drawing_info().plot_style_table = s;
+            } else if (lower.find(".stb") != std::string::npos) {
+                scene.drawing_info().uses_named_plot_styles = true;
+                scene.drawing_info().plot_style_table = s;
+            }
+        }
+    }
+
     return Result::success();
 }
 

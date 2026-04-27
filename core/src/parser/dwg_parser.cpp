@@ -669,6 +669,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
             (void)anonymous;
             (void)hasattrs;
 
+            if (blkisxref || xrefoverlaid) {
+                m_block_is_xref_flags[handle] = true;
+            }
+
             if (!block_name.empty()) {
                 m_sections.block_names[handle] = block_name;
             }

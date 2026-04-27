@@ -1,6 +1,8 @@
 import { useRef, useEffect, useMemo } from 'react';
 import type { DrawData, Viewport, Measurement, MeasurePoint } from '../../app/types';
+import type { SelectionState } from '../../hooks/useSelection';
 import { computeBatchBounds, computeOutlierResistantBounds } from '../../utils/geometry';
+import { screenToWorld, worldToScreen } from '../../utils/transforms';
 import {
   renderGrid, renderBatches, renderTexts, renderMeasurements,
   renderBorder, renderPaper, withWorldClip, beginRenderFrame,
@@ -20,16 +22,24 @@ interface Props {
   onFit: () => void;
   onResize: (w: number, h: number) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement) => void;
+  onMeasureClick?: (wx: number, wy: number) => void;
+  onMeasureMove?: (wx: number, wy: number) => void;
+  onMeasureFinish?: () => void;
+  selection?: SelectionState;
+  onSelect?: (screenX: number, screenY: number) => void;
 }
 
 export default function CadCanvas({
   drawData, viewport, layerVisible, measurements, measurePoints,
-  measurePreview, measureMode, theme = 'dark', onPan, onZoom, onFit, onResize, onCanvasReady,
+  measurePreview, measureMode, theme = 'dark',
+  onPan, onZoom, onFit, onResize, onCanvasReady,
+  onMeasureClick, onMeasureMove, onMeasureFinish,
+  selection, onSelect,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const needsRender = useRef(true);
-  const propsRef = useRef({ drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode });
+  const propsRef = useRef({ drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect });
   const dragRef = useRef({ dragging: false, x: 0, y: 0, touchDist: 0, tapTime: 0 });
   const boundsRef = useRef<{ bb: ReturnType<typeof computeBatchBounds>; ob: ReturnType<typeof computeOutlierResistantBounds> } | null>(null);
 
@@ -42,9 +52,9 @@ export default function CadCanvas({
   useEffect(() => { boundsRef.current = { bb: batchBounds, ob: outlierBounds }; }, [batchBounds, outlierBounds]);
 
   useEffect(() => {
-    propsRef.current = { drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode };
+    propsRef.current = { drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect };
     needsRender.current = true;
-  }, [drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode]);
+  }, [drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect]);
 
   // Canvas resize observer
   useEffect(() => {
@@ -71,12 +81,49 @@ export default function CadCanvas({
 
     const onMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
-      d.dragging = true; d.x = e.clientX; d.y = e.clientY; e.preventDefault();
+      const p = propsRef.current;
+      if (p.measureMode && p.onMeasureClick) {
+        // Measurement mode: click to add point
+        const r = cv.getBoundingClientRect();
+        const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top, p.viewport);
+        p.onMeasureClick(wx, wy);
+        e.preventDefault();
+        return;
+      }
+      d.dragging = true; d.x = e.clientX; d.y = e.clientY;
+      d.tapTime = Date.now();
+      e.preventDefault();
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      const wasDragging = d.dragging;
+      const dt = Date.now() - d.tapTime;
+      d.dragging = false;
+      // Short click without significant drag = select
+      if (wasDragging && dt < 200 && Math.abs(e.clientX - d.x) < 5 && Math.abs(e.clientY - d.y) < 5) {
+        const p = propsRef.current;
+        if (!p.measureMode && p.onSelect) {
+          p.onSelect(e.clientX, e.clientY);
+        }
+      }
     };
     const onMouseMove = (e: MouseEvent) => {
-      if (!d.dragging) return;
-      onPan(e.clientX - d.x, e.clientY - d.y);
-      d.x = e.clientX; d.y = e.clientY; e.preventDefault();
+      const p = propsRef.current;
+      if (d.dragging) {
+        onPan(e.clientX - d.x, e.clientY - d.y);
+        d.x = e.clientX; d.y = e.clientY; e.preventDefault();
+      } else if (p.measureMode && p.onMeasureMove) {
+        // Update measurement preview on hover
+        const r = cv.getBoundingClientRect();
+        const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top, p.viewport);
+        p.onMeasureMove(wx, wy);
+      }
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const p = propsRef.current;
+      if (p.measureMode === 'area' && p.onMeasureFinish) {
+        p.onMeasureFinish();
+      }
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -113,17 +160,20 @@ export default function CadCanvas({
     const opts = { passive: false } as const;
     cv.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', () => { d.dragging = false; });
+    window.addEventListener('mouseup', onMouseUp);
     cv.addEventListener('wheel', onWheel, opts);
     cv.addEventListener('dblclick', onFit);
+    cv.addEventListener('contextmenu', onContextMenu);
     cv.addEventListener('touchstart', onTouchStart, opts);
     cv.addEventListener('touchmove', onTouchMove, opts);
     cv.addEventListener('touchend', () => { d.touchDist = 0; });
     return () => {
       cv.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
       cv.removeEventListener('wheel', onWheel);
       cv.removeEventListener('dblclick', onFit);
+      cv.removeEventListener('contextmenu', onContextMenu);
       cv.removeEventListener('touchstart', onTouchStart);
       cv.removeEventListener('touchmove', onTouchMove);
     };
@@ -164,10 +214,49 @@ export default function CadCanvas({
         if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, av?.clipBounds, av?.paperMode === true || isLight);
       });
       renderMeasurements(ctx, p.measurements, p.measurePoints, p.measurePreview, vp, p.measureMode);
+      // Selection highlight overlay
+      if (p.selection) {
+        const s = p.selection;
+        const hc = s.highlightColor;
+        const col = `rgb(${hc[0] * 255 | 0},${hc[1] * 255 | 0},${hc[2] * 255 | 0})`;
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = col;
+        const w2s = (wx: number, wy: number) => worldToScreen(wx, wy, vp);
+        if (s.selectedBatchIndex !== null && dd.batches[s.selectedBatchIndex]) {
+          const batch = dd.batches[s.selectedBatchIndex];
+          ctx.beginPath();
+          const v = batch.vertices;
+          if (batch.topology === 'lines') {
+            for (let i = 0; i + 3 < v.length; i += 4) {
+              const [sx1, sy1] = w2s(v[i], v[i + 1]);
+              const [sx2, sy2] = w2s(v[i + 2], v[i + 3]);
+              ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2);
+            }
+          } else if (batch.topology === 'linestrip') {
+            const [sx0, sy0] = w2s(v[0], v[1]);
+            ctx.moveTo(sx0, sy0);
+            for (let i = 2; i + 1 < v.length; i += 2) {
+              const [sx, sy] = w2s(v[i], v[i + 1]);
+              ctx.lineTo(sx, sy);
+            }
+          }
+          ctx.stroke();
+        }
+        if (s.selectedTextIndex !== null && dd.texts?.[s.selectedTextIndex]) {
+          const t = dd.texts[s.selectedTextIndex];
+          const hw = (t.rectWidth ?? t.height * 6) * 0.5;
+          const hh = (t.rectHeight ?? t.height) * 0.5;
+          const [sx1, sy1] = w2s(t.x - hw, t.y + hh);
+          const [sx2, sy2] = w2s(t.x + hw, t.y - hh);
+          ctx.strokeRect(Math.min(sx1, sx2), Math.min(sy1, sy2), Math.abs(sx2 - sx1), Math.abs(sy2 - sy1));
+        }
+        ctx.restore();
+      }
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
   }, []);
 
-  return <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%', cursor: 'grab', touchAction: 'none' }} />;
+  return <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%', cursor: measureMode ? 'crosshair' : 'grab', touchAction: 'none' }} />;
 }

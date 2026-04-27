@@ -407,6 +407,9 @@ private:
     size_t m_block_entity_start = 0;
     uint64_t m_current_block_handle = 0;
     uint64_t m_current_block_header_handle = 0;
+    bool m_current_block_is_xref = false;
+    bool m_current_block_xref_overlaid = false;
+    std::unordered_map<uint64_t, bool> m_block_is_xref_flags;
 
     // ---- DWG table handle tracking ----
     // Maps table object handles → SceneGraph indices. Populated during table

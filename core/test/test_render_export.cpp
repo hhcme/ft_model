@@ -2406,6 +2406,10 @@ int main(int argc, char** argv) {
     out << ", \"insertionBase\": ";
     write_vec3_xy(out, meta.insertion_base);
     out << ", \"textSize\": " << meta.text_size;
+    out << ", \"usesNamedPlotStyles\": " << (meta.uses_named_plot_styles ? "true" : "false");
+    if (!meta.plot_style_table.empty()) {
+        out << ", \"plotStyleTable\": \"" << escape_json(meta.plot_style_table) << "\"";
+    }
     out << "},\n";
     out << "  \"activeViewId\": \"" << active_view_id << "\",\n";
     out << "  \"views\": [\n";

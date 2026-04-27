@@ -16,6 +16,8 @@ struct Block {
     bool is_model_space = false;
     bool is_paper_space = false;
     bool is_anonymous = false;
+    bool is_xref = false;
+    bool xref_overlaid = false;
     int32_t owner_layout_index = -1;
     uint64_t dwg_block_handle = 0;
     uint64_t dwg_block_header_handle = 0;

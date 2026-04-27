@@ -5,6 +5,7 @@ import {
   CompressOutlined, UndoOutlined, AppstoreOutlined,
   ColumnWidthOutlined, BorderOutlined, ClearOutlined,
   FolderOpenOutlined, SyncOutlined, ClockCircleOutlined,
+  PrinterOutlined,
 } from '@ant-design/icons';
 import type { RecentFile } from '../../app/types';
 
@@ -20,12 +21,13 @@ interface Props {
   onReparse: () => void;
   recentFiles: RecentFile[];
   onOpenRecent: (recent: RecentFile) => void;
+  onExportPdf?: () => void;
 }
 
 export default memo(function Toolbar({
   onFit, onReset, onToggleLayers,
   measureMode, onMeasureDist, onMeasureArea, onMeasureClear,
-  onOpenFile, onReparse, recentFiles, onOpenRecent,
+  onOpenFile, onReparse, recentFiles, onOpenRecent, onExportPdf,
 }: Props) {
   const handleUpload = (file: File) => { onOpenFile(file); return false; };
 
@@ -83,6 +85,10 @@ export default memo(function Toolbar({
         />
       </Tooltip>
       <Tooltip title="清除测量"><Button type="text" icon={<ClearOutlined />} size="small" onClick={onMeasureClear} /></Tooltip>
+      <span style={{ color: 'rgba(255,255,255,0.15)' }}>|</span>
+      <Tooltip title="导出 PDF">
+        <Button type="text" icon={<PrinterOutlined />} size="small" onClick={onExportPdf} />
+      </Tooltip>
     </div>
   );
 })

@@ -102,6 +102,17 @@ bool DwgParser::process_block_endblk(
             block.dwg_block_handle = m_current_block_handle;
             block.is_model_space = (m_current_block_name == "*MODEL_SPACE");
             block.is_paper_space = (m_current_block_name == "*PAPER_SPACE");
+            // Xref detection: check if BLOCK_HEADER was flagged as external reference
+            {
+                auto it = m_block_is_xref_flags.find(m_current_block_header_handle);
+                if (it != m_block_is_xref_flags.end() && it->second) {
+                    block.is_xref = true;
+                }
+                it = m_block_is_xref_flags.find(m_current_block_handle);
+                if (it != m_block_is_xref_flags.end() && it->second) {
+                    block.is_xref = true;
+                }
+            }
             for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                 block.entity_indices.push_back(static_cast<int32_t>(i));
             }
