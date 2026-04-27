@@ -155,22 +155,31 @@ Vec3 evaluate_bspline(const SplineEntity& spline, float u) {
     };
 }
 
-std::vector<Vec3> tessellate_spline_points(const SplineEntity& spline) {
+std::vector<Vec3> tessellate_spline_points(const SplineEntity& spline, float ppu) {
     std::vector<Vec3> out;
 
     if (!spline.fit_points.empty()) {
         const auto& pts = spline.fit_points;
         if (pts.size() < 2) return out;
 
-        const int samples_per_segment = 8;
-        out.reserve((pts.size() - 1) * samples_per_segment + 1);
+        float seg_chord = 0.0f;
+        for (size_t i = 1; i < pts.size(); ++i) {
+            seg_chord += distance_xy(pts[i - 1], pts[i]);
+        }
+        // Adaptive samples per segment based on pixel-space chord length.
+        // Target ~2px spacing in screen space.
+        float total_px = seg_chord * ppu;
+        int samples_per_seg = static_cast<int>(std::ceil(total_px / (pts.size() * 2.0f)));
+        samples_per_seg = std::clamp(samples_per_seg, 4, 32);
+
+        out.reserve((pts.size() - 1) * samples_per_seg + 1);
         for (size_t i = 0; i + 1 < pts.size(); ++i) {
             const Vec3& p0 = (i == 0) ? pts[i] : pts[i - 1];
             const Vec3& p1 = pts[i];
             const Vec3& p2 = pts[i + 1];
             const Vec3& p3 = (i + 2 < pts.size()) ? pts[i + 2] : pts[i + 1];
-            for (int s = 0; s < samples_per_segment; ++s) {
-                const float t = static_cast<float>(s) / static_cast<float>(samples_per_segment);
+            for (int s = 0; s < samples_per_seg; ++s) {
+                const float t = static_cast<float>(s) / static_cast<float>(samples_per_seg);
                 Vec3 p = catmull_rom(p0, p1, p2, p3, t);
                 if (is_renderable_point(p)) out.push_back(p);
             }
@@ -189,13 +198,24 @@ std::vector<Vec3> tessellate_spline_points(const SplineEntity& spline) {
         const float u0 = spline.knots[static_cast<size_t>(degree)];
         const float u1 = spline.knots[static_cast<size_t>(n + 1)];
         if (std::isfinite(u0) && std::isfinite(u1) && u1 > u0) {
+            // Chord-height error formula for B-spline sampling:
+            //   sagitta ≈ chord²/(8·R) <= tolerance_world
+            //   samples >= chord / sqrt(8·R·tol)
+            // Where R ≈ min control-polygon edge length (conservative curvature bound).
             float chord = 0.0f;
+            float min_edge = 1e30f;
             for (size_t i = 1; i < pts.size(); ++i) {
-                chord += distance_xy(pts[i - 1], pts[i]);
+                float d = distance_xy(pts[i - 1], pts[i]);
+                chord += d;
+                if (d > 1e-6f) min_edge = std::min(min_edge, d);
             }
-            const int chord_samples = static_cast<int>(std::ceil(chord / 12.0f));
-            const int samples = std::clamp(
-                std::max<int>(static_cast<int>(pts.size()) * 8, chord_samples), 12, 160);
+            float effective_r = std::min(min_edge, chord * 0.5f);
+            float tol_world = 0.5f / std::max(ppu, 1e-6f);
+            float adaptive = chord / std::sqrt(std::max(8.0f * effective_r * tol_world, 1e-6f));
+            float chord_px = chord * ppu;
+            int samples = static_cast<int>(std::ceil(std::max(adaptive, chord_px * 0.5f)));
+            samples = std::clamp(samples, static_cast<int>(pts.size()) * 2, 2048);
+
             out.reserve(static_cast<size_t>(samples + 1));
             for (int i = 0; i <= samples; ++i) {
                 const float t = static_cast<float>(i) / static_cast<float>(samples);
@@ -856,27 +876,173 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     // Hatch — solid fill polygon
     case EntityType::Hatch: {
         auto* hatch = std::get_if<9>(&entity.data);
-        if (!hatch || !hatch->is_solid || hatch->loops.empty()) break;
+        if (!hatch || hatch->loops.empty()) break;
 
-        auto* batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
-        batch->sort_key = RenderKey::make(layer_u16,
-            static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
-            depth_order);
+        if (hatch->is_solid) {
+            auto* batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
+            batch->sort_key = RenderKey::make(layer_u16,
+                static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
+                depth_order);
 
-        for (const auto& loop : hatch->loops) {
-            if (loop.vertices.size() < 3) continue;
-            for (size_t i = 1; i + 1 < loop.vertices.size(); ++i) {
-                auto [x0, y0] = tx(loop.vertices[0].x, loop.vertices[0].y);
-                auto [xi, yi] = tx(loop.vertices[i].x, loop.vertices[i].y);
-                auto [xip, yip] = tx(loop.vertices[i + 1].x, loop.vertices[i + 1].y);
-                if (!is_renderable_coord(x0, y0) ||
-                    !is_renderable_coord(xi, yi) ||
-                    !is_renderable_coord(xip, yip)) {
-                    continue;
+            for (const auto& loop : hatch->loops) {
+                if (loop.vertices.size() < 3) continue;
+                for (size_t i = 1; i + 1 < loop.vertices.size(); ++i) {
+                    auto [x0, y0] = tx(loop.vertices[0].x, loop.vertices[0].y);
+                    auto [xi, yi] = tx(loop.vertices[i].x, loop.vertices[i].y);
+                    auto [xip, yip] = tx(loop.vertices[i + 1].x, loop.vertices[i + 1].y);
+                    if (!is_renderable_coord(x0, y0) ||
+                        !is_renderable_coord(xi, yi) ||
+                        !is_renderable_coord(xip, yip)) {
+                        continue;
+                    }
+                    append_vertex(batch->vertex_data, x0, y0);
+                    append_vertex(batch->vertex_data, xi, yi);
+                    append_vertex(batch->vertex_data, xip, yip);
                 }
-                append_vertex(batch->vertex_data, x0, y0);
-                append_vertex(batch->vertex_data, xi, yi);
-                append_vertex(batch->vertex_data, xip, yip);
+            }
+        } else {
+            // Pattern hatch — generate line segments clipped to boundary loops.
+            // Predefined pattern definitions: angle (deg), spacing, optional cross angle.
+            struct PatLine { float angle; float spacing; };
+            PatLine pat{};
+            std::string name_upper;
+            name_upper.reserve(hatch->pattern_name.size());
+            for (char c : hatch->pattern_name) name_upper.push_back(static_cast<char>(std::toupper(c)));
+
+            if (name_upper.find("ANSI31") != std::string::npos) {
+                pat = {45.0f, 3.0f};
+            } else if (name_upper.find("ANSI32") != std::string::npos) {
+                pat = {45.0f, 8.0f};
+            } else if (name_upper.find("ANSI33") != std::string::npos) {
+                pat = {45.0f, 4.0f};
+            } else if (name_upper.find("ANSI37") != std::string::npos) {
+                pat = {45.0f, 3.0f};  // cross lines handled below
+            } else if (name_upper.find("ANSI38") != std::string::npos) {
+                pat = {45.0f, 6.0f};
+            } else if (name_upper.find("AR-CONC") != std::string::npos ||
+                       name_upper.find("ARCONC") != std::string::npos) {
+                pat = {45.0f, 5.0f};
+            } else if (name_upper.find("AR-SAND") != std::string::npos) {
+                pat = {45.0f, 4.0f};
+            } else if (name_upper.find("CROSS") != std::string::npos ||
+                       name_upper.find("NET") != std::string::npos ||
+                       name_upper.find("GRID") != std::string::npos) {
+                pat = {45.0f, 3.0f};  // cross handled below
+            } else {
+                // Fallback: use pattern_angle from entity, or 45 degrees
+                pat = {(hatch->pattern_angle != 0.0f) ? hatch->pattern_angle : 45.0f, 4.0f};
+            }
+            pat.spacing *= hatch->pattern_scale;
+            if (pat.spacing < 0.1f) pat.spacing = 4.0f;
+
+            // Compute bounding box of all loops
+            float bmin_x = 1e30f, bmin_y = 1e30f, bmax_x = -1e30f, bmax_y = -1e30f;
+            for (const auto& loop : hatch->loops) {
+                for (const auto& v : loop.vertices) {
+                    bmin_x = std::min(bmin_x, v.x); bmin_y = std::min(bmin_y, v.y);
+                    bmax_x = std::max(bmax_x, v.x); bmax_y = std::max(bmax_y, v.y);
+                }
+            }
+            if (bmin_x >= bmax_x || bmin_y >= bmax_y) break;
+
+            float rad = math::DEG_TO_RAD * pat.angle;
+            float cos_a = std::cos(rad), sin_a = std::sin(rad);
+            // Direction perpendicular to pattern lines = offset direction
+            float perp_x = -sin_a, perp_y = cos_a;
+            // Line direction = along pattern lines
+            float dir_x = cos_a, dir_y = sin_a;
+
+            // Extent of boundary projected onto perpendicular direction
+            float proj_min = bmin_x * perp_x + bmin_y * perp_y;
+            float proj_max = bmax_x * perp_x + bmax_y * perp_y;
+            float diag = std::sqrt((bmax_x - bmin_x) * (bmax_x - bmin_x) +
+                                   (bmax_y - bmin_y) * (bmax_y - bmin_y));
+            proj_min -= diag;
+            proj_max += diag;
+
+            // Point-in-polygon test for a single loop (ray casting)
+            auto point_in_loop = [](const HatchEntity::BoundaryLoop& loop, float px, float py) -> bool {
+                bool inside = false;
+                const auto& v = loop.vertices;
+                size_t n = v.size();
+                for (size_t i = 0, j = n - 1; i < n; j = i++) {
+                    if (((v[i].y > py) != (v[j].y > py)) &&
+                        (px < (v[j].x - v[i].x) * (py - v[i].y) / (v[j].y - v[i].y) + v[i].x)) {
+                        inside = !inside;
+                    }
+                }
+                return inside;
+            };
+
+            auto point_in_any_loop = [&](float px, float py) -> bool {
+                for (const auto& loop : hatch->loops) {
+                    if (point_in_loop(loop, px, py)) return true;
+                }
+                return false;
+            };
+
+            // Line segment length to extend beyond bounds (ensures full coverage)
+            float line_half = diag * 1.5f;
+
+            auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);
+            batch->sort_key = RenderKey::make(layer_u16,
+                static_cast<uint8_t>(PrimitiveTopology::LineList), 0, entity_type_u8,
+                depth_order);
+
+            // Generate pattern lines
+            auto emit_pattern_lines = [&](float angle_rad) {
+                float ca = std::cos(angle_rad), sa = std::sin(angle_rad);
+                float px = -sa, py = ca;
+                float dx = ca, dy = sa;
+                float pmin = bmin_x * px + bmin_y * py - diag;
+                float pmax = bmax_x * px + bmax_y * py + diag;
+
+                // Fine-grained subdivision for clipping accuracy
+                float seg_len = std::min(pat.spacing * 0.25f, 2.0f);
+
+                for (float d = pmin; d <= pmax; d += pat.spacing) {
+                    float ox = px * d, oy = py * d;
+                    // Compute actual t range that covers boundary for this line
+                    float t_corners[4] = {
+                        (bmin_x - ox) * dx + (bmin_y - oy) * dy,
+                        (bmax_x - ox) * dx + (bmin_y - oy) * dy,
+                        (bmax_x - ox) * dx + (bmax_y - oy) * dy,
+                        (bmin_x - ox) * dx + (bmax_y - oy) * dy,
+                    };
+                    float t_lo = t_corners[0], t_hi = t_corners[0];
+                    for (int k = 1; k < 4; ++k) {
+                        t_lo = std::min(t_lo, t_corners[k]);
+                        t_hi = std::max(t_hi, t_corners[k]);
+                    }
+                    int steps = std::max(4, static_cast<int>((t_hi - t_lo) / seg_len));
+                    float dt = (t_hi - t_lo) / static_cast<float>(steps);
+
+                    for (int s = 0; s < steps; ++s) {
+                        float t0 = t_lo + static_cast<float>(s) * dt;
+                        float t1 = t0 + dt;
+                        float ax = ox + dx * t0, ay = oy + dy * t0;
+                        float bx = ox + dx * t1, by = oy + dy * t1;
+                        if (point_in_any_loop(ax, ay) && point_in_any_loop(bx, by)) {
+                            if (is_renderable_coord(ax, ay) && is_renderable_coord(bx, by)) {
+                                auto [tax, tay] = tx(ax, ay);
+                                auto [tbx, tby] = tx(bx, by);
+                                append_vertex(batch->vertex_data, tax, tay);
+                                append_vertex(batch->vertex_data, tbx, tby);
+                            }
+                        }
+                    }
+                }
+            };
+
+            emit_pattern_lines(rad);
+
+            // Cross patterns: ANSI37, ANSI38, CROSS, NET, GRID
+            bool is_cross = (name_upper.find("ANSI37") != std::string::npos ||
+                             name_upper.find("CROSS") != std::string::npos ||
+                             name_upper.find("NET") != std::string::npos ||
+                             name_upper.find("GRID") != std::string::npos);
+            if (is_cross) {
+                emit_pattern_lines(rad + math::PI * 0.5f);
             }
         }
         break;
@@ -1032,7 +1198,8 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         auto* spline = std::get_if<5>(&entity.data);
         if (!spline) break;
 
-        std::vector<Vec3> sampled = tessellate_spline_points(*spline);
+        float ppu = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+        std::vector<Vec3> sampled = tessellate_spline_points(*spline, ppu * m_tessellation_quality);
         if (sampled.size() < 2) break;
 
         auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);

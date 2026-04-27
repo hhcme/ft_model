@@ -76,8 +76,14 @@ int LodSelector::compute_spline_segments(int num_control_points, float pixels_pe
     if (num_control_points <= 0 || pixels_per_unit <= 0.0f) {
         return k_min_segments;
     }
-    // More control points and higher zoom => more segments.
-    int segments = static_cast<int>(num_control_points * pixels_per_unit * 2.0f);
+    // Chord-height error: assume average edge length as curvature proxy.
+    // For N control points spanning chord C, edge ~ C/N.
+    //   samples >= C / sqrt(8 * (C/N) * (T/ppu))
+    // Simplified:  samples >= N * sqrt(C * ppu / (8 * T))
+    // With T = 0.5px: samples ~ N * sqrt(C_ppu / 4)
+    float effective_ppu = pixels_per_unit;
+    int segments = static_cast<int>(
+        num_control_points * std::sqrt(std::max(effective_ppu * 0.25f, 1.0f)));
     return math::clamp(segments, k_min_segments, k_max_segments);
 }
 

@@ -777,21 +777,22 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
         switch (gv.code) {
             case 8:  layer_name = gv.value; break;
 
-            // Hatch solid fill flag (1=solid, 0=pattern)
-            case 60: /* boundary annotation — skip */ break;
+            // Boundary annotation — skip
+            case 60: break;
+
+            // Solid fill flag: 1 = solid, 0 = patterned
+            case 70:
+                is_solid_fill = (gv.as_int() == 1);
+                break;
+
+            // Associativity flag (not used for rendering)
+            case 71: break;
 
             // Hatch pattern type: 0=user, 1=predefined, 2=custom
             case 75: break;
 
-            // Solid fill flag (group code 70 for HATCH): 1 = solid, 0 = patterned
-            case 71:
-                is_solid_fill = (gv.as_int() == 1);
-                break;
-
-            // Pattern type (0=user, 1=predefined, 2=custom)
-            case 76:
-                if (gv.as_int() == 1) is_solid_fill = true;
-                break;
+            // Hatch style (0=odd parity, 1=outermost, 2=through)
+            case 76: break;
 
             // Pattern name
             case 2:
@@ -818,8 +819,8 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
                 flush_edge();      // flush any pending edge
                 finish_loop();     // finalize any previous loop
                 current_path_type = gv.as_int();
-                // bit 2 (0x04) = polyline, bit 0 (0x01) = edge-defined
-                collecting_polyline_vertices = (current_path_type & 0x04) != 0;
+                // bit 1 (0x02) = polyline boundary path type
+                collecting_polyline_vertices = (current_path_type & 0x02) != 0;
                 break;
 
             // Number of edges for edge-defined path
@@ -902,7 +903,7 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
 
     if (data.loops.empty()) return;
 
-    data.is_solid = true; // Render all hatch boundaries as solid fill for visual preview
+    data.is_solid = is_solid_fill;
 
     // Compute bounds from all loop vertices
     hdr.bounds = Bounds3d::empty();
