@@ -25,6 +25,7 @@ namespace cad {
 // 14 LineEntity     (XLine)
 // 15 ViewportEntity (Viewport)
 // 16 SolidEntity    (Solid)
+// 17 LeaderEntity   (Leader)
 
 // ============================================================
 // EntityVariant convenience accessors
@@ -81,6 +82,10 @@ const PointEntity* EntityVariant::as_point() const {
 
 const ViewportEntity* EntityVariant::as_viewport() const {
     return std::get_if<15>(&data);
+}
+
+const LeaderEntity* EntityVariant::as_leader() const {
+    return std::get_if<17>(&data);
 }
 
 const SolidEntity* EntityVariant::as_solid() const {
@@ -231,6 +236,14 @@ Bounds3d entity_bounds_viewport(const ViewportEntity& vp) {
             {vp.center.x + hw, vp.center.y + hh, vp.center.z}};
 }
 
+Bounds3d entity_bounds_leader(const LeaderEntity& leader, const Vec3* vertices) {
+    Bounds3d b = Bounds3d::empty();
+    for (int32_t i = 0; i < leader.vertex_count && vertices; ++i) {
+        b.expand(vertices[i]);
+    }
+    return b;
+}
+
 Bounds3d entity_bounds_solid(const SolidEntity& solid) {
     Bounds3d b = Bounds3d::empty();
     for (int32_t i = 0; i < solid.corner_count; ++i) {
@@ -296,6 +309,8 @@ Bounds3d entity_bounds(const EntityVariant& entity) {
     case EntityType::Solid:
         if (auto* e = std::get_if<16>(&entity.data)) result = entity_bounds_solid(*e);
         break;
+    case EntityType::Leader:
+        break;  // Leader bounds require vertex buffer access (resolved at scene level)
     }
 
     return result;

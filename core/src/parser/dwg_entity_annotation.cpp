@@ -507,4 +507,80 @@ void parse_hatch(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
     scene.add_entity(make_entity<9>(hatch_hdr, std::move(hatch)));
 }
 
+// ============================================================
+// LEADER (DWG type 45) -> EntityVariant index 17
+// Binary layout (R2000+):
+//   B(unknown)
+//   BS(dimension_style) or T(dim_style_name for older versions)
+//   B(is_arrowhead_enabled) — R2010+: always B
+//   B(path_type)  // 0=straight, 1=spline
+//   BL(num_points)
+//   num_points × 3BD(points)
+//   3BD(arrowhead_block_insertion) or Vec3(0,0,0) if no custom arrow
+//   BL(num_arrowhead_vertices)
+//   BL(num_clipping_points)
+//   3BD(plane_normal) or BE(extrusion)
+//   3BD(horizontal_direction)
+//   B(has_hookline)
+//   BL(leader_creation_type)  // 0=from text, 1=from annotation
+// ============================================================
+void parse_leader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                  DwgVersion version) {
+    (void)r.read_b();  // unknown_b
+
+    // dimension style: BS for R2000-R2004, T for R2007+
+    if (version >= DwgVersion::R2007) {
+        (void)r.read_t();   // dim_style_name (string stream)
+    } else {
+        (void)r.read_bs();  // dim_style_handle_index
+    }
+
+    bool has_arrowhead = r.read_b();
+    uint8_t path_type = static_cast<uint8_t>(r.read_b());  // 0=straight, 1=spline
+
+    uint32_t num_points = r.read_bl();
+    if (!reader_ok(r) || num_points == 0 || num_points > 1000) return;
+
+    std::vector<Vec3> points;
+    points.reserve(num_points);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        double px = r.read_bd();
+        double py = r.read_bd();
+        double pz = r.read_bd();
+        if (!reader_ok(r)) return;
+        points.push_back({safe_float(px), safe_float(py), safe_float(pz)});
+    }
+
+    // Validate points
+    bool valid = true;
+    for (const auto& p : points) {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !is_safe_coord(p.x) || !is_safe_coord(p.y)) {
+            valid = false;
+            break;
+        }
+    }
+    if (!valid) return;
+
+    // Skip remaining fields (arrowhead, clipping, normal, etc.)
+    // We have the point data we need for geometry.
+
+    LeaderEntity leader;
+    leader.is_spline = (path_type == 1);
+    leader.has_arrowhead = has_arrowhead;
+
+    // Store points in vertex buffer
+    int32_t offset = scene.add_polyline_vertices(points.data(), points.size());
+    leader.vertex_count = static_cast<int32_t>(points.size());
+    leader.vertex_offset = offset;
+
+    // Compute bounds from points
+    Bounds3d bounds = Bounds3d::empty();
+    for (const auto& p : points) bounds.expand(p);
+
+    EntityHeader leader_hdr = hdr;
+    leader_hdr.type = EntityType::Leader;
+    leader_hdr.bounds = bounds;
+    scene.add_entity(make_entity<17>(leader_hdr, std::move(leader)));
+}
+
 } // namespace cad

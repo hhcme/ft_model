@@ -1142,6 +1142,60 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
+    // Leader — render as linestrip from vertex buffer
+    case EntityType::Leader: {
+        auto* ld = std::get_if<17>(&entity.data);
+        if (!ld || ld->vertex_count < 2) break;
+        const auto& vb = scene.vertex_buffer();
+        if (ld->vertex_offset < 0 ||
+            static_cast<size_t>(ld->vertex_offset + ld->vertex_count) > vb.size()) break;
+
+        auto* batch = find_batch(PrimitiveTopology::LineStrip, draw_color);
+        batch->sort_key = RenderKey::make(layer_u16,
+            static_cast<uint8_t>(PrimitiveTopology::LineStrip), 0, entity_type_u8,
+            depth_order);
+        batch->entity_starts.push_back(static_cast<uint32_t>(batch->vertex_data.size() / 2));
+
+        const Vec3* pts = vb.data() + ld->vertex_offset;
+        for (int32_t i = 0; i < ld->vertex_count; ++i) {
+            auto [px, py] = tx(pts[i].x, pts[i].y);
+            append_vertex(batch->vertex_data, px, py);
+        }
+
+        // Arrowhead at first point (start of leader)
+        if (ld->has_arrowhead && ld->vertex_count >= 2) {
+            auto* arrow_batch = find_batch(PrimitiveTopology::TriangleList, draw_color);
+            arrow_batch->sort_key = RenderKey::make(layer_u16,
+                static_cast<uint8_t>(PrimitiveTopology::TriangleList), 0, entity_type_u8,
+                depth_order);
+
+            auto [ax, ay] = tx(pts[0].x, pts[0].y);
+            auto [nx, ny] = tx(pts[1].x, pts[1].y);
+            float dir_x = ax - nx;
+            float dir_y = ay - ny;
+            float len = std::sqrt(dir_x * dir_x + dir_y * dir_y);
+            if (len > 1e-6f) {
+                dir_x /= len;
+                dir_y /= len;
+                float arrow_size = 3.0f;
+                auto inv = m_camera ? m_camera->pixels_per_unit() : 1.0f;
+                if (inv > 1e-6f) arrow_size = 3.0f / (inv * m_tessellation_quality);
+                arrow_size = std::max(arrow_size, 0.5f);
+
+                // Triangle arrow: tip at first point, base perpendicular
+                float perp_x = -dir_y * arrow_size * 0.5f;
+                float perp_y = dir_x * arrow_size * 0.5f;
+                float base_x = ax - dir_x * arrow_size;
+                float base_y = ay - dir_y * arrow_size;
+
+                append_vertex(arrow_batch->vertex_data, ax, ay);
+                append_vertex(arrow_batch->vertex_data, base_x + perp_x, base_y + perp_y);
+                append_vertex(arrow_batch->vertex_data, base_x - perp_x, base_y - perp_y);
+            }
+        }
+        break;
+    }
+
     case EntityType::Ray:
     case EntityType::XLine:
     case EntityType::Viewport:

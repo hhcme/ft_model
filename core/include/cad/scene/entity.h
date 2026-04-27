@@ -30,6 +30,7 @@ enum class EntityType : uint8_t {
     XLine,
     Viewport,
     Solid,
+    Leader,
 };
 
 enum class DrawingSpace : uint8_t {
@@ -182,6 +183,15 @@ struct ViewportEntity {
     bool has_custom_scale = false;
 };
 
+struct LeaderEntity {
+    int32_t vertex_offset = 0;         // index into scene vertex buffer
+    int32_t vertex_count = 0;
+    bool is_spline = false;            // path_type: 0=straight, 1=spline
+    bool has_arrowhead = true;
+    Vec3 horizontal_direction = {1, 0, 0};
+    float arrowhead_size = 0.0f;
+};
+
 // ============================================================
 // EntityVariant — tagged union via std::variant
 // ============================================================
@@ -202,7 +212,8 @@ using EntityData = std::variant<
     LineEntity,        // Ray reuses LineEntity
     LineEntity,        // XLine reuses LineEntity
     ViewportEntity,    // Viewport
-    SolidEntity        // Solid — filled 3/4 vertex polygon
+    SolidEntity,       // Solid — filled 3/4 vertex polygon
+    LeaderEntity       // Leader — leader line path + arrowhead
 >;
 
 struct EntityVariant {
@@ -247,6 +258,7 @@ struct EntityVariant {
     const DimensionEntity* as_dimension() const;
     const PointEntity* as_point() const;
     const ViewportEntity* as_viewport() const;
+    const LeaderEntity* as_leader() const;
     const SolidEntity* as_solid() const;
 };
 
@@ -268,6 +280,7 @@ Bounds3d entity_bounds_insert(const InsertEntity& insert);
 Bounds3d entity_bounds_dimension(const DimensionEntity& dim);
 Bounds3d entity_bounds_point(const PointEntity& pt);
 Bounds3d entity_bounds_viewport(const ViewportEntity& vp);
+Bounds3d entity_bounds_leader(const LeaderEntity& leader, const Vec3* vertices);
 Bounds3d entity_bounds_solid(const SolidEntity& solid);
 
 } // namespace cad

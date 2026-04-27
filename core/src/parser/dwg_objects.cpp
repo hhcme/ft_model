@@ -766,6 +766,7 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
         case 40:  parse_ray(reader, header, scene, version);          break;  // RAY
         case 41:  parse_xline(reader, header, scene, version);        break;  // XLINE
         case 44:  parse_mtext(reader, header, scene, version);        break;  // MTEXT
+        case 45:  parse_leader(reader, header, scene, version);       break;  // LEADER
         case 77:  parse_lwpolyline(reader, header, scene, version);   break;  // LWPOLYLINE
         case 78:  parse_hatch(reader, header, scene, version);        break;  // HATCH
 
