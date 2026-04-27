@@ -65,33 +65,18 @@ Matrix4x4 Matrix4x4::inverse_2d() const {
     return result;
 }
 
-Matrix4x4 Matrix4x4::orthographic(float left, float right, float bottom, float top,
-                                    float near_plane, float far_plane) {
+Matrix4x4 Matrix4x4::orthographic(float left, float right, float bottom, float top) {
     Matrix4x4 mat;
     float rl = right - left;
     float tb = top - bottom;
-    float fn = far_plane - near_plane;
     if (std::abs(rl) < 1e-10f || std::abs(tb) < 1e-10f) return identity();
 
     mat.m[0][0] = 2.0f / rl;
     mat.m[1][1] = 2.0f / tb;
-    mat.m[2][2] = -2.0f / fn;
+    mat.m[2][2] = 1.0f; // 2D: no depth scaling
     mat.m[3][0] = -(right + left) / rl;
     mat.m[3][1] = -(top + bottom) / tb;
-    mat.m[3][2] = -(far_plane + near_plane) / fn;
     mat.m[3][3] = 1.0f;
-    return mat;
-}
-
-Matrix4x4 Matrix4x4::perspective(float fov_radians, float aspect,
-                                   float near_plane, float far_plane) {
-    Matrix4x4 mat;
-    float tan_half_fov = std::tan(fov_radians * 0.5f);
-    mat.m[0][0] = 1.0f / (aspect * tan_half_fov);
-    mat.m[1][1] = 1.0f / tan_half_fov;
-    mat.m[2][2] = -(far_plane + near_plane) / (far_plane - near_plane);
-    mat.m[2][3] = -1.0f;
-    mat.m[3][2] = -(2.0f * far_plane * near_plane) / (far_plane - near_plane);
     return mat;
 }
 

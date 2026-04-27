@@ -1474,6 +1474,9 @@ int main(int argc, char** argv) {
         }
     };
 
+    // Rebuild spatial index for fast bounds queries
+    scene.rebuild_spatial_index();
+
     // Tessellate all entities into draw commands
     RenderBatcher batcher;
     if (is_dwg) {

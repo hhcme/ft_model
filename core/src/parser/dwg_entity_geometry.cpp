@@ -324,11 +324,12 @@ void parse_point(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
 
     if (!is_safe_coord(dx) || !is_safe_coord(dy)) return;
 
-    Vec3 point{safe_float(dx), safe_float(dy), safe_float(dz)};
+    PointEntity point;
+    point.position = {safe_float(dx), safe_float(dy), safe_float(dz)};
 
     EntityHeader pt_hdr = hdr;
     pt_hdr.type = EntityType::Point;
-    pt_hdr.bounds = Bounds3d::from_point(point);
+    pt_hdr.bounds = Bounds3d::from_point(point.position);
     scene.add_entity(make_entity<11>(pt_hdr, std::move(point)));
 }
 
@@ -774,16 +775,18 @@ void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene
 
     if (!reader_ok(r)) return;
 
-    Vec3 pt{static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)};
+    Vec3 pt_vec{static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)};
     if (g_pending_polyline2d.active) {
-        g_pending_polyline2d.vertices.push_back(pt);
+        g_pending_polyline2d.vertices.push_back(pt_vec);
         g_pending_polyline2d.bulges.push_back(static_cast<float>(bulge));
         return;
     }
 
+    PointEntity pt;
+    pt.position = pt_vec;
     EntityHeader phdr = hdr;
     phdr.type = EntityType::Point;
-    phdr.bounds = Bounds3d::from_point(pt);
+    phdr.bounds = Bounds3d::from_point(pt.position);
     scene.add_entity(make_entity<11>(phdr, std::move(pt)));
 }
 

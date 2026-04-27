@@ -34,8 +34,7 @@ bool append_vertex(std::vector<float>& vertex_data, float x, float y) {
 }
 
 bool is_renderable_point(const Vec3& pt) {
-    return is_renderable_coord(pt.x, pt.y) && std::isfinite(pt.z) &&
-           std::abs(pt.z) <= kMaxRenderableCoord;
+    return is_renderable_coord(pt.x, pt.y);
 }
 
 float distance_xy(const Vec3& a, const Vec3& b) {
@@ -63,9 +62,7 @@ Vec3 catmull_rom(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
         0.5f * ((2.0f * p1.y) + (-p0.y + p2.y) * t +
                 (2.0f * p0.y - 5.0f * p1.y + 4.0f * p2.y - p3.y) * t2 +
                 (-p0.y + 3.0f * p1.y - 3.0f * p2.y + p3.y) * t3),
-        0.5f * ((2.0f * p1.z) + (-p0.z + p2.z) * t +
-                (2.0f * p0.z - 5.0f * p1.z + 4.0f * p2.z - p3.z) * t2 +
-                (-p0.z + 3.0f * p1.z - 3.0f * p2.z + p3.z) * t3),
+        0.0f,
     };
 }
 
@@ -338,7 +335,8 @@ int RenderBatcher::compute_arc_segments(float radius) const {
 void RenderBatcher::begin_frame(const Camera& camera) {
     m_camera = &camera;
     m_batches.clear();
-    m_block_cache.clear();  // Tessellate each block definition once per frame
+    m_block_cache.clear();
+    m_cache_access_counter = 0;
     m_tessellating_blocks.clear();
     m_insert_vertex_count = 0;
 }
@@ -697,11 +695,26 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
             if (total_verts > 0) { cx /= total_verts; cy /= total_verts; }
             double cdist = std::sqrt(cx * cx + cy * cy);
 
-            m_block_cache[bk_idx] = {std::move(m_batches), total_verts, cdist, cx, cy};
+            m_block_cache[bk_idx] = {std::move(m_batches), total_verts, cdist, cx, cy, ++m_cache_access_counter};
             m_tessellating_blocks.erase(bk_idx);
             m_batches.swap(local_batches);
             cache_it = m_block_cache.find(bk_idx);
+
+            // LRU eviction: if cache grew too large, evict oldest entries
+            if (m_block_cache.size() > MAX_CACHE_ENTRIES) {
+                uint32_t cutoff = m_cache_access_counter -
+                    static_cast<uint32_t>(m_block_cache.size() / 2);
+                for (auto it = m_block_cache.begin(); it != m_block_cache.end(); ) {
+                    if (it->first != bk_idx && it->second.last_used < cutoff) {
+                        it = m_block_cache.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
         }
+
+        cache_it->second.last_used = ++m_cache_access_counter;
 
         if (cache_it->second.vertex_count > MAX_BLOCK_VERTICES) break;
         if (m_insert_vertex_count >= m_insert_vertex_budget) break;
@@ -1061,11 +1074,11 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         break;
     }
 
-    // Point — skip, no useful geometry
+    // Point — render crosshair marker
     case EntityType::Point: {
         auto* pt = std::get_if<11>(&entity.data);
         if (!pt) break;
-        auto [px, py] = tx(pt->x, pt->y);
+        auto [px, py] = tx(pt->position.x, pt->position.y);
         if (!is_renderable_coord(px, py)) break;
 
         auto* batch = find_batch(PrimitiveTopology::LineList, draw_color);

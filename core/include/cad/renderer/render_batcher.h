@@ -124,8 +124,11 @@ private:
         double centroid_dist = 0; // distance of geometry centroid from origin
         double centroid_x = 0;   // centroid X (for world-space block base_point)
         double centroid_y = 0;   // centroid Y
+        uint32_t last_used = 0;  // frame-internal access counter for LRU eviction
     };
     std::unordered_map<int32_t, BlockCacheEntry> m_block_cache;
+    uint32_t m_cache_access_counter = 0;
+    static constexpr size_t MAX_CACHE_ENTRIES = 1000;
     // Cycle detection: blocks currently being tessellated (nested INSERT chain)
     std::unordered_set<int32_t> m_tessellating_blocks;
     // Global INSERT vertex budget and running counter

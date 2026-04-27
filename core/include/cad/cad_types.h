@@ -143,12 +143,7 @@ struct Matrix4x4 {
         return mat;
     }
 
-    // 3D translation (reserved for 3D expansion)
-    static Matrix4x4 translation_3d(float tx, float ty, float tz) {
-        auto mat = identity();
-        mat.m[3][0] = tx; mat.m[3][1] = ty; mat.m[3][2] = tz;
-        return mat;
-    }
+    // 3D translation removed — project is 2D DWG only. Use translation_2d().
 
     // Multiply two matrices
     Matrix4x4 operator*(const Matrix4x4& rhs) const {
@@ -193,13 +188,8 @@ struct Matrix4x4 {
     // 2D inverse (optimized — treats as 2D affine)
     Matrix4x4 inverse_2d() const;
 
-    // Orthographic projection (2D and 3D)
-    static Matrix4x4 orthographic(float left, float right, float bottom, float top,
-                                   float near_plane = -1.0f, float far_plane = 1.0f);
-
-    // Perspective projection (3D reserved)
-    static Matrix4x4 perspective(float fov_radians, float aspect,
-                                  float near_plane, float far_plane);
+    // Orthographic projection (2D only — near/far removed)
+    static Matrix4x4 orthographic(float left, float right, float bottom, float top);
 
     // Data access for GPU upload (column-major as expected by OpenGL/Vulkan)
     const float* data() const { return &m[0][0]; }

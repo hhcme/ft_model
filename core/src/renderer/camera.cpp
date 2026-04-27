@@ -6,8 +6,7 @@ Camera::Camera()
     : m_center(0.0f, 0.0f, 0.0f)
     , m_zoom(1.0f)
     , m_viewport_width(800.0f)
-    , m_viewport_height(600.0f)
-    , m_projection_mode(ProjectionMode::Orthographic) {}
+    , m_viewport_height(600.0f) {}
 
 void Camera::pan(float dx, float dy) {
     m_center.x += dx;
@@ -64,10 +63,6 @@ void Camera::set_viewport(float width, float height) {
     m_viewport_height = height;
 }
 
-void Camera::set_projection_mode(ProjectionMode mode) {
-    m_projection_mode = mode;
-}
-
 Matrix4x4 Camera::view_matrix() const {
     // View matrix: scale by 1/zoom, then translate by -center
     float inv_zoom = 1.0f / m_zoom;
@@ -115,16 +110,6 @@ float Camera::zoom_level() const {
 
 float Camera::pixels_per_unit() const {
     return 1.0f / m_zoom;
-}
-
-// -- 3D reserved (empty implementations) --
-
-void Camera::orbit(float /*yaw*/, float /*pitch*/) {
-    // Reserved for 3D expansion
-}
-
-void Camera::dolly(float /*distance*/) {
-    // Reserved for 3D expansion
 }
 
 } // namespace cad

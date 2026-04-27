@@ -19,11 +19,11 @@ namespace cad {
 // 8  DimensionEntity(Dimension)
 // 9  HatchEntity    (Hatch)
 // 10 InsertEntity   (Insert)
-// 11 Vec3           (Point)
+// 11 PointEntity    (Point)
 // 12 CircleEntity   (Ellipse)
 // 13 LineEntity     (Ray)
 // 14 LineEntity     (XLine)
-// 15 Vec3           (Viewport)
+// 15 ViewportEntity (Viewport)
 // 16 SolidEntity    (Solid)
 
 // ============================================================
@@ -73,6 +73,14 @@ const InsertEntity* EntityVariant::as_insert() const {
 
 const DimensionEntity* EntityVariant::as_dimension() const {
     return std::get_if<8>(&data);
+}
+
+const PointEntity* EntityVariant::as_point() const {
+    return std::get_if<11>(&data);
+}
+
+const ViewportEntity* EntityVariant::as_viewport() const {
+    return std::get_if<15>(&data);
 }
 
 const SolidEntity* EntityVariant::as_solid() const {
@@ -212,6 +220,17 @@ Bounds3d entity_bounds_dimension(const DimensionEntity& dim) {
     return b;
 }
 
+Bounds3d entity_bounds_point(const PointEntity& pt) {
+    return Bounds3d::from_point(pt.position);
+}
+
+Bounds3d entity_bounds_viewport(const ViewportEntity& vp) {
+    float hw = vp.width * 0.5f;
+    float hh = vp.height * 0.5f;
+    return {{vp.center.x - hw, vp.center.y - hh, vp.center.z},
+            {vp.center.x + hw, vp.center.y + hh, vp.center.z}};
+}
+
 Bounds3d entity_bounds_solid(const SolidEntity& solid) {
     Bounds3d b = Bounds3d::empty();
     for (int32_t i = 0; i < solid.corner_count; ++i) {
@@ -269,9 +288,10 @@ Bounds3d entity_bounds(const EntityVariant& entity) {
         if (auto* e = std::get_if<8>(&entity.data)) result = entity_bounds_dimension(*e);
         break;
     case EntityType::Point:
-        if (auto* pt = std::get_if<11>(&entity.data)) result = Bounds3d::from_point(*pt);
+        if (auto* e = std::get_if<11>(&entity.data)) result = entity_bounds_point(*e);
         break;
     case EntityType::Viewport:
+        if (auto* e = std::get_if<15>(&entity.data)) result = entity_bounds_viewport(*e);
         break;
     case EntityType::Solid:
         if (auto* e = std::get_if<16>(&entity.data)) result = entity_bounds_solid(*e);

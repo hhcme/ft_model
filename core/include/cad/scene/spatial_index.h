@@ -8,7 +8,7 @@
 namespace cad {
 
 // ============================================================
-// Abstract SpatialIndex — 2D uses Quadtree, 3D reserved for Octree
+// Abstract SpatialIndex — 2D Quadtree interface
 // ============================================================
 class SpatialIndex {
 public:

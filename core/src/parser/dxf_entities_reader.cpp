@@ -88,7 +88,6 @@ void DxfEntitiesReader::parse_line(DxfTokenizer& tokenizer, SceneGraph& scene) {
     EntityHeader hdr{};
     hdr.type = EntityType::Line;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     while (true) {
@@ -121,7 +120,6 @@ void DxfEntitiesReader::parse_circle(DxfTokenizer& tokenizer, SceneGraph& scene)
     EntityHeader hdr{};
     hdr.type = EntityType::Circle;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     while (true) {
@@ -152,7 +150,6 @@ void DxfEntitiesReader::parse_arc(DxfTokenizer& tokenizer, SceneGraph& scene) {
     EntityHeader hdr{};
     hdr.type = EntityType::Arc;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     while (true) {
@@ -203,7 +200,6 @@ void DxfEntitiesReader::parse_lwpolyline(DxfTokenizer& tokenizer, SceneGraph& sc
     EntityHeader hdr{};
     hdr.type = EntityType::LwPolyline;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     std::vector<Vec3> vertices;
     std::vector<float> bulges;
@@ -253,7 +249,6 @@ void DxfEntitiesReader::parse_polyline(DxfTokenizer& tokenizer, SceneGraph& scen
     EntityHeader hdr{};
     hdr.type = EntityType::Polyline;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     std::vector<Vec3> vertices;
     std::vector<float> bulges;
@@ -326,7 +321,6 @@ void DxfEntitiesReader::parse_insert(DxfTokenizer& tokenizer, SceneGraph& scene)
     EntityHeader hdr{};
     hdr.type = EntityType::Insert;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     data.x_scale = 1.0f;
     data.y_scale = 1.0f;
     std::string block_name, layer_name;
@@ -368,7 +362,6 @@ void DxfEntitiesReader::parse_text(DxfTokenizer& tokenizer, SceneGraph& scene) {
     EntityHeader hdr{};
     hdr.type = EntityType::Text;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     while (true) {
@@ -406,7 +399,6 @@ void DxfEntitiesReader::parse_mtext(DxfTokenizer& tokenizer, SceneGraph& scene) 
     EntityHeader hdr{};
     hdr.type = EntityType::MText;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     std::string extra_text;
 
@@ -453,7 +445,6 @@ void DxfEntitiesReader::parse_ellipse(DxfTokenizer& tokenizer, SceneGraph& scene
     EntityHeader hdr{};
     hdr.type = EntityType::Ellipse;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     float major_x = 0.0f, major_y = 0.0f;
     float ratio = 1.0f;
@@ -499,11 +490,10 @@ void DxfEntitiesReader::parse_ellipse(DxfTokenizer& tokenizer, SceneGraph& scene
 }
 
 void DxfEntitiesReader::parse_point(DxfTokenizer& tokenizer, SceneGraph& scene) {
-    Vec3 data{};
+    PointEntity data{};
     EntityHeader hdr{};
     hdr.type = EntityType::Point;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     while (true) {
@@ -512,9 +502,9 @@ void DxfEntitiesReader::parse_point(DxfTokenizer& tokenizer, SceneGraph& scene) 
         const auto& gv = tokenizer.current();
         if (gv.code == 0) break;
         switch (gv.code) {
-            case 10: data.x = gv.as_float(); break;
-            case 20: data.y = gv.as_float(); break;
-            case 30: data.z = gv.as_float(); break;
+            case 10: data.position.x = gv.as_float(); break;
+            case 20: data.position.y = gv.as_float(); break;
+            case 30: data.position.z = gv.as_float(); break;
             case 8:  layer_name = gv.value; break;
             default: read_entity_header_field(hdr, gv); break;
         }
@@ -522,8 +512,8 @@ void DxfEntitiesReader::parse_point(DxfTokenizer& tokenizer, SceneGraph& scene) 
 
     // Expand by a small tolerance around the point
     hdr.bounds = Bounds3d{
-        {data.x - 0.1f, data.y - 0.1f, data.z},
-        {data.x + 0.1f, data.y + 0.1f, data.z}};
+        {data.position.x - 0.1f, data.position.y - 0.1f, data.position.z},
+        {data.position.x + 0.1f, data.position.y + 0.1f, data.position.z}};
     if (!layer_name.empty()) hdr.layer_index = scene.find_or_add_layer(layer_name);
     scene.add_entity(make_entity(hdr, EntityData{std::in_place_index<11>, std::move(data)}));
 }
@@ -536,7 +526,6 @@ void DxfEntitiesReader::parse_solid(DxfTokenizer& tokenizer, SceneGraph& scene) 
     EntityHeader hdr{};
     hdr.type = EntityType::Solid;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     bool has_corner[4] = {false, false, false, false};
 
@@ -588,7 +577,6 @@ void DxfEntitiesReader::parse_spline(DxfTokenizer& tokenizer, SceneGraph& scene)
     EntityHeader hdr{};
     hdr.type = EntityType::Spline;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
     int32_t knot_count = 0;
     int32_t spline_flags = 0;
@@ -666,7 +654,6 @@ void DxfEntitiesReader::parse_dimension(DxfTokenizer& tokenizer, SceneGraph& sce
     EntityHeader hdr{};
     hdr.type = EntityType::Dimension;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     // Definition point (group 10/20/30) — the point where the dimension line meets the extension line
@@ -718,7 +705,6 @@ void DxfEntitiesReader::parse_hatch(DxfTokenizer& tokenizer, SceneGraph& scene) 
     EntityHeader hdr{};
     hdr.type = EntityType::Hatch;
     hdr.is_visible = true;
-    hdr.dimensionality = 0x02;
     std::string layer_name;
 
     int32_t path_count = 0;

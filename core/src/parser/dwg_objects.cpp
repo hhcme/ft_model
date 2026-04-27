@@ -254,12 +254,24 @@ void parse_viewport(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
 
     int32_t viewport_index = scene.add_viewport(std::move(vp));
 
+    ViewportEntity vp_ent;
+    vp_ent.center = center;
+    vp_ent.width = static_cast<float>(paper_width);
+    vp_ent.height = static_cast<float>(paper_height);
+    vp_ent.target = Vec3{static_cast<float>(target_x),
+                         static_cast<float>(target_y),
+                         static_cast<float>(target_z)};
+    vp_ent.view_height = static_cast<float>(view_height);
+    vp_ent.twist_angle = static_cast<float>(twist);
+    vp_ent.custom_scale = static_cast<float>(paper_height / view_height);
+    vp_ent.has_custom_scale = true;
+
     EntityHeader vp_hdr = hdr;
     vp_hdr.type = EntityType::Viewport;
     vp_hdr.space = DrawingSpace::PaperSpace;
     vp_hdr.viewport_index = viewport_index;
     vp_hdr.bounds = viewport_bounds;
-    scene.add_entity(make_entity<15>(vp_hdr, std::move(center)));
+    scene.add_entity(make_entity<15>(vp_hdr, std::move(vp_ent)));
 }
 
 } // anonymous namespace

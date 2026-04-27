@@ -54,7 +54,6 @@ void DxfBlocksReader::parse_block(DxfTokenizer& tokenizer, SceneGraph& scene) {
                 EntityHeader hdr{};
                 hdr.type = EntityType::Line;
                 hdr.is_visible = true;
-                hdr.dimensionality = 0x02;
                 std::string layer_name;
 
                 while (true) {
@@ -86,7 +85,6 @@ void DxfBlocksReader::parse_block(DxfTokenizer& tokenizer, SceneGraph& scene) {
                 EntityHeader hdr{};
                 hdr.type = EntityType::Circle;
                 hdr.is_visible = true;
-                hdr.dimensionality = 0x02;
                 std::string layer_name;
 
                 while (true) {
@@ -116,7 +114,6 @@ void DxfBlocksReader::parse_block(DxfTokenizer& tokenizer, SceneGraph& scene) {
                 EntityHeader hdr{};
                 hdr.type = EntityType::Arc;
                 hdr.is_visible = true;
-                hdr.dimensionality = 0x02;
                 std::string layer_name;
 
                 while (true) {
@@ -146,7 +143,6 @@ void DxfBlocksReader::parse_block(DxfTokenizer& tokenizer, SceneGraph& scene) {
                 EntityHeader hdr{};
                 hdr.type = EntityType::LwPolyline;
                 hdr.is_visible = true;
-                hdr.dimensionality = 0x02;
                 std::string layer_name;
                 std::vector<Vec3> vertices;
                 std::vector<float> bulges;

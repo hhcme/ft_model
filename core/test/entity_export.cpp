@@ -319,8 +319,8 @@ static void write_entity(JsonWriter& j, const EntityVariant& ev, const SceneGrap
         break;
     }
     case EntityType::Point: {
-        auto* d = ev.get_if_at<11, Vec3>();
-        if (d) j.key_vec3("position", *d);
+        auto* d = ev.get_if_at<11, PointEntity>();
+        if (d) j.key_vec3("position", d->position);
         break;
     }
     default:

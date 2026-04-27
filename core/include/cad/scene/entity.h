@@ -61,7 +61,6 @@ struct EntityHeader {
     int32_t plot_style_index = -1;
     uint32_t draw_order = 0;
     float annotation_scale = 1.0f;
-    uint8_t dimensionality = 0x02;     // 0x02 = 2D, 0x03 = 3D (reserved)
     uint64_t dwg_handle = 0;
     uint64_t owner_handle = 0;
     uint64_t block_header_handle = 0;
@@ -165,6 +164,24 @@ struct SolidEntity {
     int32_t corner_count = 3;         // 3 or 4
 };
 
+struct PointEntity {
+    Vec3 position;
+    float pdsize = 0.0f;             // display size (0 = system default 5% of viewport)
+};
+
+struct ViewportEntity {
+    Vec3 center;                      // viewport center in paper space
+    float width = 0.0f;
+    float height = 0.0f;
+    int32_t status = 1;              // -1=off, 0=maximized, 1=on
+    Vec3 target = {0, 0, 0};         // model view target point
+    float view_height = 0.0f;        // model view height
+    float view_width = 0.0f;         // model view width
+    float twist_angle = 0.0f;        // model view twist (radians)
+    float custom_scale = 1.0f;       // viewport scale factor
+    bool has_custom_scale = false;
+};
+
 // ============================================================
 // EntityVariant — tagged union via std::variant
 // ============================================================
@@ -180,11 +197,11 @@ using EntityData = std::variant<
     DimensionEntity,
     HatchEntity,
     InsertEntity,
-    Vec3,              // Point — just a position
+    PointEntity,       // Point
     CircleEntity,      // Ellipse reuses CircleEntity (with normal for orientation)
     LineEntity,        // Ray reuses LineEntity
     LineEntity,        // XLine reuses LineEntity
-    Vec3,              // Viewport placeholder (center point)
+    ViewportEntity,    // Viewport
     SolidEntity        // Solid — filled 3/4 vertex polygon
 >;
 
@@ -211,7 +228,7 @@ struct EntityVariant {
 
     // Typed data access for unique types in the variant.
     // WARNING: Do NOT use with types that appear more than once
-    // in EntityData (LineEntity, CircleEntity, TextEntity, PolylineEntity, Vec3).
+    // in EntityData (LineEntity, CircleEntity, TextEntity, PolylineEntity).
     // Use index-based get_if_at<I, T>() for those.
     template<typename T>
     const T* get_if_unique() const {
@@ -228,6 +245,8 @@ struct EntityVariant {
     const HatchEntity* as_hatch() const;
     const InsertEntity* as_insert() const;
     const DimensionEntity* as_dimension() const;
+    const PointEntity* as_point() const;
+    const ViewportEntity* as_viewport() const;
     const SolidEntity* as_solid() const;
 };
 
@@ -247,6 +266,8 @@ Bounds3d entity_bounds_text(const TextEntity& text);
 Bounds3d entity_bounds_hatch(const HatchEntity& hatch);
 Bounds3d entity_bounds_insert(const InsertEntity& insert);
 Bounds3d entity_bounds_dimension(const DimensionEntity& dim);
+Bounds3d entity_bounds_point(const PointEntity& pt);
+Bounds3d entity_bounds_viewport(const ViewportEntity& vp);
 Bounds3d entity_bounds_solid(const SolidEntity& solid);
 
 } // namespace cad
