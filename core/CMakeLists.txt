@@ -47,6 +47,8 @@ add_library(cad_core STATIC
     src/renderer/render_context.cpp
     src/renderer/render_command.cpp
     src/renderer/render_batcher.cpp
+    src/renderer/render_batcher_curve.cpp
+    src/renderer/render_batcher_entity.cpp
     src/renderer/camera.cpp
     src/renderer/frustum_culler.cpp
     src/renderer/lod_selector.cpp

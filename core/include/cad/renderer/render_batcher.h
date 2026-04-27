@@ -98,6 +98,10 @@ private:
                             const Matrix4x4& xform, int depth,
                             const EntityHeader* inherited_header = nullptr);
 
+    // INSERT block expansion — extracted for file size compliance.
+    void submit_insert(const EntityVariant& entity, const SceneGraph& scene,
+                       const Matrix4x4& xform, int depth);
+
     // Tessellation helpers — transform applied to output vertices
     void tessellate_line(const Vec3& p0, const Vec3& p1, RenderBatch& batch,
                          const Matrix4x4& xform);
