@@ -53,6 +53,7 @@ struct ParseObjectsContext {
     size_t custom_note_leader_proxies = 0;
     size_t custom_datum_target_proxies = 0;
     size_t custom_datum_target_label_proxies = 0;
+    size_t custom_wipeout_proxies = 0;
     size_t custom_line_resource_refs = 0;
     size_t custom_line_resource_unresolved_refs = 0;
     size_t custom_field_objects = 0;

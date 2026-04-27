@@ -513,6 +513,62 @@ void DwgParser::process_custom_annotation_proxy(
             }
         }
 
+        // WIPEOUT — render as background-filled rectangle (minimum fidelity)
+        // WIPEOUT inherits from IMAGE; binary layout has insertion point,
+        // u_vector, v_vector, and image size in the main entity data.
+        const bool wipeout_class =
+            contains_ascii_ci(class_name_for_debug, "WIPEOUT");
+        if (wipeout_class) {
+            const uint8_t* entity_data = obj_data + offset + ms_bytes + umc_bytes;
+            std::vector<std::pair<double, double>> raw_points =
+                diag::extract_plausible_raw_points(entity_data, entity_data_bytes, 96);
+
+            // WIPEOUT geometry: first 3 plausible points are typically
+            // insertion_point, u_vector_end, v_vector_end (or close to it).
+            // We use the first few points to form a quadrilateral.
+            if (raw_points.size() >= 3) {
+                const auto& p0 = raw_points[0];  // insertion point
+                const auto& p1 = raw_points[1];  // u-vector direction
+                const auto& p2 = raw_points[2];  // v-vector direction
+
+                // Compute the four corners: ins, ins+u, ins+u+v, ins+v
+                float ix = static_cast<float>(p0.first);
+                float iy = static_cast<float>(p0.second);
+                float ux = static_cast<float>(p1.first - p0.first);
+                float uy = static_cast<float>(p1.second - p0.second);
+                float vx = static_cast<float>(p2.first - p0.first);
+                float vy = static_cast<float>(p2.second - p0.second);
+
+                float ulen = std::sqrt(ux * ux + uy * uy);
+                float vlen = std::sqrt(vx * vx + vy * vy);
+                if (std::isfinite(ulen) && std::isfinite(vlen) &&
+                    ulen > 1e-3f && vlen > 1e-3f &&
+                    ulen < 1e6f && vlen < 1e6f) {
+                    SolidEntity wipeout;
+                    wipeout.corners[0] = {ix, iy, 0.0f};
+                    wipeout.corners[1] = {ix + ux, iy + uy, 0.0f};
+                    wipeout.corners[2] = {ix + vx, iy + vy, 0.0f};
+                    wipeout.corners[3] = {ix + ux + vx, iy + uy + vy, 0.0f};
+                    wipeout.corner_count = 4;
+
+                    EntityHeader wo_hdr = entity_hdr;
+                    wo_hdr.type = EntityType::Solid;
+                    wo_hdr.space = DrawingSpace::ModelSpace;
+                    wo_hdr.color_override = 7;  // ACI white: wipeout mask
+
+                    Bounds3d wo_bounds = Bounds3d::empty();
+                    for (int ci = 0; ci < 4; ++ci) wo_bounds.expand(wipeout.corners[ci]);
+                    wo_hdr.bounds = wo_bounds;
+
+                    EntityVariant wo_entity;
+                    wo_entity.header = wo_hdr;
+                    wo_entity.data.emplace<16>(std::move(wipeout));
+                    scene.add_entity(std::move(wo_entity));
+                    ctx.custom_wipeout_proxies++;
+                }
+            }
+        }
+
 }
 
 } // namespace cad
