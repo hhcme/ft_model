@@ -10,6 +10,21 @@ export function beginRenderFrame(zoom: number): void {
   textMeasureCache.beginFrame(zoom);
 }
 
+// Entity modifier bitmask constants (mirrors C++ EntityModifier enum)
+const MOD_ALWAYS_DRAW       = 0x0001;
+const MOD_SCREEN_ORIENTED   = 0x0002;
+const MOD_SCREEN_SPACE_SIZE = 0x0004;
+const MOD_DO_NOT_SNAP       = 0x0008;
+const MOD_EXCLUDE_BOUNDING  = 0x0010;
+
+// Entity semantic constants (mirrors C++ EntitySemantic enum)
+const SEM_GEOMETRY   = 0;
+const SEM_ANNOTATION = 1;
+const SEM_TEXT       = 2;
+const SEM_FILL       = 3;
+const SEM_STRUCTURE  = 4;
+const SEM_HELPER     = 5;
+
 /** Draw background grid lines. */
 export function renderGrid(ctx: Ctx, vp: Viewport, theme: 'dark' | 'light' = 'dark'): void {
   const worldWidth = vp.canvasWidth / vp.zoom;
@@ -377,13 +392,16 @@ export function renderBatches(
     const batch = batches[bi];
     if (!batch.vertices?.length) continue;
 
+    // kModAlwaysDraw: annotations bypass frustum culling
+    const alwaysDraw = (batch.modifiers ?? 0) & MOD_ALWAYS_DRAW;
+
     const bb = boundsList[bi];
-    if (bb && (bb.maxX < wb.minX || bb.minX > wb.maxX ||
+    if (!alwaysDraw && bb && (bb.maxX < wb.minX || bb.minX > wb.maxX ||
                bb.maxY < wb.minY || bb.minY > wb.maxY)) {
       culled++;
       continue;
     }
-    if (bb && validBounds(clipBounds) && !intersectsBounds(bb, clipBounds)) {
+    if (!alwaysDraw && bb && validBounds(clipBounds) && !intersectsBounds(bb, clipBounds)) {
       culled++;
       continue;
     }

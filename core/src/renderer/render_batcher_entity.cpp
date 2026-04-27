@@ -120,6 +120,9 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
         b.layout_index = entity.header.layout_index;
         b.viewport_index = entity.header.viewport_index;
         b.draw_order = entity.header.draw_order;
+        // Propagate semantic and modifiers from entity header
+        b.semantic = static_cast<uint8_t>(entity.header.semantic);
+        b.modifiers = entity.header.modifiers;
         return &b;
     };
 

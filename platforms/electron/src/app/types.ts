@@ -12,6 +12,12 @@ export interface Batch {
   viewportId?: number;
   drawOrder?: number;
   bounds?: Bounds;
+  /** LOD tier: 0=standard, 1=low, 2=minimal */
+  lodLevel?: number;
+  /** EntityModifier bitmask (kModAlwaysDraw=1, kModScreenOriented=2, kModScreenSpaceSize=4, ...) */
+  modifiers?: number;
+  /** EntitySemantic value (0=Geometry, 1=Annotation, 2=Text, 3=Fill, 4=Structure, 5=Helper) */
+  semantic?: number;
 }
 
 /** Text entity rendered via Canvas fillText. */

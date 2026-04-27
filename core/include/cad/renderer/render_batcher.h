@@ -64,6 +64,9 @@ struct RenderBatch {
     int32_t layout_index = -1;
     int32_t viewport_index = -1;
     uint32_t draw_order = 0;
+    uint8_t lod_level = 0;          // LOD tier: 0=standard, 1=low, 2=minimal
+    uint16_t modifiers = 0;         // EntityModifier flags for frontend behavior
+    uint8_t semantic = 0;           // EntitySemantic value for frontend categorization
 };
 
 // ============================================================

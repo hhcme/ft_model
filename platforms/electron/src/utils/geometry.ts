@@ -1,5 +1,8 @@
 import type { Batch, BatchBounds, Bounds, DrawData } from '../app/types';
 
+// Entity modifier bitmask (mirrors C++ EntityModifier)
+const MOD_EXCLUDE_BOUNDING = 0x0010;
+
 /** Compute axis-aligned bounding box for each batch. */
 export function computeBatchBounds(batches: Batch[]): (BatchBounds | null)[] {
   return batches.map((batch) => {
@@ -103,6 +106,8 @@ export function computeOutlierResistantBounds(
     const batch = batches[i];
     if (!bb || !batch?.vertices?.length) continue;
     if (![bb.minX, bb.maxX, bb.minY, bb.maxY].every(Number.isFinite)) continue;
+    // Skip helper entities (POINT/RAY/XLINE) from bounds calculation
+    if ((batch.modifiers ?? 0) & MOD_EXCLUDE_BOUNDING) continue;
     validEntries.push({ bb, verts: batch.vertices.length / 2, idx: i });
   }
   if (validEntries.length === 0) return undefined;

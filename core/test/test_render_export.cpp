@@ -1492,12 +1492,50 @@ int main(int argc, char** argv) {
         !(outlier_env && std::strcmp(outlier_env, "0") == 0);
     batcher.set_outlier_filter_enabled(outlier_filter_enabled);
 
+    // Helper: assign default semantic and modifiers based on entity type.
+    // Inspired by HOOPS InstanceModifier (AlwaysDraw, ScreenOriented, etc.)
+    auto assign_render_semantics = [](EntityVariant& e) {
+        switch (e.header.type) {
+        case EntityType::Dimension:
+        case EntityType::Leader:
+        case EntityType::Tolerance:
+        case EntityType::Multileader:
+            e.header.semantic = EntitySemantic::Annotation;
+            e.header.modifiers = kModAlwaysDraw;  // Annotations bypass frustum culling
+            break;
+        case EntityType::Text:
+        case EntityType::MText:
+            e.header.semantic = EntitySemantic::Text;
+            e.header.modifiers = kModScreenOriented | kModScreenSpaceSize;
+            break;
+        case EntityType::Hatch:
+        case EntityType::Solid:
+            e.header.semantic = EntitySemantic::Fill;
+            break;
+        case EntityType::Insert:
+        case EntityType::Viewport:
+            e.header.semantic = EntitySemantic::Structure;
+            break;
+        case EntityType::Point:
+        case EntityType::Ray:
+        case EntityType::XLine:
+            e.header.semantic = EntitySemantic::Helper;
+            e.header.modifiers = kModExcludeBounding | kModDoNotSnap;
+            break;
+        default:
+            e.header.semantic = EntitySemantic::Geometry;
+            break;
+        }
+    };
+
     for (int32_t i = 0; i < static_cast<int32_t>(entities.size()); ++i) {
         // Skip entities that belong to block definitions — they are rendered
         // through INSERT entity references with proper transforms.
         if (block_entity_indices.count(i)) continue;
 
-        const auto& entity = entities[i];
+        // Assign semantic/modifiers (needs mutable reference)
+        EntityVariant entity = entities[i];
+        assign_render_semantics(entity);
 
         // DWG: skip INSERT only when its block is already rendered directly.
         if (is_dwg && entity.type() == EntityType::Insert) {
@@ -1513,6 +1551,7 @@ int main(int argc, char** argv) {
                     auto* local_ins = std::get_if<InsertEntity>(&local_insert.data);
                     if (local_ins) {
                         local_ins->block_index = local_block_index;
+                        assign_render_semantics(local_insert);
                         collect_insert_text(local_insert, Matrix4x4::identity(), 0, nullptr);
                         batcher.submit_entity(local_insert, scene);
                     }
@@ -2914,6 +2953,16 @@ int main(int argc, char** argv) {
         out << "\"layoutId\": " << batch.layout_index << ", ";
         out << "\"viewportId\": " << batch.viewport_index << ", ";
         out << "\"drawOrder\": " << batch.draw_order << ", ";
+        // Export LOD level, modifiers, semantic for frontend rendering behavior
+        if (batch.lod_level != 0) {
+            out << "\"lodLevel\": " << (int)batch.lod_level << ", ";
+        }
+        if (batch.modifiers != 0) {
+            out << "\"modifiers\": " << batch.modifiers << ", ";
+        }
+        if (batch.semantic != 0) {
+            out << "\"semantic\": " << (int)batch.semantic << ", ";
+        }
         out << "\"bounds\": ";
         write_render_bounds(out, batch_bounds);
         out << ", ";

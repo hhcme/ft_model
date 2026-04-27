@@ -87,4 +87,20 @@ int LodSelector::compute_spline_segments(int num_control_points, float pixels_pe
     return math::clamp(segments, k_min_segments, k_max_segments);
 }
 
+std::array<LodLevel, 3> LodSelector::compute_lod_levels(float radius, float pixels_per_unit) {
+    int n0 = compute_circle_segments(radius, pixels_per_unit);
+
+    // Level 1: quarter detail, at least 6 segments
+    int n1 = std::max(n0 / 4, k_low_min_segments);
+
+    // Level 2: eighth detail, at least 4 segments — outline only
+    int n2 = std::max(n0 / 8, k_minimal_min_segments);
+
+    return {{
+        { 0, static_cast<uint16_t>(math::clamp(n0, k_min_segments, k_max_segments)) },
+        { 1, static_cast<uint16_t>(math::clamp(n1, k_min_segments, k_max_segments)) },
+        { 2, static_cast<uint16_t>(math::clamp(n2, k_min_segments, k_max_segments)) },
+    }};
+}
+
 } // namespace cad

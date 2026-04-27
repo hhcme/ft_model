@@ -43,6 +43,32 @@ enum class DrawingSpace : uint8_t {
 };
 
 // ============================================================
+// EntityModifier — behavior flags (inspired by HOOPS InstanceModifier)
+// Control rendering, culling, and snapping behavior per entity.
+// ============================================================
+enum EntityModifier : uint16_t {
+    kModNone            = 0,
+    kModAlwaysDraw      = 0x0001,  // Skip frustum culling (dimensions, leaders)
+    kModScreenOriented  = 0x0002,  // Always face screen (text)
+    kModScreenSpaceSize = 0x0004,  // Line width / font size independent of zoom
+    kModDoNotSnap       = 0x0008,  // Exclude from snap targets
+    kModExcludeBounding = 0x0010,  // Exclude from fitView bounds calculation
+};
+
+// ============================================================
+// EntitySemantic — functional classification (inspired by HOOPS NodeType)
+// Allows renderers to apply per-category strategies.
+// ============================================================
+enum class EntitySemantic : uint8_t {
+    Geometry   = 0,  // LINE/ARC/CIRCLE/POLYLINE/SPLINE/ELLIPSE/SOLID
+    Annotation = 1,  // DIMENSION/LEADER/TOLERANCE/MLEADER
+    Text       = 2,  // TEXT/MTEXT
+    Fill       = 3,  // HATCH/SOLID
+    Structure  = 4,  // INSERT/VIEWPORT
+    Helper     = 5,  // POINT/RAY/XLINE
+};
+
+// ============================================================
 // Entity header — common metadata shared by all entity types
 // ============================================================
 struct EntityHeader {
@@ -70,6 +96,8 @@ struct EntityHeader {
     uint64_t block_header_handle = 0;
     uint32_t validation_flags = 0;
     bool is_proxy_fallback = false;
+    EntitySemantic semantic = EntitySemantic::Geometry;  // functional classification
+    uint16_t modifiers = kModNone;                        // behavior flags
 };
 
 // ============================================================
