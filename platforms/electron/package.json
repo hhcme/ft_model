@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.0",
+    "@ts3d-hoops/web-viewer-monolith": "^2026.3.0",
     "antd": "^5.22.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
