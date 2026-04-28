@@ -80,10 +80,15 @@ public:
     int compute_arc_segments(float radius) const;
 
     void begin_frame(const Camera& camera);
+    void begin_frame(const Camera& camera, const SceneGraph& scene);
     void submit_entity(const EntityVariant& entity, const SceneGraph& scene);
     void end_frame();
 
     void set_outlier_filter_enabled(bool enabled) { m_outlier_filter_enabled = enabled; }
+
+    // Frustum culling: enable to skip off-screen entities during submit.
+    // Uses SceneGraph's spatial index (Quadtree) for O(log N) visibility queries.
+    void set_frustum_culling_enabled(bool enabled) { m_frustum_culling_enabled = enabled; }
 
     const std::vector<RenderBatch>& batches() const { return m_batches; }
     std::vector<RenderBatch>& batches() { return m_batches; }
@@ -124,6 +129,9 @@ private:
     float m_tessellation_quality;
     std::vector<RenderBatch> m_batches;
     const Camera* m_camera = nullptr;
+    // Frustum culling: set of visible entity IDs, populated in begin_frame()
+    std::unordered_set<int32_t> m_visible_entity_ids;
+    bool m_frustum_culling_enabled = false;
     // Block tessellation cache: block_index → pre-tessellated batches (identity transform)
     struct BlockCacheEntry {
         std::vector<RenderBatch> batches;

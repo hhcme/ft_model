@@ -7,6 +7,7 @@ import {
   renderGrid, renderBatches, renderTexts, renderMeasurements,
   renderBorder, renderPaper, withWorldClip, beginRenderFrame,
   renderSingleBatchLines, renderSingleBatchLinestrip,
+  renderBatchesToCache, type GeometryCache,
 } from '../../utils/renderer';
 
 interface Props {
@@ -30,6 +31,15 @@ interface Props {
   onSelect?: (screenX: number, screenY: number) => void;
 }
 
+/** Build a fingerprint string for geometry cache invalidation. */
+function geometryFingerprint(vp: Viewport, layerVisible: Map<string, boolean>, drawData: DrawData | null, clipBounds: unknown): string {
+  let fp = `${vp.centerX},${vp.centerY},${vp.zoom},${vp.canvasWidth},${vp.canvasHeight}`;
+  if (drawData) fp += `|d${drawData.entityCount}`;
+  // Layer visibility: hash entries
+  layerVisible.forEach((v, k) => { fp += `|${k}:${v ? 1 : 0}`; });
+  return fp;
+}
+
 export default function CadCanvas({
   drawData, viewport, layerVisible, measurements, measurePoints,
   measurePreview, measureMode, theme = 'dark',
@@ -40,9 +50,12 @@ export default function CadCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const needsRender = useRef(true);
+  const geometryDirty = useRef(true);
   const propsRef = useRef({ drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect });
   const dragRef = useRef({ dragging: false, x: 0, y: 0, touchDist: 0, tapTime: 0 });
   const boundsRef = useRef<{ bb: ReturnType<typeof computeBatchBounds>; ob: ReturnType<typeof computeOutlierResistantBounds> } | null>(null);
+  const geomCacheRef = useRef<GeometryCache | null>(null);
+  const geomFpRef = useRef('');
 
   // Memoize batch/outlier bounds, store in ref so the rAF loop sees current values
   const batchBounds = useMemo(() => computeBatchBounds(drawData?.batches ?? []), [drawData]);
@@ -53,6 +66,12 @@ export default function CadCanvas({
   useEffect(() => { boundsRef.current = { bb: batchBounds, ob: outlierBounds }; }, [batchBounds, outlierBounds]);
 
   useEffect(() => {
+    const prevFp = geomFpRef.current;
+    const newFp = geometryFingerprint(viewport, layerVisible, drawData, null);
+    if (newFp !== prevFp) {
+      geometryDirty.current = true;
+      geomFpRef.current = newFp;
+    }
     propsRef.current = { drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect };
     needsRender.current = true;
   }, [drawData, viewport, layerVisible, measurements, measurePoints, measurePreview, measureMode, onMeasureClick, onMeasureMove, onMeasureFinish, selection, onSelect]);
@@ -180,7 +199,7 @@ export default function CadCanvas({
     };
   }, [onPan, onZoom, onFit]);
 
-  // rAF render loop — runs continuously, only draws when dirty
+  // rAF render loop — geometry cached in OffscreenCanvas, overlays rendered directly
   useEffect(() => {
     const loop = () => {
       rafRef.current = requestAnimationFrame(loop);
@@ -197,7 +216,10 @@ export default function CadCanvas({
       const bb = b?.bb ?? [];
       const ob = b?.ob;
       const isLight = theme === 'light';
+      const paperMode = av?.paperMode === true || isLight;
       beginRenderFrame(vp.zoom);
+
+      // --- Background ---
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = isLight ? '#ffffff' : '#1e1e2e';
@@ -207,13 +229,27 @@ export default function CadCanvas({
       renderPaper(ctx, av, vp);
       const pb = av?.presentationBounds ?? dd.presentationBounds ?? dd.bounds;
       const rel = !av?.source || av.source === 'layout' || av.source === 'vport' || av.source === 'paperSpaceFallback';
-      // Only draw dashed border for non-paper views; paper views already have renderPaper border
       if (!av?.paperMode) renderBorder(ctx, rel ? pb : ob ?? pb, vp, theme);
       const artB = av?.source === 'vport' ? undefined : rel ? pb : ob ?? pb;
+
+      // --- Geometry: render to OffscreenCanvas, cache across frames ---
+      if (geometryDirty.current || !geomCacheRef.current) {
+        const cache = renderBatchesToCache(dd.batches, bb, vp, p.layerVisible, av?.clipBounds, artB, paperMode);
+        geomCacheRef.current = cache;
+        geometryDirty.current = false;
+      }
+      const cache = geomCacheRef.current;
+      // Clip region for viewport clipping
       withWorldClip(ctx, av?.clipBounds, vp, () => {
-        renderBatches(ctx, dd.batches, bb, vp, p.layerVisible, av?.clipBounds, artB, av?.paperMode === true || isLight);
-        if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, av?.clipBounds, av?.paperMode === true || isLight);
+        // Blit cached geometry bitmap
+        if (cache.bitmap) {
+          ctx.drawImage(cache.bitmap, 0, 0);
+        }
+        // Texts always render directly (cheap, depends on zoom for font sizes)
+        if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, av?.clipBounds, paperMode);
       });
+
+      // --- Overlays: always render directly ---
       renderMeasurements(ctx, p.measurements, p.measurePoints, p.measurePreview, vp, p.measureMode);
       // Selection highlight overlay — uses inline transform constants
       if (p.selection) {

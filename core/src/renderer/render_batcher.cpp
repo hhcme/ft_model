@@ -5,6 +5,7 @@
 #include "cad/renderer/render_batcher.h"
 #include "cad/renderer/camera.h"
 #include "cad/renderer/lod_selector.h"
+#include "cad/renderer/frustum_culler.h"
 #include "render_batcher_internal.h"
 #include "cad/scene/entity.h"
 #include "cad/scene/scene_graph.h"
@@ -53,11 +54,34 @@ void RenderBatcher::begin_frame(const Camera& camera) {
     m_cache_access_counter = 0;
     m_tessellating_blocks.clear();
     m_insert_vertex_count = 0;
+    m_visible_entity_ids.clear();
+}
+
+void RenderBatcher::begin_frame(const Camera& camera, const SceneGraph& scene) {
+    begin_frame(camera);
+
+    // Populate visible entity set using Quadtree-accelerated frustum culling.
+    if (m_frustum_culling_enabled) {
+        Bounds3d visible = camera.visible_bounds();
+        auto visible_ids = scene.entities_in_bounds(visible);
+        m_visible_entity_ids.insert(visible_ids.begin(), visible_ids.end());
+    }
 }
 
 void RenderBatcher::submit_entity(const EntityVariant& entity, const SceneGraph& scene) {
     // Skip block child entities — they are only rendered through INSERT expansion
     if (entity.header.in_block) return;
+
+    // Frustum culling: skip entities whose ID is not in the visible set.
+    // Only active when frustum culling is enabled AND the visible set is populated.
+    if (m_frustum_culling_enabled && !m_visible_entity_ids.empty()) {
+        // Always-draw entities (annotations, dimensions) bypass spatial culling.
+        bool always_draw = (entity.header.modifiers & 0x0001) != 0;
+        if (!always_draw && m_visible_entity_ids.count(entity.header.entity_id) == 0) {
+            return;
+        }
+    }
+
     submit_entity_impl(entity, scene, Matrix4x4::identity(), 0, nullptr);
 }
 void RenderBatcher::end_frame() {

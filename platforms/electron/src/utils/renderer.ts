@@ -3,7 +3,31 @@ import { worldToScreen, getViewportWorldBounds } from './transforms';
 import { cleanMText, parseRichMTextCached, type RichTextLine } from './textUtils';
 import { textMeasureCache } from './textMeasureCache';
 
-type Ctx = CanvasRenderingContext2D;
+type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+// ============================================================
+// Geometry bitmap cache: OffscreenCanvas for cached geometry
+// ============================================================
+export interface GeometryCache {
+  bitmap: OffscreenCanvas;
+  stats: { visible: number; drawn: number; culled: number; hidden: number };
+}
+
+/** Render geometry batches to an OffscreenCanvas bitmap, return cache object. */
+export function renderBatchesToCache(
+  batches: Batch[],
+  boundsList: (BatchBounds | null)[],
+  vp: Viewport,
+  layerVisible: Map<string, boolean>,
+  clipBounds: Bounds | undefined,
+  presentationBounds: Bounds | undefined,
+  paperMode: boolean,
+): GeometryCache {
+  const bitmap = new OffscreenCanvas(vp.canvasWidth, vp.canvasHeight);
+  const ctx = bitmap.getContext('2d')!;
+  const stats = renderBatches(ctx, batches, boundsList, vp, layerVisible, clipBounds, presentationBounds, paperMode);
+  return { bitmap, stats };
+}
 
 /** Call once per frame before any rendering to reset text measurement cache on zoom change. */
 export function beginRenderFrame(zoom: number): void {

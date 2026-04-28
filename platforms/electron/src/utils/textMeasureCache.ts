@@ -12,7 +12,7 @@ export class TextMeasureCache {
   }
 
   /** Measure text width, using cached result when available. */
-  measure(ctx: CanvasRenderingContext2D, font: string, text: string): number {
+  measure(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, font: string, text: string): number {
     const key = font + '|' + text;
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
