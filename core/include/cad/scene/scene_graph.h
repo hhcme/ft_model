@@ -66,6 +66,44 @@ struct SceneDiagnostic {
 };
 
 // ============================================================
+// SceneNode — hierarchical scene tree (inspired by HOOPS PRC Assembly Tree)
+//
+// Provides a tree overlay on the flat entity vector for:
+// - Hierarchical visibility (parent hidden → skip subtree)
+// - Hierarchical transforms (INSERT transform applied once to subtree)
+// - Hierarchical culling (aggregate bounds)
+// - Layout/Viewport structure (Paper Space organization)
+// ============================================================
+
+enum class SceneNodeType : uint8_t {
+    ModelSpace,      // Model space root
+    PaperSpace,      // Paper space root
+    LayoutRoot,      // Layout root node (child of PaperSpace)
+    BlockDefinition, // Block definition (contains block entities)
+    BlockInstance,   // INSERT instance (references BlockDefinition)
+    Viewport,        // Viewport (references Model Space sub-region)
+    Entity,          // Leaf node (single entity)
+};
+
+static constexpr uint32_t kSceneNodeNoParent = UINT32_MAX;
+static constexpr uint32_t kSceneNodeNoBlock  = UINT32_MAX;
+
+struct SceneNode {
+    SceneNodeType type = SceneNodeType::Entity;
+    uint32_t id = 0;                             // unique node ID
+    uint32_t parent_id = kSceneNodeNoParent;     // parent node ID
+    std::vector<uint32_t> children;              // child node IDs
+    Matrix4x4 local_transform = Matrix4x4::identity(); // node local transform
+    std::vector<uint32_t> entity_indices;        // leaf node: entity indices in flat vector
+    Bounds3d world_bounds = Bounds3d::empty();   // aggregated subtree bounds
+    bool visible = true;
+    uint32_t block_def_id = kSceneNodeNoBlock;   // BlockInstance: referenced block def node ID
+    uint16_t modifiers = 0;                      // EntityModifier flags
+    int32_t layout_index = -1;                   // LayoutRoot: layout table index
+    int32_t viewport_index = -1;                 // Viewport: viewport table index
+};
+
+// ============================================================
 // SceneGraph — central data structure for a CAD drawing
 //
 // Stores entities in a single vector using EntityVariant.
@@ -167,6 +205,25 @@ public:
     // ---- Spatial index ----
     void rebuild_spatial_index();
     SpatialIndex* spatial_index();
+
+    // ---- Scene tree (hierarchical overlay) ----
+
+    // Build the scene tree from entities, blocks, layouts, viewports.
+    // Must be called after parsing completes. Idempotent.
+    void build_scene_tree();
+
+    // Access the scene tree nodes (empty until build_scene_tree is called)
+    const std::vector<SceneNode>& scene_nodes() const;
+    uint32_t scene_root_id() const;
+
+    // Find a node by ID. Returns nullptr if not found.
+    const SceneNode* find_node(uint32_t node_id) const;
+
+    // Get all entity indices in a subtree (recursive)
+    std::vector<int32_t> subtree_entity_indices(uint32_t node_id) const;
+
+    // Check if a node's world bounds are visible (recursive parent check)
+    bool is_node_visible(uint32_t node_id) const;
 
     // ---- Iteration ----
 

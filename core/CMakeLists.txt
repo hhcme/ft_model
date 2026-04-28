@@ -36,6 +36,7 @@ add_library(cad_core STATIC
     src/parser/dwg_objects.cpp
     src/parser/dwg_entity_geometry.cpp
     src/parser/dwg_entity_annotation.cpp
+    src/parser/dwg_entity_hatch.cpp
     src/scene/scene_graph.cpp
     src/scene/entity.cpp
     src/scene/layer.cpp

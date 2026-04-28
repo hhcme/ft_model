@@ -3,6 +3,7 @@
 #include "cad/parser/dwg_reader.h"
 #include "cad/parser/dwg_entity_common.h"
 #include "cad/parser/dwg_entity_annotation.h"
+#include "cad/parser/dwg_entity_hatch.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/entity.h"
 #include "cad/cad_types.h"

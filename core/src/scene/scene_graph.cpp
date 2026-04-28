@@ -36,6 +36,12 @@ public:
 
     // Spatial index
     std::unique_ptr<Quadtree> spatial_index;
+
+    // Scene tree (built on demand by build_scene_tree)
+    std::vector<SceneNode> scene_nodes;
+    std::unordered_map<uint32_t, uint32_t> node_id_to_index; // node ID -> index in scene_nodes
+    uint32_t next_node_id = 1;
+    uint32_t root_node_id = 0; // 0 = not built
 };
 
 // ============================================================
@@ -401,6 +407,10 @@ void SceneGraph::clear() {
     m_impl->block_name_map.clear();
     m_impl->drawing_info = DrawingMetadata();
     m_impl->spatial_index.reset();
+    m_impl->scene_nodes.clear();
+    m_impl->node_id_to_index.clear();
+    m_impl->next_node_id = 1;
+    m_impl->root_node_id = 0;
 }
 
 void SceneGraph::reserve(size_t entity_count, size_t vertex_count) {
@@ -417,6 +427,224 @@ void SceneGraph::shrink_to_fit() {
     m_impl->blocks.shrink_to_fit();
     m_impl->viewports.shrink_to_fit();
     m_impl->layouts.shrink_to_fit();
+}
+
+// ============================================================
+// Scene tree (hierarchical overlay)
+// ============================================================
+
+void SceneGraph::build_scene_tree() {
+    m_impl->scene_nodes.clear();
+    m_impl->node_id_to_index.clear();
+    m_impl->next_node_id = 1;
+    m_impl->root_node_id = 0;
+
+    auto& impl = *m_impl;
+    const auto& entities = impl.entities;
+    const auto& blocks = impl.blocks;
+    const auto& layouts = impl.layouts;
+
+    // Helper lambda: add a node and return its ID
+    auto add_node = [&](SceneNodeType type, uint32_t parent_id) -> uint32_t {
+        uint32_t id = impl.next_node_id++;
+        uint32_t idx = static_cast<uint32_t>(impl.scene_nodes.size());
+        impl.scene_nodes.push_back({});
+        auto& node = impl.scene_nodes.back();
+        node.type = type;
+        node.id = id;
+        node.parent_id = parent_id;
+        impl.node_id_to_index[id] = idx;
+
+        // Register as child of parent
+        if (parent_id != kSceneNodeNoParent) {
+            auto pit = impl.node_id_to_index.find(parent_id);
+            if (pit != impl.node_id_to_index.end()) {
+                impl.scene_nodes[pit->second].children.push_back(id);
+            }
+        }
+        return id;
+    };
+
+    // Helper lambda: aggregate bounds from entity indices
+    auto entity_bounds = [&](const std::vector<uint32_t>& indices) -> Bounds3d {
+        Bounds3d b = Bounds3d::empty();
+        for (uint32_t ei : indices) {
+            if (ei < entities.size()) b.expand(entities[ei].bounds());
+        }
+        return b;
+    };
+
+    // 1. Create root node
+    uint32_t root_id = add_node(SceneNodeType::ModelSpace, kSceneNodeNoParent);
+    impl.root_node_id = root_id;
+
+    // 2. Create ModelSpace root child
+    uint32_t model_space_id = add_node(SceneNodeType::ModelSpace, root_id);
+
+    // 3. Create PaperSpace root child (if any paper space entities exist)
+    bool has_paper_space = false;
+    for (const auto& ent : entities) {
+        if (ent.header.space == DrawingSpace::PaperSpace) {
+            has_paper_space = true;
+            break;
+        }
+    }
+    uint32_t paper_space_id = kSceneNodeNoParent;
+    if (has_paper_space) {
+        paper_space_id = add_node(SceneNodeType::PaperSpace, root_id);
+    }
+
+    // 4. Create BlockDefinition nodes
+    std::vector<uint32_t> block_def_node_ids(blocks.size(), kSceneNodeNoParent);
+    for (size_t bi = 0; bi < blocks.size(); ++bi) {
+        const auto& block = blocks[bi];
+        if (block.is_model_space || block.is_paper_space) continue;
+        if (block.entity_indices.empty()) continue;
+
+        uint32_t node_id = add_node(SceneNodeType::BlockDefinition, root_id);
+        auto it = impl.node_id_to_index.find(node_id);
+        if (it != impl.node_id_to_index.end()) {
+            auto& node = impl.scene_nodes[it->second];
+            for (int32_t ei : block.entity_indices) {
+                node.entity_indices.push_back(static_cast<uint32_t>(ei));
+            }
+        }
+        block_def_node_ids[bi] = node_id;
+    }
+
+    // 5. Create LayoutRoot nodes (children of PaperSpace)
+    std::vector<uint32_t> layout_node_ids(layouts.size(), kSceneNodeNoParent);
+    for (size_t li = 0; li < layouts.size(); ++li) {
+        const auto& layout = layouts[li];
+        if (layout.is_model_layout) continue;
+
+        uint32_t parent = (paper_space_id != kSceneNodeNoParent) ? paper_space_id : root_id;
+        uint32_t node_id = add_node(SceneNodeType::LayoutRoot, parent);
+        auto it = impl.node_id_to_index.find(node_id);
+        if (it != impl.node_id_to_index.end()) {
+            impl.scene_nodes[it->second].layout_index = static_cast<int32_t>(li);
+        }
+        layout_node_ids[li] = node_id;
+    }
+
+    // 6. Create Viewport nodes (children of LayoutRoot)
+    const auto& viewports = impl.viewports;
+    for (size_t vi = 0; vi < viewports.size(); ++vi) {
+        const auto& vp = viewports[vi];
+        uint32_t parent = root_id;
+        if (vp.layout_index >= 0 && static_cast<size_t>(vp.layout_index) < layout_node_ids.size()) {
+            uint32_t layout_node = layout_node_ids[static_cast<size_t>(vp.layout_index)];
+            if (layout_node != kSceneNodeNoParent) parent = layout_node;
+        }
+        uint32_t node_id = add_node(SceneNodeType::Viewport, parent);
+        auto it = impl.node_id_to_index.find(node_id);
+        if (it != impl.node_id_to_index.end()) {
+            impl.scene_nodes[it->second].viewport_index = static_cast<int32_t>(vi);
+        }
+    }
+
+    // 7. Assign entities to leaf nodes
+    for (size_t ei = 0; ei < entities.size(); ++ei) {
+        const auto& entity = entities[ei];
+        if (entity.header.in_block) continue;
+
+        // Determine parent node
+        uint32_t parent = model_space_id;
+        if (entity.header.space == DrawingSpace::PaperSpace) {
+            parent = (paper_space_id != kSceneNodeNoParent) ? paper_space_id : root_id;
+            if (entity.header.layout_index >= 0 &&
+                static_cast<size_t>(entity.header.layout_index) < layout_node_ids.size()) {
+                uint32_t layout_node = layout_node_ids[static_cast<size_t>(entity.header.layout_index)];
+                if (layout_node != kSceneNodeNoParent) parent = layout_node;
+            }
+        }
+
+        if (entity.header.type == EntityType::Insert) {
+            uint32_t node_id = add_node(SceneNodeType::BlockInstance, parent);
+            auto it = impl.node_id_to_index.find(node_id);
+            if (it != impl.node_id_to_index.end()) {
+                auto& node = impl.scene_nodes[it->second];
+                node.entity_indices.push_back(static_cast<uint32_t>(ei));
+                Vec3 c = entity.header.bounds.center();
+                node.local_transform = Matrix4x4::affine_2d(1.0f, 1.0f, 0.0f, c.x, c.y);
+                node.modifiers = entity.header.modifiers;
+
+                auto* ins = std::get_if<InsertEntity>(&entity.data);
+                if (ins && ins->block_index >= 0 &&
+                    static_cast<size_t>(ins->block_index) < block_def_node_ids.size()) {
+                    node.block_def_id = block_def_node_ids[static_cast<size_t>(ins->block_index)];
+                }
+            }
+        } else {
+            // Regular entity leaf node
+            uint32_t node_id = add_node(SceneNodeType::Entity, parent);
+            auto it = impl.node_id_to_index.find(node_id);
+            if (it != impl.node_id_to_index.end()) {
+                auto& node = impl.scene_nodes[it->second];
+                node.entity_indices.push_back(static_cast<uint32_t>(ei));
+                node.modifiers = entity.header.modifiers;
+            }
+        }
+    }
+
+    // 8. Aggregate bounds bottom-up using a recursive lambda
+    std::function<void(uint32_t)> agg_bounds = [&](uint32_t node_id) {
+        auto it = impl.node_id_to_index.find(node_id);
+        if (it == impl.node_id_to_index.end()) return;
+        auto& node = impl.scene_nodes[it->second];
+
+        Bounds3d bounds = entity_bounds(node.entity_indices);
+        for (uint32_t child_id : node.children) {
+            agg_bounds(child_id);
+            auto cit = impl.node_id_to_index.find(child_id);
+            if (cit != impl.node_id_to_index.end()) {
+                bounds.expand(impl.scene_nodes[cit->second].world_bounds);
+            }
+        }
+        node.world_bounds = bounds;
+    };
+    agg_bounds(root_id);
+}
+
+const std::vector<SceneNode>& SceneGraph::scene_nodes() const {
+    return m_impl->scene_nodes;
+}
+
+uint32_t SceneGraph::scene_root_id() const {
+    return m_impl->root_node_id;
+}
+
+const SceneNode* SceneGraph::find_node(uint32_t node_id) const {
+    auto it = m_impl->node_id_to_index.find(node_id);
+    if (it == m_impl->node_id_to_index.end()) return nullptr;
+    return &m_impl->scene_nodes[it->second];
+}
+
+std::vector<int32_t> SceneGraph::subtree_entity_indices(uint32_t node_id) const {
+    std::vector<int32_t> result;
+    const SceneNode* node = find_node(node_id);
+    if (!node) return result;
+
+    // Collect from this node
+    for (uint32_t ei : node->entity_indices) {
+        result.push_back(static_cast<int32_t>(ei));
+    }
+    // Recurse into children
+    for (uint32_t child_id : node->children) {
+        auto child_result = subtree_entity_indices(child_id);
+        result.insert(result.end(), child_result.begin(), child_result.end());
+    }
+    return result;
+}
+
+bool SceneGraph::is_node_visible(uint32_t node_id) const {
+    const SceneNode* node = find_node(node_id);
+    if (!node) return false;
+    if (!node->visible) return false;
+    if (node->parent_id != kSceneNodeNoParent) {
+        return is_node_visible(node->parent_id);
+    }
+    return true;
 }
 
 } // namespace cad
