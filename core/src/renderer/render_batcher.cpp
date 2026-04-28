@@ -339,10 +339,12 @@ if (cache_it == m_block_cache.end()) {
 
     std::vector<RenderBatch> local_batches;
     m_batches.swap(local_batches);
+    uint16_t block_max_modifiers = 0;
     for (int32_t ei : block.entity_indices) {
         if (ei < 0 || static_cast<size_t>(ei) >= all_entities.size()) continue;
         const auto& child = all_entities[static_cast<size_t>(ei)];
         if (!child.is_visible()) continue;
+        block_max_modifiers |= child.header.modifiers;
         submit_entity_impl(child, scene, Matrix4x4::identity(), depth + 1);
     }
     size_t total_verts = 0;
@@ -357,21 +359,36 @@ if (cache_it == m_block_cache.end()) {
     if (total_verts > 0) { cx /= total_verts; cy /= total_verts; }
     double cdist = std::sqrt(cx * cx + cy * cy);
 
-    m_block_cache[bk_idx] = {std::move(m_batches), total_verts, cdist, cx, cy, ++m_cache_access_counter};
+    m_block_cache[bk_idx] = {std::move(m_batches), total_verts, cdist, cx, cy, ++m_cache_access_counter, block_max_modifiers};
     m_tessellating_blocks.erase(bk_idx);
     m_batches.swap(local_batches);
     cache_it = m_block_cache.find(bk_idx);
 
-    // LRU eviction: if cache grew too large, evict oldest entries
+    // LRU eviction with priority awareness: if cache grew too large,
+    // evict oldest low-priority entries first.
     if (m_block_cache.size() > MAX_CACHE_ENTRIES) {
-        uint32_t cutoff = m_cache_access_counter -
-            static_cast<uint32_t>(m_block_cache.size() / 2);
-        for (auto it = m_block_cache.begin(); it != m_block_cache.end(); ) {
-            if (it->first != bk_idx && it->second.last_used < cutoff) {
-                it = m_block_cache.erase(it);
-            } else {
-                ++it;
+        // Sort candidates by (priority ASC, last_used ASC) — lowest priority,
+        // oldest entries are evicted first.
+        struct EvictCandidate {
+            int32_t block_idx;
+            uint32_t last_used;
+            int priority;
+        };
+        std::vector<EvictCandidate> candidates;
+        candidates.reserve(m_block_cache.size());
+        for (const auto& [idx, entry] : m_block_cache) {
+            if (idx != bk_idx) {
+                candidates.push_back({idx, entry.last_used, entry.eviction_priority()});
             }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+            [](const EvictCandidate& a, const EvictCandidate& b) {
+                if (a.priority != b.priority) return a.priority < b.priority;
+                return a.last_used < b.last_used;
+            });
+        size_t to_evict = m_block_cache.size() - MAX_CACHE_ENTRIES / 2;
+        for (size_t i = 0; i < to_evict && i < candidates.size(); ++i) {
+            m_block_cache.erase(candidates[i].block_idx);
         }
     }
 }

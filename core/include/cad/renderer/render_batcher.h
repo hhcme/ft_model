@@ -132,6 +132,12 @@ private:
         double centroid_x = 0;   // centroid X (for world-space block base_point)
         double centroid_y = 0;   // centroid Y
         uint32_t last_used = 0;  // frame-internal access counter for LRU eviction
+        uint16_t max_modifiers = 0; // highest modifier flags in block entities
+        // Eviction priority: lower = evicted first.
+        // kModAlwaysDraw (0x01) blocks get priority boost.
+        int eviction_priority() const {
+            return (max_modifiers & 0x0001) ? 10 : 0;  // annotation blocks kept longer
+        }
     };
     std::unordered_map<int32_t, BlockCacheEntry> m_block_cache;
     uint32_t m_cache_access_counter = 0;
