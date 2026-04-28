@@ -41,10 +41,12 @@ SCS_ROOT = PROJECT_ROOT / "scs_dwg"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-def run_render_export(input_path: str) -> tuple[bytes, str]:
+def run_render_export(input_path: str, manifest_only: bool = False) -> tuple[bytes, str]:
     """Run our C++ render_export. Returns (gzip_json_bytes, error_msg)."""
     out_path = input_path + ".json.gz"
     cmd = [str(RENDER_EXPORT), input_path, out_path]
+    if manifest_only:
+        cmd.append("--manifest")
     print(f"[render] Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
@@ -713,7 +715,8 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         if not tmp_path:
             return
         try:
-            out_data, err = run_render_export(tmp_path)
+            manifest_only = "manifest=1" in self.path or "manifest=true" in self.path
+            out_data, err = run_render_export(tmp_path, manifest_only=manifest_only)
             if err:
                 print(f"[parse] stderr: {err}")
                 self.send_error(500, f"Parse failed: {err}")

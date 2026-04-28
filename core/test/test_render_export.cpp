@@ -934,12 +934,18 @@ static std::string fmt_coord(double v) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s <input.dxf> <output.json>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input.dxf> <output.json> [--manifest]\n", argv[0]);
         return 1;
     }
 
     const char* input_path = argv[1];
     const char* output_path = argv[2];
+    bool manifest_only = false;
+    for (int i = 3; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--manifest") == 0) {
+            manifest_only = true;
+        }
+    }
 
     printf("Parsing: %s\n", input_path);
 
@@ -2370,6 +2376,9 @@ int main(int argc, char** argv) {
     out << "  \"filename\": \"" << escape_json(meta.filename) << "\",\n";
     out << "  \"acadVersion\": \"" << escape_json(meta.acad_version) << "\",\n";
     out << "  \"entityCount\": " << entities.size() << ",\n";
+    if (manifest_only) {
+        out << "  \"manifest\": true,\n";
+    }
     // Entity type counts for comparison testing
     {
         std::unordered_map<std::string, size_t> tc;
@@ -2978,19 +2987,25 @@ int main(int argc, char** argv) {
             }
             out << "], ";
         }
-        out << "\"vertices\": [";
+        if (manifest_only) {
+            // Manifest mode: output vertex count instead of actual vertex data
+            out << "\"vertexCount\": " << valid_vert_count;
+        } else {
+            out << "\"vertices\": [";
 
-        int first_valid = 0;
-        for (int i = 0; i < vert_count; ++i) {
-            double vx = batch.vertex_data[i * 2];
-            double vy = batch.vertex_data[i * 2 + 1];
-            if (!std::isfinite(vx) || !std::isfinite(vy) ||
-                std::abs(vx) > 1.0e8 || std::abs(vy) > 1.0e8) continue;
-            if (first_valid > 0) out << ",";
-            out << fmt_coord(vx) << "," << fmt_coord(vy);
-            first_valid++;
+            int first_valid = 0;
+            for (int i = 0; i < vert_count; ++i) {
+                double vx = batch.vertex_data[i * 2];
+                double vy = batch.vertex_data[i * 2 + 1];
+                if (!std::isfinite(vx) || !std::isfinite(vy) ||
+                    std::abs(vx) > 1.0e8 || std::abs(vy) > 1.0e8) continue;
+                if (first_valid > 0) out << ",";
+                out << fmt_coord(vx) << "," << fmt_coord(vy);
+                first_valid++;
+            }
+            out << "]";
         }
-        out << "]}";
+        out << "}";
     }
     out << "\n";
     out << "  ],\n";
