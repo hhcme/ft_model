@@ -2,10 +2,11 @@ import { useRef, useEffect, useMemo } from 'react';
 import type { DrawData, Viewport, Measurement, MeasurePoint } from '../../app/types';
 import type { SelectionState } from '../../hooks/useSelection';
 import { computeBatchBounds, computeOutlierResistantBounds } from '../../utils/geometry';
-import { screenToWorld, worldToScreen } from '../../utils/transforms';
+import { screenToWorld } from '../../utils/transforms';
 import {
   renderGrid, renderBatches, renderTexts, renderMeasurements,
   renderBorder, renderPaper, withWorldClip, beginRenderFrame,
+  renderSingleBatchLines, renderSingleBatchLinestrip,
 } from '../../utils/renderer';
 
 interface Props {
@@ -214,7 +215,7 @@ export default function CadCanvas({
         if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, av?.clipBounds, av?.paperMode === true || isLight);
       });
       renderMeasurements(ctx, p.measurements, p.measurePoints, p.measurePreview, vp, p.measureMode);
-      // Selection highlight overlay
+      // Selection highlight overlay — uses inline transform constants
       if (p.selection) {
         const s = p.selection;
         const hc = s.highlightColor;
@@ -222,33 +223,27 @@ export default function CadCanvas({
         ctx.save();
         ctx.lineWidth = 2;
         ctx.strokeStyle = col;
-        const w2s = (wx: number, wy: number) => worldToScreen(wx, wy, vp);
+        const sz = vp.zoom;
+        const shw = vp.canvasWidth * 0.5;
+        const shh = vp.canvasHeight * 0.5;
+        const scx = vp.centerX;
+        const scy = vp.centerY;
         if (s.selectedBatchIndex !== null && dd.batches[s.selectedBatchIndex]) {
           const batch = dd.batches[s.selectedBatchIndex];
-          ctx.beginPath();
-          const v = batch.vertices;
           if (batch.topology === 'lines') {
-            for (let i = 0; i + 3 < v.length; i += 4) {
-              const [sx1, sy1] = w2s(v[i], v[i + 1]);
-              const [sx2, sy2] = w2s(v[i + 2], v[i + 3]);
-              ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2);
-            }
+            renderSingleBatchLines(ctx, batch, sz, shw, shh, scx, scy);
           } else if (batch.topology === 'linestrip') {
-            const [sx0, sy0] = w2s(v[0], v[1]);
-            ctx.moveTo(sx0, sy0);
-            for (let i = 2; i + 1 < v.length; i += 2) {
-              const [sx, sy] = w2s(v[i], v[i + 1]);
-              ctx.lineTo(sx, sy);
-            }
+            renderSingleBatchLinestrip(ctx, batch, sz, shw, shh, scx, scy);
           }
-          ctx.stroke();
         }
         if (s.selectedTextIndex !== null && dd.texts?.[s.selectedTextIndex]) {
           const t = dd.texts[s.selectedTextIndex];
-          const hw = (t.rectWidth ?? t.height * 6) * 0.5;
-          const hh = (t.rectHeight ?? t.height) * 0.5;
-          const [sx1, sy1] = w2s(t.x - hw, t.y + hh);
-          const [sx2, sy2] = w2s(t.x + hw, t.y - hh);
+          const thw = (t.rectWidth ?? t.height * 6) * 0.5;
+          const thh = (t.rectHeight ?? t.height) * 0.5;
+          const sx1 = (t.x - thw - scx) * sz + shw;
+          const sy1 = -(t.y + thh - scy) * sz + shh;
+          const sx2 = (t.x + thw - scx) * sz + shw;
+          const sy2 = -(t.y - thh - scy) * sz + shh;
           ctx.strokeRect(Math.min(sx1, sx2), Math.min(sy1, sy2), Math.abs(sx2 - sx1), Math.abs(sy2 - sy1));
         }
         ctx.restore();

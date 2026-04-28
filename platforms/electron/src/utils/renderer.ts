@@ -372,6 +372,23 @@ export function withWorldClip(
   ctx.restore();
 }
 
+// Style key for grouping batches into merged draw calls.
+// Batches sharing the same key can be rendered in a single beginPath/stroke.
+interface StyleKey {
+  color: string;        // "rgb(r,g,b)"
+  lineWidth: number;
+  dashKey: string;      // serialized dash pattern
+  topology: string;     // "lines" | "linestrip" | "triangles"
+}
+
+// Per-batch precomputed render data, produced during culling pass.
+interface VisibleBatch {
+  index: number;
+  fillStyle: string;
+  styleKey: StyleKey;
+  dashArr: number[];
+}
+
 /** Render geometry batches. Returns render stats. */
 export function renderBatches(
   ctx: Ctx,
@@ -395,13 +412,13 @@ export function renderBatches(
   const cx = vp.centerX;
   const cy = vp.centerY;
 
+  // Phase 1: Culling pass — collect visible batches with precomputed style keys
+  const visibleBatches: VisibleBatch[] = [];
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
     if (!batch.vertices?.length) continue;
 
-    // kModAlwaysDraw: annotations bypass frustum culling
     const alwaysDraw = (batch.modifiers ?? 0) & MOD_ALWAYS_DRAW;
-
     const bb = boundsList[bi];
     if (!alwaysDraw && bb && (bb.maxX < wb.minX || bb.minX > wb.maxX ||
                bb.maxY < wb.minY || bb.minY > wb.maxY)) {
@@ -412,7 +429,6 @@ export function renderBatches(
       culled++;
       continue;
     }
-
     const name = batch.layerName;
     if (name && layerVisible.has(name) && !layerVisible.get(name)) {
       hidden++;
@@ -423,103 +439,186 @@ export function renderBatches(
     drawn += batch.vertices.length / 2;
 
     const [dr, dg, db] = adaptColor(...batch.color, paperMode);
-    ctx.strokeStyle = `rgb(${dr},${dg},${db})`;
+    const colorStr = `rgb(${dr},${dg},${db})`;
     const worldLineWidth = Number.isFinite(batch.lineWidth) ? (batch.lineWidth ?? 1) : 1;
-    if (paperMode) {
-      const paperCssWidth = worldLineWidth <= 0.12 ? 0.8 : worldLineWidth <= 0.2 ? 1.0 : 1.25;
-      ctx.lineWidth = Math.max(1, Math.min(8 * dpr, paperCssWidth * dpr));
-    } else {
-      ctx.lineWidth = Math.max(1, Math.min(8, worldLineWidth * dpr));
-    }
-    const dash = batch.linePattern
+    const lw = paperMode
+      ? Math.max(1, Math.min(8 * dpr, (worldLineWidth <= 0.12 ? 0.8 : worldLineWidth <= 0.2 ? 1.0 : 1.25) * dpr))
+      : Math.max(1, Math.min(8, worldLineWidth * dpr));
+    const rawDash = batch.linePattern
       ?.filter((v) => Number.isFinite(v) && Math.abs(v) > 1e-6)
       .map((v) => Math.abs(v)) ?? [];
-    ctx.setLineDash(dash.length >= 2 ? dash.map((v) => Math.max(1, v * z)) : []);
-
-    if (batch.topology === 'triangles') {
-      renderTrianglesInline(ctx, batch, z, hw, hh, cx, cy, dr, dg, db);
-    } else if (batch.topology === 'lines') {
-      renderLinesInline(ctx, batch, z, hw, hh, cx, cy, presentationBounds);
-    } else {
-      renderLinestripInline(ctx, batch, z, hw, hh, cx, cy, wb, margin, presentationBounds);
+    // Linetype zoom adaptation: scale dash pattern by zoom, but normalize
+    // to avoid degenerate patterns at extreme zoom levels.
+    let dashArr: number[] = [];
+    let dashKey = '';
+    if (rawDash.length >= 2) {
+      const scaled = rawDash.map((v) => v * z);
+      const totalDashLen = scaled.reduce((s, v) => s + v, 0);
+      // If total pattern period < 2px, dashes collapse — render solid
+      // If any single element > 4000px, cap to prevent browser rendering issues
+      if (totalDashLen >= 2) {
+        dashArr = scaled.map((v) => Math.max(0.5, Math.min(4000, v)));
+        dashKey = dashArr.join(',');
+      }
     }
-    ctx.setLineDash([]);
+
+    visibleBatches.push({
+      index: bi,
+      fillStyle: colorStr,
+      styleKey: { color: colorStr, lineWidth: lw, dashKey, topology: batch.topology },
+      dashArr,
+    });
   }
+
+  // Phase 2: Group consecutive batches with identical style keys into merged draw calls
+  // Triangles use fill, lines/linestrip use stroke — they never merge with each other.
+  let i = 0;
+  while (i < visibleBatches.length) {
+    const first = visibleBatches[i];
+    const sk = first.styleKey;
+
+    // Find run of same-style batches
+    let j = i + 1;
+    while (j < visibleBatches.length &&
+           visibleBatches[j].styleKey.color === sk.color &&
+           visibleBatches[j].styleKey.lineWidth === sk.lineWidth &&
+           visibleBatches[j].styleKey.dashKey === sk.dashKey &&
+           visibleBatches[j].styleKey.topology === sk.topology) {
+      j++;
+    }
+
+    // Set style once for the entire group
+    if (sk.topology === 'triangles') {
+      ctx.fillStyle = sk.color;
+    } else {
+      ctx.strokeStyle = sk.color;
+    }
+    ctx.lineWidth = sk.lineWidth;
+    // Use round line cap/join for thicker lines to improve visual quality.
+    // Thin lines (<1.5px) use butt/miter for crisp rendering.
+    if (sk.lineWidth > 1.5) {
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+    } else {
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'miter';
+    }
+    ctx.setLineDash(first.dashArr);
+
+    // Render the group
+    if (sk.topology === 'triangles') {
+      renderTriangleGroup(ctx, batches, visibleBatches, i, j, z, hw, hh, cx, cy);
+    } else if (sk.topology === 'lines') {
+      renderLineGroup(ctx, batches, visibleBatches, i, j, z, hw, hh, cx, cy, presentationBounds);
+    } else {
+      renderLinestripGroup(ctx, batches, visibleBatches, i, j, z, hw, hh, cx, cy, wb, margin, presentationBounds);
+    }
+
+    ctx.setLineDash([]);
+    i = j;
+  }
+
   return { visible, drawn, culled, hidden };
 }
 
-function renderTrianglesInline(
-  ctx: Ctx, batch: Batch,
+/** Render a group of same-style triangle batches in one merged draw call. */
+function renderTriangleGroup(
+  ctx: Ctx, batches: Batch[], vis: VisibleBatch[],
+  startIdx: number, endIdx: number,
   z: number, hw: number, hh: number, cx: number, cy: number,
-  r: number, g: number, b: number,
 ): void {
-  ctx.fillStyle = `rgb(${r},${g},${b})`;
   ctx.beginPath();
-  const verts = batch.vertices;
-  for (let i = 0; i < verts.length; i += 6) {
-    // Inline worldToScreen: sx = (wx - cx) * z + hw, sy = -(wy - cy) * z + hh
-    ctx.moveTo((verts[i] - cx) * z + hw, -(verts[i + 1] - cy) * z + hh);
-    ctx.lineTo((verts[i + 2] - cx) * z + hw, -(verts[i + 3] - cy) * z + hh);
-    ctx.lineTo((verts[i + 4] - cx) * z + hw, -(verts[i + 5] - cy) * z + hh);
-    ctx.closePath();
+  for (let vi = startIdx; vi < endIdx; vi++) {
+    const verts = batches[vis[vi].index].vertices;
+    for (let i = 0; i < verts.length; i += 6) {
+      ctx.moveTo((verts[i] - cx) * z + hw, -(verts[i + 1] - cy) * z + hh);
+      ctx.lineTo((verts[i + 2] - cx) * z + hw, -(verts[i + 3] - cy) * z + hh);
+      ctx.lineTo((verts[i + 4] - cx) * z + hw, -(verts[i + 5] - cy) * z + hh);
+      ctx.closePath();
+    }
   }
   ctx.fill();
 }
 
-function renderLinesInline(
-  ctx: Ctx, batch: Batch,
+/** Render a group of same-style line batches in one merged draw call. */
+function renderLineGroup(
+  ctx: Ctx, batches: Batch[], vis: VisibleBatch[],
+  startIdx: number, endIdx: number,
   z: number, hw: number, hh: number, cx: number, cy: number,
   presentationBounds?: Bounds,
 ): void {
   ctx.beginPath();
   let hasPath = false;
-  const verts = batch.vertices;
-  for (let i = 0; i < verts.length; i += 4) {
-    const x0 = verts[i], y0 = verts[i + 1];
-    const x1 = verts[i + 2], y1 = verts[i + 3];
-    if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
-    if (isArtifactSegment(x0, y0, x1, y1, presentationBounds)) continue;
-    ctx.moveTo((x0 - cx) * z + hw, -(y0 - cy) * z + hh);
-    ctx.lineTo((x1 - cx) * z + hw, -(y1 - cy) * z + hh);
-    hasPath = true;
+  for (let vi = startIdx; vi < endIdx; vi++) {
+    const verts = batches[vis[vi].index].vertices;
+    for (let i = 0; i < verts.length; i += 4) {
+      const x0 = verts[i], y0 = verts[i + 1];
+      const x1 = verts[i + 2], y1 = verts[i + 3];
+      if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
+      if (isArtifactSegment(x0, y0, x1, y1, presentationBounds)) continue;
+      ctx.moveTo((x0 - cx) * z + hw, -(y0 - cy) * z + hh);
+      ctx.lineTo((x1 - cx) * z + hw, -(y1 - cy) * z + hh);
+      hasPath = true;
+    }
   }
   if (hasPath) ctx.stroke();
 }
 
-function renderLinestripInline(
-  ctx: Ctx, batch: Batch,
+/** Render a group of same-style linestrip batches in one merged draw call. */
+function renderLinestripGroup(
+  ctx: Ctx, batches: Batch[], vis: VisibleBatch[],
+  startIdx: number, endIdx: number,
   z: number, hw: number, hh: number, cx: number, cy: number,
   wb: Bounds, margin: number, presentationBounds?: Bounds,
 ): void {
-  const breaks = batch.breaks;
-  const verts = batch.vertices;
-  const vertCount = verts.length / 2;
-  // Pre-compute artifact bounds for entity-level culling
   const artPad = validBounds(presentationBounds) ? expandBounds(presentationBounds!, 0.12) : undefined;
-  if (breaks?.length) {
-    ctx.beginPath();
-    let hasPath = false;
-    for (let ei = 0; ei < breaks.length; ei++) {
-      const startV = breaks[ei];
-      const endV = (ei + 1 < breaks.length) ? breaks[ei + 1] : vertCount;
-      if (endV - startV < 2) continue;
-      const startFi = startV * 2;
-      const endFi = endV * 2;
+  ctx.beginPath();
+  let hasPath = false;
 
-      // Compute entity AABB for culling (not just first/last vertex)
-      let eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
-      for (let fi = startFi; fi < endFi; fi += 2) {
-        const x = verts[fi], y = verts[fi + 1];
-        if (x < eMinX) eMinX = x; if (x > eMaxX) eMaxX = x;
-        if (y < eMinY) eMinY = y; if (y > eMaxY) eMaxY = y;
+  for (let vi = startIdx; vi < endIdx; vi++) {
+    const batch = batches[vis[vi].index];
+    const breaks = batch.breaks;
+    const verts = batch.vertices;
+    const vertCount = verts.length / 2;
+
+    if (breaks?.length) {
+      for (let ei = 0; ei < breaks.length; ei++) {
+        const startV = breaks[ei];
+        const endV = (ei + 1 < breaks.length) ? breaks[ei + 1] : vertCount;
+        if (endV - startV < 2) continue;
+        const startFi = startV * 2;
+        const endFi = endV * 2;
+
+        let eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
+        for (let fi = startFi; fi < endFi; fi += 2) {
+          const x = verts[fi], y = verts[fi + 1];
+          if (x < eMinX) eMinX = x; if (x > eMaxX) eMaxX = x;
+          if (y < eMinY) eMinY = y; if (y > eMaxY) eMaxY = y;
+        }
+        if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
+        if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
+        if (artPad && (eMaxX < artPad.minX || eMinX > artPad.maxX ||
+                       eMaxY < artPad.minY || eMinY > artPad.maxY)) continue;
+
+        let penDown = false;
+        for (let fi = startFi + 2; fi < endFi; fi += 2) {
+          const px = verts[fi - 2], py = verts[fi - 1];
+          const vx = verts[fi], vy = verts[fi + 1];
+          if (isArtifactSegment(px, py, vx, vy, presentationBounds)) {
+            penDown = false;
+            continue;
+          }
+          if (!penDown) {
+            ctx.moveTo((px - cx) * z + hw, -(py - cy) * z + hh);
+            penDown = true;
+          }
+          ctx.lineTo((vx - cx) * z + hw, -(vy - cy) * z + hh);
+          hasPath = true;
+        }
       }
-      if (eMaxX < wb.minX - margin || eMinX > wb.maxX + margin) continue;
-      if (eMaxY < wb.minY - margin || eMinY > wb.maxY + margin) continue;
-      if (artPad && (eMaxX < artPad.minX || eMinX > artPad.maxX ||
-                     eMaxY < artPad.minY || eMinY > artPad.maxY)) continue;
-
+    } else {
       let penDown = false;
-      for (let fi = startFi + 2; fi < endFi; fi += 2) {
+      for (let fi = 2; fi < verts.length; fi += 2) {
         const px = verts[fi - 2], py = verts[fi - 1];
         const vx = verts[fi], vy = verts[fi + 1];
         if (isArtifactSegment(px, py, vx, vy, presentationBounds)) {
@@ -534,27 +633,37 @@ function renderLinestripInline(
         hasPath = true;
       }
     }
-    if (hasPath) ctx.stroke();
-  } else {
-    ctx.beginPath();
-    let hasPath = false;
-    let penDown = false;
-    for (let fi = 2; fi < verts.length; fi += 2) {
-      const px = verts[fi - 2], py = verts[fi - 1];
-      const vx = verts[fi], vy = verts[fi + 1];
-      if (isArtifactSegment(px, py, vx, vy, presentationBounds)) {
-        penDown = false;
-        continue;
-      }
-      if (!penDown) {
-        ctx.moveTo((px - cx) * z + hw, -(py - cy) * z + hh);
-        penDown = true;
-      }
-      ctx.lineTo((vx - cx) * z + hw, -(vy - cy) * z + hh);
-      hasPath = true;
-    }
-    if (hasPath) ctx.stroke();
   }
+  if (hasPath) ctx.stroke();
+}
+
+// Single-batch rendering functions kept for selection highlight rendering in CadCanvas.
+// These do NOT go through the batch merge path and are used only for selection overlay.
+
+export function renderSingleBatchLines(
+  ctx: Ctx, batch: Batch,
+  z: number, hw: number, hh: number, cx: number, cy: number,
+): void {
+  const verts = batch.vertices;
+  ctx.beginPath();
+  for (let i = 0; i < verts.length; i += 4) {
+    ctx.moveTo((verts[i] - cx) * z + hw, -(verts[i + 1] - cy) * z + hh);
+    ctx.lineTo((verts[i + 2] - cx) * z + hw, -(verts[i + 3] - cy) * z + hh);
+  }
+  ctx.stroke();
+}
+
+export function renderSingleBatchLinestrip(
+  ctx: Ctx, batch: Batch,
+  z: number, hw: number, hh: number, cx: number, cy: number,
+): void {
+  const verts = batch.vertices;
+  ctx.beginPath();
+  ctx.moveTo((verts[0] - cx) * z + hw, -(verts[1] - cy) * z + hh);
+  for (let i = 2; i + 1 < verts.length; i += 2) {
+    ctx.lineTo((verts[i] - cx) * z + hw, -(verts[i + 1] - cy) * z + hh);
+  }
+  ctx.stroke();
 }
 
 /** Render text entities. */
