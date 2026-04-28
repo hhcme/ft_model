@@ -388,6 +388,13 @@ export function renderBatches(
   const dpr = vp.dpr;
   let visible = 0, drawn = 0, culled = 0, hidden = 0;
 
+  // Pre-compute world-to-screen transform constants for inline use
+  const z = vp.zoom;
+  const hw = vp.canvasWidth * 0.5;
+  const hh = vp.canvasHeight * 0.5;
+  const cx = vp.centerX;
+  const cy = vp.centerY;
+
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
     if (!batch.vertices?.length) continue;
@@ -427,40 +434,43 @@ export function renderBatches(
     const dash = batch.linePattern
       ?.filter((v) => Number.isFinite(v) && Math.abs(v) > 1e-6)
       .map((v) => Math.abs(v)) ?? [];
-    ctx.setLineDash(dash.length >= 2 ? dash.map((v) => Math.max(1, v * vp.zoom)) : []);
+    ctx.setLineDash(dash.length >= 2 ? dash.map((v) => Math.max(1, v * z)) : []);
 
     if (batch.topology === 'triangles') {
-      renderTriangles(ctx, batch, vp, dr, dg, db);
+      renderTrianglesInline(ctx, batch, z, hw, hh, cx, cy, dr, dg, db);
     } else if (batch.topology === 'lines') {
-      renderLines(ctx, batch, vp, presentationBounds);
+      renderLinesInline(ctx, batch, z, hw, hh, cx, cy, presentationBounds);
     } else {
-      renderLinestrip(ctx, batch, vp, wb, margin, presentationBounds);
+      renderLinestripInline(ctx, batch, z, hw, hh, cx, cy, wb, margin, presentationBounds);
     }
     ctx.setLineDash([]);
   }
   return { visible, drawn, culled, hidden };
 }
 
-function renderTriangles(
-  ctx: Ctx, batch: Batch, vp: Viewport,
+function renderTrianglesInline(
+  ctx: Ctx, batch: Batch,
+  z: number, hw: number, hh: number, cx: number, cy: number,
   r: number, g: number, b: number,
 ): void {
   ctx.fillStyle = `rgb(${r},${g},${b})`;
   ctx.beginPath();
   const verts = batch.vertices;
   for (let i = 0; i < verts.length; i += 6) {
-    const [sx0, sy0] = worldToScreen(verts[i], verts[i + 1], vp);
-    const [sx1, sy1] = worldToScreen(verts[i + 2], verts[i + 3], vp);
-    const [sx2, sy2] = worldToScreen(verts[i + 4], verts[i + 5], vp);
-    ctx.moveTo(sx0, sy0);
-    ctx.lineTo(sx1, sy1);
-    ctx.lineTo(sx2, sy2);
+    // Inline worldToScreen: sx = (wx - cx) * z + hw, sy = -(wy - cy) * z + hh
+    ctx.moveTo((verts[i] - cx) * z + hw, -(verts[i + 1] - cy) * z + hh);
+    ctx.lineTo((verts[i + 2] - cx) * z + hw, -(verts[i + 3] - cy) * z + hh);
+    ctx.lineTo((verts[i + 4] - cx) * z + hw, -(verts[i + 5] - cy) * z + hh);
     ctx.closePath();
   }
   ctx.fill();
 }
 
-function renderLines(ctx: Ctx, batch: Batch, vp: Viewport, presentationBounds?: Bounds): void {
+function renderLinesInline(
+  ctx: Ctx, batch: Batch,
+  z: number, hw: number, hh: number, cx: number, cy: number,
+  presentationBounds?: Bounds,
+): void {
   ctx.beginPath();
   let hasPath = false;
   const verts = batch.vertices;
@@ -469,17 +479,16 @@ function renderLines(ctx: Ctx, batch: Batch, vp: Viewport, presentationBounds?: 
     const x1 = verts[i + 2], y1 = verts[i + 3];
     if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
     if (isArtifactSegment(x0, y0, x1, y1, presentationBounds)) continue;
-    const [sx0, sy0] = worldToScreen(x0, y0, vp);
-    const [sx1, sy1] = worldToScreen(x1, y1, vp);
-    ctx.moveTo(sx0, sy0);
-    ctx.lineTo(sx1, sy1);
+    ctx.moveTo((x0 - cx) * z + hw, -(y0 - cy) * z + hh);
+    ctx.lineTo((x1 - cx) * z + hw, -(y1 - cy) * z + hh);
     hasPath = true;
   }
   if (hasPath) ctx.stroke();
 }
 
-function renderLinestrip(
-  ctx: Ctx, batch: Batch, vp: Viewport,
+function renderLinestripInline(
+  ctx: Ctx, batch: Batch,
+  z: number, hw: number, hh: number, cx: number, cy: number,
   wb: Bounds, margin: number, presentationBounds?: Bounds,
 ): void {
   const breaks = batch.breaks;
@@ -512,18 +521,16 @@ function renderLinestrip(
       let penDown = false;
       for (let fi = startFi + 2; fi < endFi; fi += 2) {
         const px = verts[fi - 2], py = verts[fi - 1];
-        const cx = verts[fi], cy = verts[fi + 1];
-        if (isArtifactSegment(px, py, cx, cy, presentationBounds)) {
+        const vx = verts[fi], vy = verts[fi + 1];
+        if (isArtifactSegment(px, py, vx, vy, presentationBounds)) {
           penDown = false;
           continue;
         }
         if (!penDown) {
-          const [sx0, sy0] = worldToScreen(px, py, vp);
-          ctx.moveTo(sx0, sy0);
+          ctx.moveTo((px - cx) * z + hw, -(py - cy) * z + hh);
           penDown = true;
         }
-        const [sx, sy] = worldToScreen(cx, cy, vp);
-        ctx.lineTo(sx, sy);
+        ctx.lineTo((vx - cx) * z + hw, -(vy - cy) * z + hh);
         hasPath = true;
       }
     }
@@ -534,18 +541,16 @@ function renderLinestrip(
     let penDown = false;
     for (let fi = 2; fi < verts.length; fi += 2) {
       const px = verts[fi - 2], py = verts[fi - 1];
-      const cx = verts[fi], cy = verts[fi + 1];
-      if (isArtifactSegment(px, py, cx, cy, presentationBounds)) {
+      const vx = verts[fi], vy = verts[fi + 1];
+      if (isArtifactSegment(px, py, vx, vy, presentationBounds)) {
         penDown = false;
         continue;
       }
       if (!penDown) {
-        const [sx0, sy0] = worldToScreen(px, py, vp);
-        ctx.moveTo(sx0, sy0);
+        ctx.moveTo((px - cx) * z + hw, -(py - cy) * z + hh);
         penDown = true;
       }
-      const [sx, sy] = worldToScreen(cx, cy, vp);
-      ctx.lineTo(sx, sy);
+      ctx.lineTo((vx - cx) * z + hw, -(vy - cy) * z + hh);
       hasPath = true;
     }
     if (hasPath) ctx.stroke();
