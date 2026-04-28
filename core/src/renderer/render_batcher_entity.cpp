@@ -90,6 +90,13 @@ void RenderBatcher::submit_entity_impl(const EntityVariant& entity, const SceneG
     if (linetype_index >= 0 && static_cast<size_t>(linetype_index) < linetypes.size()) {
         line_pattern = linetypes[static_cast<size_t>(linetype_index)].pattern;
     }
+    // Apply entity-specific linetype scale
+    float ltscale = entity.header.linetype_scale;
+    if (ltscale != 1.0f && ltscale > 0.0f && !line_pattern.is_solid()) {
+        for (auto& d : line_pattern.dash_array) {
+            d *= ltscale;
+        }
+    }
 
     // Helper: find or create a batch with matching visible CAD appearance.
     auto find_batch = [this, line_width, &line_pattern, &entity](

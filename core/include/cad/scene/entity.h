@@ -80,6 +80,7 @@ struct EntityHeader {
     Color true_color;                  // RGB True Color from DWG ENC/CMC
     bool has_true_color = false;       // true when entity has explicit RGB color
     float lineweight = 0.0f;           // 0 = BYLAYER, negative = BYBLOCK
+    float linetype_scale = 1.0f;      // Entity-specific linetype scale (LTSCALE)
     bool is_visible = true;
     bool in_block = false;             // True if entity belongs to a block definition (skip in top-level iteration)
     Bounds3d bounds = Bounds3d::empty();

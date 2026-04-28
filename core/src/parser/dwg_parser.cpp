@@ -569,8 +569,12 @@ Result DwgParser::parse_objects(EntitySink& scene)
                                         ? static_cast<int32_t>(color_index) : 256;
 
             // linetype_scale (BD)
-            double lts = reader.read_bd();
-            (void)lts;
+            {
+                double lts = reader.read_bd();
+                if (std::isfinite(lts) && lts > 0.0) {
+                    entity_hdr.linetype_scale = static_cast<float>(lts);
+                }
+            }
 
             // linetype flags (BB)
             uint8_t ltype_flags = reader.read_bits(2);
