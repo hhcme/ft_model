@@ -10,6 +10,8 @@ export interface FileLoader {
   saveCompareToCache: (cacheKey: string, data: CompareResult) => Promise<void>;
   loadFromCache: (cacheKey: string) => Promise<DrawData | null>;
   reparse: (cacheKey: string) => Promise<DrawData>;
+  /** Manifest data loaded first for large files (bounds, layers, views — no vertices) */
+  manifest: DrawData | null;
   loading: boolean;
   fileName: string;
   error: string | null;
@@ -54,6 +56,7 @@ export function useFileLoader(): FileLoader {
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [manifest, setManifest] = useState<DrawData | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -121,6 +124,18 @@ export function useFileLoader(): FileLoader {
       let data: DrawData;
 
       if (name.endsWith('.dwg') || name.endsWith('.dxf')) {
+        // For large files (>2MB), load manifest first for instant bounds/views
+        const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024;
+        if (file.size > LARGE_FILE_THRESHOLD) {
+          try {
+            const manifestData = await loadManifestViaServer(file, ac.signal);
+            if (manifestData) {
+              setManifest(manifestData);
+            }
+          } catch {
+            // Manifest load failure is non-fatal — full load will follow
+          }
+        }
         data = await loadViaServer(file, ac.signal);
       } else if (name.endsWith('.gz') || name.endsWith('.json')) {
         // Offload gzip decompression + JSON.parse to Web Worker
@@ -206,7 +221,7 @@ export function useFileLoader(): FileLoader {
 
   return {
     load, loadCompare, loadCompareReference, loadCompareFromCache, saveCompareToCache,
-    loadFromCache, reparse, loading, fileName, error, elapsed, cancel,
+    loadFromCache, reparse, manifest, loading, fileName, error, elapsed, cancel,
   };
 }
 
@@ -219,6 +234,24 @@ function uploadHeaders(fileName: string): HeadersInit {
     'X-Filename': asciiName,
     'X-Filename-Encoded': encodeURIComponent(fileName || asciiName),
   };
+}
+
+/** Load manifest-only data (bounds, layers, views — no vertex data) for fast initial display. */
+async function loadManifestViaServer(file: File | Blob, signal: AbortSignal): Promise<DrawData | null> {
+  const name = file instanceof File ? file.name : '';
+  try {
+    const res = await fetch('/parse?manifest=1', {
+      method: 'POST',
+      body: file,
+      headers: uploadHeaders(name),
+      signal,
+    });
+    if (!res.ok) return null;
+    const buffer = await res.arrayBuffer();
+    return parseWithWorker(buffer, name || 'manifest.json');
+  } catch {
+    return null;
+  }
 }
 
 async function loadViaServer(file: File | Blob, signal: AbortSignal): Promise<DrawData> {
