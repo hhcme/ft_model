@@ -8,6 +8,7 @@ import CadViewer from '../components/viewer/CadViewer';
 import CompareViewer from '../components/viewer/CompareViewer';
 import { useFileLoader } from '../hooks/useFileLoader';
 import { getRecentFiles, getLastCacheKey, addRecentFile, makeCacheKey, getFileBlob } from '../utils/cache';
+import { clearMTextParseCache } from '../utils/textUtils';
 
 declare global {
   interface Window {
@@ -50,6 +51,11 @@ function AppInner() {
     setRecentFiles(getRecentFiles());
     setLastFileKey(getLastCacheKey());
   }, []);
+
+  // Clear MTEXT parse cache when loading a new drawing
+  useEffect(() => {
+    if (drawData) clearMTextParseCache();
+  }, [drawData]);
 
   // Auto-restore last file from cache
   useEffect(() => {

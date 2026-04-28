@@ -267,6 +267,31 @@ export function parseRichMText(raw: string): RichTextLine[] {
     .filter((line) => line.length > 0);
 }
 
+// ---- MTEXT parse cache ----
+// Avoids re-parsing the same MTEXT control codes on every frame.
+// Bounded by entry count to prevent unbounded memory growth on huge drawings.
+const MTEXT_PARSE_CACHE_MAX = 8000;
+const mtextParseCache = new Map<string, RichTextLine[]>();
+
+/** Cached version of parseRichMText. Returns cached result if available. */
+export function parseRichMTextCached(raw: string): RichTextLine[] {
+  const cached = mtextParseCache.get(raw);
+  if (cached) return cached;
+  const result = parseRichMText(raw);
+  if (mtextParseCache.size >= MTEXT_PARSE_CACHE_MAX) {
+    // Evict oldest entry (first key inserted)
+    const firstKey = mtextParseCache.keys().next().value;
+    if (firstKey !== undefined) mtextParseCache.delete(firstKey);
+  }
+  mtextParseCache.set(raw, result);
+  return result;
+}
+
+/** Clear the MTEXT parse cache (call when loading a new file). */
+export function clearMTextParseCache(): void {
+  mtextParseCache.clear();
+}
+
 /** Strip MTEXT formatting codes for plain-text display. */
 export function cleanMText(raw: string): string {
   let t = raw;

@@ -1,6 +1,6 @@
 import type { Batch, BatchBounds, Bounds, TextEntity, ViewDefinition, Viewport } from '../app/types';
 import { worldToScreen, getViewportWorldBounds } from './transforms';
-import { cleanMText, parseRichMText, type RichTextLine } from './textUtils';
+import { cleanMText, parseRichMTextCached, type RichTextLine } from './textUtils';
 import { textMeasureCache } from './textMeasureCache';
 
 type Ctx = CanvasRenderingContext2D;
@@ -589,7 +589,7 @@ export function renderTexts(
     const isMText = txt.kind === 'mtext';
     ctx.textAlign = 'left';
     ctx.textBaseline = isMText ? 'top' : verticalTextBaseline(txt.align);
-    let richLines = parseRichMText(txt.text);
+    let richLines = parseRichMTextCached(txt.text);
     if (richLines.length === 0) {
       const clean = cleanMText(txt.text);
       richLines = clean

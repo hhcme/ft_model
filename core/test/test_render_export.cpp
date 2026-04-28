@@ -1576,6 +1576,9 @@ int main(int argc, char** argv) {
 
     batcher.end_frame();
 
+    // Build hierarchical scene tree (SceneNode overlay on flat entity vector)
+    scene.build_scene_tree();
+
     // Export batches as JSON
     auto& batches = batcher.batches();
 
@@ -2991,6 +2994,76 @@ int main(int argc, char** argv) {
     }
     out << "\n";
     out << "  ],\n";
+
+    // Export SceneNode tree
+    {
+        const auto& nodes = scene.scene_nodes();
+        out << "  \"sceneTree\": [\n";
+        for (size_t ni = 0; ni < nodes.size(); ++ni) {
+            const auto& node = nodes[ni];
+            const char* type_name = "entity";
+            switch (node.type) {
+                case SceneNodeType::ModelSpace:      type_name = "modelSpace"; break;
+                case SceneNodeType::PaperSpace:      type_name = "paperSpace"; break;
+                case SceneNodeType::LayoutRoot:      type_name = "layoutRoot"; break;
+                case SceneNodeType::BlockDefinition: type_name = "blockDefinition"; break;
+                case SceneNodeType::BlockInstance:   type_name = "blockInstance"; break;
+                case SceneNodeType::Viewport:        type_name = "viewport"; break;
+                case SceneNodeType::Entity:          type_name = "entity"; break;
+            }
+            out << "    {\"id\": " << node.id
+                << ", \"type\": \"" << type_name << "\""
+                << ", \"parentId\": " << (node.parent_id == kSceneNodeNoParent ? -1 : static_cast<int32_t>(node.parent_id))
+                << ", \"visible\": " << (node.visible ? "true" : "false");
+            if (!node.children.empty()) {
+                out << ", \"children\": [";
+                for (size_t ci = 0; ci < node.children.size(); ++ci) {
+                    if (ci > 0) out << ",";
+                    out << node.children[ci];
+                }
+                out << "]";
+            }
+            if (!node.entity_indices.empty()) {
+                out << ", \"entityIndices\": [";
+                for (size_t ei = 0; ei < node.entity_indices.size(); ++ei) {
+                    if (ei > 0) out << ",";
+                    out << node.entity_indices[ei];
+                }
+                out << "]";
+            }
+            if (node.block_def_id != kSceneNodeNoBlock) {
+                out << ", \"blockDefId\": " << node.block_def_id;
+            }
+            if (node.layout_index >= 0) {
+                out << ", \"layoutIndex\": " << node.layout_index;
+            }
+            if (node.viewport_index >= 0) {
+                out << ", \"viewportIndex\": " << node.viewport_index;
+            }
+            if (node.modifiers != 0) {
+                out << ", \"modifiers\": " << node.modifiers;
+            }
+            // World bounds
+            {
+                out << ", \"worldBounds\": ";
+                if (!node.world_bounds.is_empty() &&
+                    std::isfinite(node.world_bounds.min.x) && std::isfinite(node.world_bounds.min.y) &&
+                    std::isfinite(node.world_bounds.max.x) && std::isfinite(node.world_bounds.max.y)) {
+                    out << "{\"minX\": " << node.world_bounds.min.x
+                        << ", \"minY\": " << node.world_bounds.min.y
+                        << ", \"maxX\": " << node.world_bounds.max.x
+                        << ", \"maxY\": " << node.world_bounds.max.y
+                        << "}";
+                } else {
+                    out << "{\"isEmpty\": true}";
+                }
+            }
+            out << "}";
+            if (ni + 1 < nodes.size()) out << ",";
+            out << "\n";
+        }
+        out << "  ],\n";
+    }
 
     // Export text entities
     out << "  \"texts\": [\n";

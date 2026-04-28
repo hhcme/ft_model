@@ -63,6 +63,31 @@ export interface Bounds {
   isEmpty?: boolean;
 }
 
+/** SceneNode type (mirrors C++ SceneNodeType). */
+export type SceneNodeType =
+  | 'modelSpace'
+  | 'paperSpace'
+  | 'layoutRoot'
+  | 'blockDefinition'
+  | 'blockInstance'
+  | 'viewport'
+  | 'entity';
+
+/** Hierarchical scene tree node exported from C++ build_scene_tree(). */
+export interface SceneNode {
+  id: number;
+  type: SceneNodeType;
+  parentId: number;          // -1 = root
+  visible: boolean;
+  children?: number[];       // child node IDs
+  entityIndices?: number[];  // entity vector indices (leaf nodes)
+  blockDefId?: number;       // BlockInstance: referenced block definition node ID
+  layoutIndex?: number;      // LayoutRoot: layout table index
+  viewportIndex?: number;    // Viewport: viewport table index
+  modifiers?: number;        // EntityModifier bitmask
+  worldBounds?: Bounds;      // aggregated subtree world bounds
+}
+
 export interface ViewDefinition {
   id: string;
   name: string;
@@ -139,6 +164,7 @@ export interface DrawData {
   entityCount: number;
   totalVertices: number;
   entityTypeCounts?: Record<string, number>;
+  sceneTree?: SceneNode[];
 }
 
 /** Viewport state for Canvas rendering. */
