@@ -1,6 +1,10 @@
 # ft_model — Self-Developed 2D CAD Rendering Engine
 
+**[中文文档](README_zh.md)**
+
 A high-performance 2D CAD rendering engine for parsing and rendering DWG/DXF files, built with C++20 core and multi-platform rendering targets.
+
+> 🤖 This project is developed with AI assistance (Claude). The core C++ engine, DWG binary parser, DXF parser, renderer, and frontend viewer are all AI-generated code.
 
 ## Features
 
@@ -57,7 +61,6 @@ Open http://localhost:5173
 
 ```bash
 ./build/core/test/render_export test_data/minimal.dxf /tmp/minimal.json
-./build/core/test/render_export test_dwg/big.dwg /tmp/big.json
 ```
 
 ## Project Structure
