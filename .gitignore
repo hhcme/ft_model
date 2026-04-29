@@ -23,6 +23,9 @@ test_data/*.json
 test_data/*.json.gz
 test_data/*.dxf
 test_data/*.dwg
+
+# DWG test files (copyright concerns — use synthetic DXF for testing)
+test_dwg/*.dwg
 test_dwg.zip
 test_dwg/*.json
 test_dwg/*.json.gz
@@ -47,6 +50,12 @@ platforms/electron/*_preview.json
 .cache/
 .claude/settings.local.json
 dwg_cache/
+
+# Environment / secrets
+.env*
+
+# Logs
+*.log
 
 # Python
 .venv/

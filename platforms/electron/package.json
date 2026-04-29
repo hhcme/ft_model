@@ -1,6 +1,11 @@
 {
-  "name": "@company/cad-viewer",
+  "name": "ft-model-viewer",
   "version": "0.5.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hhcme/ft_model.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

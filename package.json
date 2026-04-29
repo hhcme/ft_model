@@ -1,7 +1,12 @@
 {
   "name": "ft-model",
   "version": "0.5.1",
-  "private": true,
+  "license": "MIT",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hhcme/ft_model.git"
+  },
   "scripts": {
     "dev": "concurrently -n backend,frontend -c blue,green \"py start_preview.py\" \"npm run dev -w platforms/electron\"",
     "dev:check": "py scripts/dev_check.py",
@@ -9,8 +14,8 @@
     "dev:frontend": "npm run dev -w platforms/electron",
     "build": "npm run build -w platforms/electron",
     "test:compare": "py scripts/run_regression.py",
-    "reference:prewarm": "py scripts/prewarm_reference_cache.py"
-  },
+    "reference:prewarm": "py scripts/prewarm_reference_cache.py",
+    "reference:compare": "py scripts/run_regression.py"
   "workspaces": [
     "platforms/electron"
   ],

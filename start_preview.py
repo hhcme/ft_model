@@ -50,23 +50,14 @@ if not DWG_TO_SCS_TOOL.exists():
     if _alt.exists():
         DWG_TO_SCS_TOOL = _alt
 
-# Official HOOPS SCS converter (preferred — auto-fallback read modes for DWG)
-HOOPS_SCS_CONVERTER = Path(os.environ.get(
-    "FT_HOOPS_SCS_CONVERTER",
-    r"D:\findtop\code\hoops_high_performance\tools\scs_converter\bin\hoops_scs_converter.exe",
-))
+# Official HOOPS SCS converter (optional — requires HOOPS Exchange SDK license)
+# Set FT_HOOPS_SCS_CONVERTER environment variable to the converter executable path.
+HOOPS_SCS_CONVERTER = Path(os.environ.get("FT_HOOPS_SCS_CONVERTER", ""))
 # Active converter: "official" (default) or "simple"
 SCS_CONVERTER_TOOL = os.environ.get("FT_SCS_CONVERTER_TOOL", "official")
 
-# Default HOOPS SDK root if not set in environment
-if not os.environ.get("HOOPS_EXCHANGE_ROOT"):
-    _default_sdk = (
-        r"D:\findtop\code\hoops_high_performance\sdk\extracted"
-        r"\HOOPS_Exchange_2026.2.0_Windows_x86-64_v142"
-        r"\HOOPS_Exchange_2026.2.0"
-    )
-    if Path(_default_sdk).exists():
-        os.environ["HOOPS_EXCHANGE_ROOT"] = _default_sdk
+# HOOPS Exchange SDK root — must be set via HOOPS_EXCHANGE_ROOT environment variable.
+# Download from https://developer.techsoft3d.com
 
 # Thread-safe conversion status tracker
 _convert_lock = threading.Lock()
@@ -109,19 +100,8 @@ def run_entity_export(input_path: str, output_path: str) -> str:
 
 
 def _read_hoops_license() -> str:
-    """Read HOOPS license from environment or hoops_license.h."""
-    env = os.environ.get("HOOPS_LICENSE", "")
-    if env:
-        return env
-    lic_file = PROJECT_ROOT / "tools/dwg_to_scs/hoops_license.h"
-    if lic_file.exists():
-        for line in lic_file.read_text(encoding="utf-8").splitlines():
-            if '#define HOOPS_LICENSE' in line:
-                start = line.find('"')
-                end = line.rfind('"')
-                if start >= 0 and end > start:
-                    return line[start + 1:end]
-    return ""
+    """Read HOOPS license from environment variable only."""
+    return os.environ.get("HOOPS_LICENSE", "")
 
 
 def json_response(handler: http.server.BaseHTTPRequestHandler, code: int, obj: dict) -> None:

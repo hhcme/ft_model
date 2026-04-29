@@ -4,9 +4,9 @@
 
 Self-developed 2D CAD rendering engine for parsing and rendering DWG/DXF files.
 C++20 core engine with Canvas 2D / WebGL / Flutter rendering targets.
-Commercial product — no GPL or copyleft dependencies.
+MIT licensed open-source project. HOOPS integration is an optional feature requiring a commercial license from Tech Soft 3D.
 
-**Reference products:** HOOPS, CAD看图王
+**Reference products:** HOOPS, CAD看图王（reference targets, not code dependencies）
 
 **Target platforms:**
 - Desktop: Electron (Vue + React) — C++ compiled to WASM, WebGL rendering in renderer process
@@ -15,7 +15,7 @@ Commercial product — no GPL or copyleft dependencies.
 ## Self-Developed Core Policy
 
 - The DWG/DXF parser, SceneGraph, RenderBatcher, export pipeline, and platform renderers are product core code and must remain self-developed.
-- Do not use GPL/copyleft CAD parsers, external DWG→DXF converters, or closed/commercial SDKs in the product rendering path.
+- Do not use GPL/copyleft CAD parsers, external DWG→DXF converters, or closed/commercial SDKs in the product rendering path. Commercial SDKs (HOOPS) are optional integration only — core engine is self-developed.
 - MIT/BSD tools may be used for tests, diagnostics, and fixture generation only, such as generating synthetic DXF fixtures.
 - DWG support must parse DWG binary semantics directly. Do not implement DWG support by converting DWG to DXF first.
 - DXF support is not an external dependency. It is a first-class product input format, a DWG semantic reference, and a regression baseline.
