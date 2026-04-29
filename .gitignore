@@ -31,6 +31,9 @@ test_dwg/*.png
 test_dwg/*.nwd
 test_dwg/*.zip
 
+# SCS files (generated from DWG, not committed)
+scs_dwg/*.scs
+scs_dwg/*.scs.metadata.json
 # SCS extracted directories (non-SCS artifacts)
 scs_dwg/*/
 

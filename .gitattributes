@@ -1,5 +1,4 @@
 # Git LFS — large binary test/reference files
-scs_dwg/*.scs filter=lfs diff=lfs merge=lfs -text
 test_dwg/*.dwg filter=lfs diff=lfs merge=lfs -text
 *.dwg !text !filter !merge !diff
 *.scs !text !filter !merge !diff
