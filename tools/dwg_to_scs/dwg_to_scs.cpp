@@ -105,7 +105,10 @@ static A3DStatus convert_single(A3DSDKHOOPSExchangeLoader& loader,
         sImport.m_sLoadData.m_sGeneral.m_bReadHiddenObjects = false;
         sImport.m_sLoadData.m_sTessellation.m_eTessellationLevelOfDetail = kA3DTessLODLow;
     } else {
-        sImport.m_sLoadData.m_sGeneral.m_eReadingMode2D3D = kA3DRead_3D;
+        // Read both 3D model data and 2D drawing/layout (paper space) sheets.
+        // kA3DRead_3D only includes 3D model content — the "drawing white board"
+        // (paper space background sheet) requires kA3DRead_Both to load drawing sheets.
+        sImport.m_sLoadData.m_sGeneral.m_eReadingMode2D3D = kA3DRead_Both;
         sImport.m_sLoadData.m_sGeneral.m_eReadGeomTessMode = kA3DReadGeomAndTess;
         sImport.m_sLoadData.m_sGeneral.m_bReadSolids = true;
         sImport.m_sLoadData.m_sGeneral.m_bReadSurfaces = true;

@@ -22,6 +22,31 @@ const VIEW_MAP: Record<string, number> = {
   iso: 6,
 };
 
+// OperatorId values (from @ts3d-hoops/web-viewer types)
+const OP_ORBIT = 2;
+const OP_TURNTABLE = 9;
+
+/** Configure viewer for 2D drawing mode after model loads. */
+function setup2DDrawingMode(viewer: WebViewer) {
+  try {
+    // Orthographic projection (no perspective distortion)
+    viewer.view.setProjectionMode(1); // Projection.Orthographic = 1
+  } catch { /* ignore if unsupported */ }
+
+  try {
+    // Remove 3D orbit/turntable operators — keep only pan & zoom for 2D
+    const ops = viewer.operatorManager;
+    ops.remove(OP_ORBIT);
+    ops.remove(OP_TURNTABLE);
+  } catch { /* ignore */ }
+
+  try {
+    // Enable white background sheet (paper)
+    const sm = viewer.sheetManager;
+    sm.setBackgroundSheetEnabled(true).catch(() => {});
+  } catch { /* ignore if sheetManager unavailable */ }
+}
+
 const HoopsViewer = forwardRef<HoopsViewerHandle, Props>(({ scsUrl, fileName }, ref) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<WebViewer | null>(null);
@@ -56,8 +81,14 @@ const HoopsViewer = forwardRef<HoopsViewerHandle, Props>(({ scsUrl, fileName }, 
 
     viewer.setCallbacks({
       sceneReady: () => setStatus('ready'),
-      firstModelLoaded: () => viewer.fitWorld(),
-      modelSwitched: () => viewer.fitWorld(),
+      firstModelLoaded: () => {
+        setup2DDrawingMode(viewer);
+        viewer.fitWorld();
+      },
+      modelSwitched: () => {
+        setup2DDrawingMode(viewer);
+        viewer.fitWorld();
+      },
     });
 
     try {

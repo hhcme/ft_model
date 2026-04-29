@@ -15,8 +15,6 @@ export default defineConfig({
   server: {
     proxy: {
       '/parse': 'http://localhost:2415',
-      '/compare-reference': 'http://localhost:2415',
-      '/compare-render': 'http://localhost:2415',
       '/scs': {
         target: 'http://localhost:2415',
         rewrite: (path) => `/api${path}`,

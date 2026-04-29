@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DrawData, RecentFile, CompareResult } from '../app/types';
-import { makeCacheKey, saveCached, getCached, addRecentFile, saveFileBlob, getFileBlob, saveCompareCached, getCompareCached } from '../utils/cache';
+import type { DrawData, RecentFile } from '../app/types';
+import { makeCacheKey, saveCached, getCached, addRecentFile, saveFileBlob, getFileBlob } from '../utils/cache';
 
 export interface FileLoader {
   load: (file: File, forceReparse?: boolean) => Promise<DrawData>;
-  loadCompare: (file: File) => Promise<CompareResult>;
-  loadCompareReference: (file: File, signal?: AbortSignal) => Promise<CompareResult>;
-  loadCompareFromCache: (cacheKey: string) => Promise<CompareResult | null>;
-  saveCompareToCache: (cacheKey: string, data: CompareResult) => Promise<void>;
   loadFromCache: (cacheKey: string) => Promise<DrawData | null>;
   reparse: (cacheKey: string) => Promise<DrawData>;
   /** Manifest data loaded first for large files (bounds, layers, views — no vertices) */
@@ -184,44 +180,8 @@ export function useFileLoader(): FileLoader {
     }
   }, [startTimer, stopTimer]);
 
-  const loadCompare = useCallback(async (file: File): Promise<CompareResult> => {
-    cancel();
-    setLoading(true);
-    setError(null);
-    setFileName(file.name);
-    startTimer();
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    try {
-      const result = await loadCompareViaServer(file, ac.signal);
-      stopTimer();
-      setLoading(false);
-      return result;
-    } catch (err: any) {
-      stopTimer();
-      setLoading(false);
-      if (err.name === 'AbortError') throw err;
-      setError(err.message || String(err));
-      throw err;
-    }
-  }, [cancel, startTimer, stopTimer]);
-
-  const loadCompareReference = useCallback(async (file: File, signal?: AbortSignal): Promise<CompareResult> => {
-    return loadCompareReferenceViaServer(file, signal);
-  }, []);
-
-  const loadCompareFromCache = useCallback(async (cacheKey: string): Promise<CompareResult | null> => {
-    return getCompareCached(cacheKey);
-  }, []);
-
-  const saveCompareToCache = useCallback(async (cacheKey: string, data: CompareResult): Promise<void> => {
-    return saveCompareCached(cacheKey, data);
-  }, []);
-
   return {
-    load, loadCompare, loadCompareReference, loadCompareFromCache, saveCompareToCache,
-    loadFromCache, reparse, manifest, loading, fileName, error, elapsed, cancel,
+    load, loadFromCache, reparse, manifest, loading, fileName, error, elapsed, cancel,
   };
 }
 
@@ -273,30 +233,3 @@ async function loadViaServer(file: File | Blob, signal: AbortSignal): Promise<Dr
   return parseWithWorker(buffer, name || 'server.json');
 }
 
-async function loadCompareViaServer(file: File, signal: AbortSignal): Promise<CompareResult> {
-  const res = await fetch('/compare-render', {
-    method: 'POST',
-    body: file,
-    headers: uploadHeaders(file.name),
-    signal,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err || 'Server error ' + res.status);
-  }
-  return res.json();
-}
-
-async function loadCompareReferenceViaServer(file: File, signal?: AbortSignal): Promise<CompareResult> {
-  const res = await fetch('/compare-reference', {
-    method: 'POST',
-    body: file,
-    headers: uploadHeaders(file.name),
-    signal,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err || 'Server error ' + res.status);
-  }
-  return res.json();
-}

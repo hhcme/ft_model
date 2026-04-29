@@ -1,46 +1,28 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react';
 import type { CompareResult, DrawData, Viewport } from '../../app/types';
 import CadCanvas from './CadCanvas';
 import HoopsViewer, { type HoopsViewerHandle } from './HoopsViewer';
 import { useScsFile } from '../../hooks/useScsFile';
 import { computeBatchBounds, fitViewToBounds, getPreferredViewBounds } from '../../utils/geometry';
-import { Alert, Button, Space, Badge, Tag, Tooltip } from 'antd';
-import { EyeOutlined, UploadOutlined, WarningOutlined, CloseOutlined, SyncOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { Button, Space, Badge, Tooltip } from 'antd';
+import { EyeOutlined, UploadOutlined, WarningOutlined, SyncOutlined, FolderOpenOutlined, SwapOutlined, ThunderboltOutlined } from '@ant-design/icons';
 
 interface Props {
   ours: DrawData | null;
   ourError: string | null;
-  refPng: string | null;
-  refError: string | null;
   refInfo: CompareResult['refInfo'];
-  entityCompare?: CompareResult['entityCompare'];
-  visualCompare?: CompareResult['visualCompare'];
   errors?: CompareResult['errors'];
   loading?: CompareResult['loading'];
-  referenceMeta?: CompareResult['referenceMeta'];
   fileName: string;
   onOpenFile: (file: File) => void;
   onReparse?: () => void;
   fileBlob?: Blob | null;
 }
 
-function statusColor(status?: string): string {
-  if (status === 'PASS') return 'success';
-  if (status === 'WARN') return 'warning';
-  if (status === 'FAIL' || status === 'ERROR') return 'error';
-  return 'default';
-}
-
-function fmtNum(v?: number): string {
-  return Number.isFinite(v) ? Math.round(v ?? 0).toLocaleString() : '—';
-}
-
 export default function CompareViewer({
-  ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile, onReparse, fileBlob,
+  ours, ourError, refInfo, errors, loading, fileName, onOpenFile, onReparse, fileBlob,
 }: Props) {
   const [layerVisible, setLayerVisible] = useState<Map<string, boolean>>(new Map());
-  const [hideBubble, setHideBubble] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({
     centerX: 0, centerY: 0, zoom: 1,
     canvasWidth: 0, canvasHeight: 0, dpr: 1,
@@ -51,9 +33,8 @@ export default function CompareViewer({
   const [leftPct, setLeftPct] = useState(50);
   const [dragging, setDragging] = useState(false);
   const hoopsRef = useRef<HoopsViewerHandle>(null);
-  const { scsUrl, scsExists, checking: scsChecking, convertStatus, convertError } = useScsFile(fileName, fileBlob);
-  const referenceProvider = referenceMeta?.provider || referenceMeta?.parserFramework?.provider || 'reference';
-  const referenceRenderer = referenceMeta?.parserFramework?.renderer || referenceProvider;
+  const { scsUrl, scsExists, checking: scsChecking, convertStatus, convertError, converter, reconvert } = useScsFile(fileName, fileBlob);
+  const [switching, setSwitching] = useState(false);
 
   // Init layers
   useEffect(() => {
@@ -139,6 +120,24 @@ export default function CompareViewer({
     };
   }, [dragging]);
 
+  // Switch converter type
+  const handleSwitchConverter = useCallback(async () => {
+    const current = converter ?? 'official';
+    const next = current === 'official' ? 'simple' : 'official';
+    setSwitching(true);
+    try {
+      const res = await fetch('/scs/converter-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ converter: next }),
+      });
+      if (res.ok) {
+        await reconvert();
+      }
+    } catch { /* ignore */ }
+    setSwitching(false);
+  }, [converter, reconvert]);
+
   const scsFileName = fileName.replace(/\.(dwg|dxf)$/i, '.scs');
 
   return (
@@ -159,47 +158,6 @@ export default function CompareViewer({
             input.click();
           }}>打开文件</Button>
           <Button size="small" icon={<SyncOutlined />} onClick={onReparse}>重新解析</Button>
-        </div>
-      )}
-      {!hideBubble && <div style={{
-        position: 'absolute',
-        top: 12,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 30,
-        display: 'flex',
-        gap: 8,
-        alignItems: 'center',
-        background: 'rgba(12,12,25,0.82)',
-        border: '1px solid rgba(255,255,255,0.12)',
-        borderRadius: 6,
-        padding: '6px 10px',
-        boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-      }}>
-        <Tag color={statusColor(entityCompare?.status)}>实体 {entityCompare?.status || '—'}</Tag>
-        <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
-          自研 {fmtNum(entityCompare?.ourEntityCount ?? refInfo.ourEntityCount ?? ours?.entityCount)}
-          {' / 参考 '}
-          {fmtNum(entityCompare?.refEntityCount ?? refInfo.refEntityCount ?? refInfo.entityCount)}
-        </span>
-        <span style={{ color: 'rgba(255,255,255,0.36)' }}>|</span>
-        <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
-          缺失 {fmtNum(entityCompare?.missing ?? refInfo.missing)} · 多余 {fmtNum(entityCompare?.extra ?? refInfo.extra)}
-        </span>
-        <Tag color={statusColor(visualCompare?.status)}>视觉 {visualCompare?.status || '—'}</Tag>
-        <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
-          SSIM {visualCompare?.ssim !== undefined ? visualCompare.ssim.toFixed(3) : '—'}
-        </span>
-        <CloseOutlined onClick={() => setHideBubble(true)} style={{ color: 'rgba(255,255,255,0.45)', cursor: 'pointer', marginLeft: 4 }} />
-      </div>}
-      {(errors?.entityCompare || errors?.visualCompare) && (
-        <div style={{ position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)', zIndex: 30, width: 'min(720px, 80vw)' }}>
-          <Alert
-            type="warning"
-            showIcon
-            message={[errors?.entityCompare, errors?.visualCompare].filter(Boolean).join(' · ')}
-            banner
-          />
         </div>
       )}
       {/* Left: Our rendering */}
@@ -313,7 +271,7 @@ export default function CompareViewer({
               </span>
             </div>
           )}
-          {/* HOOPS badge */}
+          {/* HOOPS badge + controls */}
           <div style={{ position: 'absolute', top: 12, left: 12, zIndex: 10 }}>
             <Space>
               <Badge count="HOOPS" style={{ backgroundColor: '#ff9800', color: '#fff' }} />
@@ -326,12 +284,32 @@ export default function CompareViewer({
                   适应
                 </Button>
               )}
+              <Tooltip title="重新转换 HOOPS SCS">
+                <Button
+                  size="small"
+                  icon={<SyncOutlined spin={convertStatus === 'converting'} />}
+                  onClick={reconvert}
+                  disabled={convertStatus === 'converting'}
+                >
+                  重新转换
+                </Button>
+              </Tooltip>
+              <Tooltip title={`当前: ${converter !== 'simple' ? '官方' : '简易'}转换器 — 点击切换`}>
+                <Button
+                  size="small"
+                  icon={<SwapOutlined />}
+                  onClick={handleSwitchConverter}
+                  loading={switching}
+                >
+                  {converter !== 'simple' ? '官方' : '简易'}
+                </Button>
+              </Tooltip>
             </Space>
           </div>
           {/* Ref info */}
           <div style={{ position: 'absolute', bottom: 8, left: 12, zIndex: 10 }}>
             <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-              {scsExists ? 'HOOPS Communicator' : `参考渲染 ${referenceRenderer}`}
+              HOOPS Communicator{converter ? ` (${converter === 'official' ? '官方' : '简易'})` : ''}
             </span>
           </div>
         </div>
