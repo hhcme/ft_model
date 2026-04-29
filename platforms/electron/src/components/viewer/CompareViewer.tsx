@@ -22,6 +22,7 @@ interface Props {
   fileName: string;
   onOpenFile: (file: File) => void;
   onReparse?: () => void;
+  fileBlob?: Blob | null;
 }
 
 function statusColor(status?: string): string {
@@ -36,7 +37,7 @@ function fmtNum(v?: number): string {
 }
 
 export default function CompareViewer({
-  ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile, onReparse,
+  ours, ourError, refPng, refError, refInfo, entityCompare, visualCompare, errors, loading, referenceMeta, fileName, onOpenFile, onReparse, fileBlob,
 }: Props) {
   const [layerVisible, setLayerVisible] = useState<Map<string, boolean>>(new Map());
   const [hideBubble, setHideBubble] = useState(false);
@@ -50,7 +51,7 @@ export default function CompareViewer({
   const [leftPct, setLeftPct] = useState(50);
   const [dragging, setDragging] = useState(false);
   const hoopsRef = useRef<HoopsViewerHandle>(null);
-  const { scsUrl, scsExists, checking: scsChecking } = useScsFile(fileName);
+  const { scsUrl, scsExists, checking: scsChecking, convertStatus, convertError } = useScsFile(fileName, fileBlob);
   const referenceProvider = referenceMeta?.provider || referenceMeta?.parserFramework?.provider || 'reference';
   const referenceRenderer = referenceMeta?.parserFramework?.renderer || referenceProvider;
 
@@ -280,6 +281,25 @@ export default function CompareViewer({
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           {scsExists === true ? (
             <HoopsViewer ref={hoopsRef} scsUrl={scsUrl} fileName={scsFileName} />
+          ) : convertStatus === 'converting' ? (
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
+              <SyncOutlined spin style={{ fontSize: 24, color: '#ff9800', marginBottom: 12 }} />
+              <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>HOOPS 转换中...</span>
+              <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 8 }}>
+                {scsFileName}
+              </span>
+              <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, marginTop: 4 }}>
+                首次打开需要转换，可能需要 30-60 秒
+              </span>
+            </div>
+          ) : convertStatus === 'error' ? (
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
+              <WarningOutlined style={{ fontSize: 32, color: '#ff6b6b', marginBottom: 12 }} />
+              <span style={{ color: '#ff6b6b', fontSize: 14 }}>HOOPS 转换失败</span>
+              <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 8, maxWidth: '80%', textAlign: 'center' }}>
+                {convertError}
+              </span>
+            </div>
           ) : scsChecking || scsExists === null ? (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
               <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>检查 SCS 文件...</span>

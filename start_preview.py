@@ -20,6 +20,7 @@ import os
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 import shutil
@@ -46,6 +47,27 @@ QCAD_DEFAULT_WIDTH = int(os.environ.get("FT_QCAD_WIDTH", "3840"))
 QCAD_DEFAULT_HEIGHT = int(os.environ.get("FT_QCAD_HEIGHT", "2880"))
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 SCS_ROOT = PROJECT_ROOT / "scs_dwg"
+DWG_CACHE_ROOT = PROJECT_ROOT / "dwg_cache"
+DWG_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+DWG_TO_SCS_TOOL = PROJECT_ROOT / "build/tools/dwg_to_scs/Release/dwg_to_scs.exe"
+if not DWG_TO_SCS_TOOL.exists():
+    _alt = PROJECT_ROOT / "build/tools/dwg_to_scs/dwg_to_scs.exe"
+    if _alt.exists():
+        DWG_TO_SCS_TOOL = _alt
+
+# Default HOOPS SDK root if not set in environment
+if not os.environ.get("HOOPS_EXCHANGE_ROOT"):
+    _default_sdk = (
+        r"D:\findtop\code\hoops_high_performance\sdk\extracted"
+        r"\HOOPS_Exchange_2026.2.0_Windows_x86-64_v142"
+        r"\HOOPS_Exchange_2026.2.0"
+    )
+    if Path(_default_sdk).exists():
+        os.environ["HOOPS_EXCHANGE_ROOT"] = _default_sdk
+
+# Thread-safe conversion status tracker
+_convert_lock = threading.Lock()
+_convert_status: dict[str, dict] = {}  # {safe_stem: {status, error}}
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -614,6 +636,36 @@ def json_response(handler: http.server.BaseHTTPRequestHandler, code: int, obj: d
     handler.wfile.write(body)
 
 
+def _run_dwg_to_scs(dwg_path: Path, scs_path: Path, safe_stem: str):
+    """Run dwg_to_scs converter in background thread, update _convert_status."""
+    env = os.environ.copy()
+    if not env.get("HOOPS_EXCHANGE_ROOT"):
+        with _convert_lock:
+            _convert_status[safe_stem] = {"status": "error", "error": "HOOPS_EXCHANGE_ROOT not set"}
+        return
+    if not DWG_TO_SCS_TOOL.exists():
+        with _convert_lock:
+            _convert_status[safe_stem] = {"status": "error", "error": f"dwg_to_scs not found: {DWG_TO_SCS_TOOL}"}
+        return
+    cmd = [str(DWG_TO_SCS_TOOL), str(dwg_path), str(scs_path)]
+    print(f"[convert] Starting: {safe_stem}")
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+        if r.returncode == 0 and scs_path.exists():
+            with _convert_lock:
+                _convert_status[safe_stem] = {"status": "done", "error": None}
+            print(f"[convert] OK: {safe_stem} ({scs_path.stat().st_size / 1024:.0f} KB)")
+        else:
+            err = (r.stderr or r.stdout or "unknown error")[-500:]
+            with _convert_lock:
+                _convert_status[safe_stem] = {"status": "error", "error": err}
+            print(f"[convert] FAIL: {safe_stem}: {err[:200]}")
+    except Exception as ex:
+        with _convert_lock:
+            _convert_status[safe_stem] = {"status": "error", "error": str(ex)[:500]}
+        print(f"[convert] ERROR: {safe_stem}: {ex}")
+
+
 class PreviewHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[HTTP] {fmt % args}")
@@ -640,6 +692,11 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(content)
+            return
+
+        # SCS conversion status polling
+        if raw_path.startswith("/api/scs/convert-status"):
+            self._handle_convert_status()
             return
 
         # SCS file serving for HOOPS viewer
@@ -688,6 +745,76 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, f"File not found: {self.path}")
 
+    def _handle_convert_scs(self):
+        """POST /api/scs/convert — trigger DWG→SCS conversion."""
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            req = json.loads(body)
+        except Exception:
+            json_response(self, 400, {"ok": False, "error": "invalid JSON"})
+            return
+
+        filename = req.get("filename", "")
+        safe_name = Path(filename).name
+        stem = Path(safe_name).stem
+        scs_name = stem + ".scs"
+        scs_path = SCS_ROOT / scs_name
+
+        # Already converted?
+        if scs_path.exists():
+            json_response(self, 200, {"ok": True, "status": "done", "scsFile": scs_name})
+            return
+
+        # Already converting?
+        with _convert_lock:
+            if stem in _convert_status and _convert_status[stem]["status"] == "converting":
+                json_response(self, 200, {"ok": True, "status": "converting", "scsFile": scs_name})
+                return
+            _convert_status[stem] = {"status": "converting", "error": None}
+
+        # Find DWG source
+        dwg_path = None
+        for candidate in [DWG_CACHE_ROOT / safe_name, PROJECT_ROOT / "test_dwg" / safe_name]:
+            if candidate.exists():
+                dwg_path = candidate
+                break
+
+        if not dwg_path:
+            with _convert_lock:
+                _convert_status[stem] = {"status": "error", "error": f"DWG not found: {safe_name}"}
+            json_response(self, 404, {"ok": False, "error": "dwg_not_found", "scsFile": scs_name})
+            return
+
+        # Start conversion in background thread
+        t = threading.Thread(target=_run_dwg_to_scs, args=(dwg_path, scs_path, stem), daemon=True)
+        t.start()
+        json_response(self, 200, {"ok": True, "status": "converting", "scsFile": scs_name})
+
+    def _handle_convert_status(self):
+        """GET /api/scs/convert-status?scsFile=<name>"""
+        from urllib.parse import parse_qs
+        qs = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+        scs_file = (qs.get("scsFile") or [""])[0]
+        if not scs_file:
+            json_response(self, 400, {"ok": False, "error": "missing scsFile"})
+            return
+
+        # Check disk first (source of truth)
+        scs_path = SCS_ROOT / Path(scs_file).name
+        if scs_path.exists():
+            json_response(self, 200, {"ok": True, "status": "done", "scsFile": scs_file})
+            return
+
+        # Check in-memory status
+        stem = Path(scs_file).stem
+        with _convert_lock:
+            st = _convert_status.get(stem)
+        if st:
+            json_response(self, 200, {"ok": True, "status": st["status"], "scsFile": scs_file, "error": st.get("error")})
+        else:
+            json_response(self, 200, {"ok": False, "status": "unknown", "scsFile": scs_file})
+
     def do_HEAD(self):
         """Handle HEAD requests — same routing as GET, body omitted."""
         raw_path = self.path.split("?")[0]
@@ -733,14 +860,12 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path == "/parse":
+        raw = self.path.split("?")[0]
+        if raw == "/parse":
             self._handle_parse()
-        elif self.path == "/compare-reference":
-            self._handle_compare_reference()
-        elif self.path == "/compare-render":
-            # Backward-compatible route. Interactive preview intentionally does
-            # not run Playwright/SSIM here; full visual regression lives in
-            # scripts/run_regression.py.
+        elif raw == "/api/scs/convert":
+            self._handle_convert_scs()
+        elif raw in ("/compare-reference", "/compare-render"):
             self._handle_compare_reference()
         else:
             self.send_error(404, "Unknown endpoint")
@@ -768,6 +893,14 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         tmp_path = self._read_upload()
         if not tmp_path:
             return
+        # Cache DWG uploads for potential SCS conversion
+        orig_name = self._upload_filename()
+        if orig_name.lower().endswith(".dwg"):
+            try:
+                cache_path = DWG_CACHE_ROOT / Path(orig_name).name
+                shutil.copy2(tmp_path, cache_path)
+            except OSError:
+                pass
         try:
             manifest_only = "manifest=1" in self.path or "manifest=true" in self.path
             out_data, err = run_render_export(tmp_path, manifest_only=manifest_only)

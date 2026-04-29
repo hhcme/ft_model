@@ -43,6 +43,7 @@ platforms/electron/*_preview.json
 # Cache
 .cache/
 .claude/settings.local.json
+dwg_cache/
 
 # Python
 .venv/

@@ -41,6 +41,7 @@ function AppInner() {
   const [activeFileName, setActiveFileName] = useState('');
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [lastFileKey, setLastFileKey] = useState<string | null>(null);
+  const [currentFileBlob, setCurrentFileBlob] = useState<Blob | null>(null);
   const compareRunIdRef = useRef(0);
   const referenceAbortRef = useRef<AbortController | null>(null);
   const loader = useFileLoader();
@@ -107,6 +108,7 @@ function AppInner() {
       if (!usableCachedCompare && recent) {
         const blob = await getFileBlob(lastFileKey);
         if (!cancelled && blob) {
+          setCurrentFileBlob(blob);
           const file = new File([blob], recent.name, { lastModified: recent.timestamp });
           setCompareResult((prev) => prev ? {
             ...prev,
@@ -178,6 +180,7 @@ function AppInner() {
     referenceAbortRef.current?.abort();
     const runId = ++compareRunIdRef.current;
     setActiveFileName(file.name);
+    setCurrentFileBlob(file);
     try {
       if (mode === 'compare') {
         const started = Date.now();
@@ -312,6 +315,11 @@ function AppInner() {
 
   const handleOpenRecent = useCallback(async (recent: RecentFile) => {
     setPhase('parsing');
+    // Try to get the blob for HOOPS SCS conversion
+    try {
+      const blob = await getFileBlob(recent.cacheKey);
+      if (blob) setCurrentFileBlob(blob);
+    } catch { /* ignore */ }
     const data = await loader.loadFromCache(recent.cacheKey);
     if (data) {
       addRecentFile({ ...recent, timestamp: Date.now() });
@@ -422,6 +430,7 @@ function AppInner() {
           fileName={activeFileName || loader.fileName}
           onOpenFile={(f) => handleFile(f, 'compare')}
           onReparse={handleReparse}
+          fileBlob={currentFileBlob}
         />
       )}
     </div>
