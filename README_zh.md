@@ -4,7 +4,7 @@
 
 高性能 2D CAD 渲染引擎，用于解析和渲染 DWG/DXF 文件，采用 C++20 核心引擎 + 多平台渲染目标架构。
 
-> 🤖 本项目由 AI 辅助开发（Claude）。核心 C++ 引擎、DWG 二进制解析器、DXF 解析器、渲染器和前端查看器均为 AI 生成的代码。
+> 🤖 本项目由 AI 辅助开发。核心 C++ 引擎、DWG 二进制解析器、DXF 解析器、渲染器和前端查看器均为 AI 生成的代码，开发过程使用了 [Claude](https://www.anthropic.com/claude)、[小米 MiMo](https://xiaomi.com)、[GLM 5.1](https://chatglm.cn) 和 [GPT 5.5](https://openai.com)。自动化测试由 [MiniMax m2.7](https://www.minimaxi.com) 驱动。
 
 ## 特性
 

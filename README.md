@@ -4,7 +4,7 @@
 
 A high-performance 2D CAD rendering engine for parsing and rendering DWG/DXF files, built with C++20 core and multi-platform rendering targets.
 
-> 🤖 This project is developed with AI assistance (Claude). The core C++ engine, DWG binary parser, DXF parser, renderer, and frontend viewer are all AI-generated code.
+> 🤖 This project is developed with AI assistance. The core C++ engine, DWG binary parser, DXF parser, renderer, and frontend viewer are AI-generated code using [Claude](https://www.anthropic.com/claude), [Xiaomi MiMo](https://xiaomi.com), [GLM 5.1](https://chatglm.cn), and [GPT 5.5](https://openai.com). Automated testing is powered by [MiniMax m2.7](https://www.minimaxi.com).
 
 ## Features
 
