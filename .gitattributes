@@ -1,4 +1,4 @@
-# Git LFS — large binary test/reference files
-test_dwg/*.dwg filter=lfs diff=lfs merge=lfs -text
+# No LFS — Gitee free tier does not support Git LFS
+# Large binary files (test_dwg/*.dwg) are tracked normally
 *.dwg !text !filter !merge !diff
 *.scs !text !filter !merge !diff
