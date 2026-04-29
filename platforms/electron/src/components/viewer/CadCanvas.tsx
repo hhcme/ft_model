@@ -229,24 +229,38 @@ export default function CadCanvas({
       renderPaper(ctx, av, vp);
       const pb = av?.presentationBounds ?? dd.presentationBounds ?? dd.bounds;
       const rel = !av?.source || av.source === 'layout' || av.source === 'vport' || av.source === 'paperSpaceFallback';
-      if (!av?.paperMode) renderBorder(ctx, rel ? pb : ob ?? pb, vp, theme);
-      const artB = av?.source === 'vport' ? undefined : rel ? pb : ob ?? pb;
+      // Check if active view bounds actually contain any batch geometry.
+      // When the active view is a layout but all geometry is in model-space coordinates,
+      // the layout clipBounds will cull everything. Detect this and fall back to
+      // model-space rendering without layout clipping.
+      const viewFitsGeometry = !rel || !pb || pb.isEmpty ||
+        dd.batches.some((b) => {
+          const bb = b.bounds;
+          if (!bb || bb.isEmpty || !b.vertices?.length) return false;
+          return bb.maxX >= pb.minX && bb.minX <= pb.maxX &&
+                 bb.maxY >= pb.minY && bb.minY <= pb.maxY;
+        });
+      const effectiveClip = viewFitsGeometry ? av?.clipBounds : undefined;
+      const effectiveArtB = viewFitsGeometry
+        ? (av?.source === 'vport' ? undefined : rel ? pb : ob ?? pb)
+        : ob;
+      if (!av?.paperMode) renderBorder(ctx, viewFitsGeometry && rel ? pb : ob ?? pb, vp, theme);
 
       // --- Geometry: render to OffscreenCanvas, cache across frames ---
       if (geometryDirty.current || !geomCacheRef.current) {
-        const cache = renderBatchesToCache(dd.batches, bb, vp, p.layerVisible, av?.clipBounds, artB, paperMode);
+        const cache = renderBatchesToCache(dd.batches, bb, vp, p.layerVisible, effectiveClip, effectiveArtB, paperMode);
         geomCacheRef.current = cache;
         geometryDirty.current = false;
       }
       const cache = geomCacheRef.current;
       // Clip region for viewport clipping
-      withWorldClip(ctx, av?.clipBounds, vp, () => {
+      withWorldClip(ctx, effectiveClip, vp, () => {
         // Blit cached geometry bitmap
         if (cache.bitmap) {
           ctx.drawImage(cache.bitmap, 0, 0);
         }
         // Texts always render directly (cheap, depends on zoom for font sizes)
-        if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, av?.clipBounds, paperMode);
+        if (dd.texts?.length) renderTexts(ctx, dd.texts, vp, p.layerVisible, effectiveClip, paperMode);
       });
 
       // --- Overlays: always render directly ---

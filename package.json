@@ -3,13 +3,13 @@
   "version": "0.5.1",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c blue,green \"python3 start_preview.py\" \"npm run dev -w platforms/electron\"",
-    "dev:check": "python3 scripts/dev_check.py",
-    "dev:backend": "python3 start_preview.py",
+    "dev": "concurrently -n backend,frontend -c blue,green \"py start_preview.py\" \"npm run dev -w platforms/electron\"",
+    "dev:check": "py scripts/dev_check.py",
+    "dev:backend": "py start_preview.py",
     "dev:frontend": "npm run dev -w platforms/electron",
     "build": "npm run build -w platforms/electron",
-    "test:compare": "python3 scripts/run_regression.py",
-    "reference:prewarm": "python3 scripts/prewarm_reference_cache.py"
+    "test:compare": "py scripts/run_regression.py",
+    "reference:prewarm": "py scripts/prewarm_reference_cache.py"
   },
   "workspaces": [
     "platforms/electron"

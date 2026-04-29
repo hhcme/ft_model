@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
     bool is_dwg = false;
     const char* ext = input_path + std::strlen(input_path);
     while (ext > input_path && *ext != '.' && *ext != '/' && *ext != '\\') ext--;
-    if (*ext == '.') is_dwg = (strcasecmp(ext, ".dwg") == 0);
+    if (*ext == '.') is_dwg = (_stricmp(ext, ".dwg") == 0);
 
     Result parse_result;
     if (is_dwg) {
@@ -457,14 +457,23 @@ int main(int argc, char** argv) {
     j.obj_close();
 
     // Write output
-    bool is_gz = (std::strlen(output_path) > 3 && strcasecmp(output_path + std::strlen(output_path) - 3, ".gz") == 0);
+    bool is_gz = (std::strlen(output_path) > 3 && _stricmp(output_path + std::strlen(output_path) - 3, ".gz") == 0);
     if (is_gz) {
         // For .gz output, write via gzip pipe
+#ifdef _MSC_VER
+        std::string cmd = "gzip > \"" + std::string(output_path) + "\"";
+        FILE* pipe = _popen(cmd.c_str(), "w");
+#else
         std::string cmd = "gzip > '" + std::string(output_path) + "'";
         FILE* pipe = popen(cmd.c_str(), "w");
+#endif
         if (pipe) {
             fwrite(j.buf.data(), 1, j.buf.size(), pipe);
+#ifdef _MSC_VER
+            _pclose(pipe);
+#else
             pclose(pipe);
+#endif
         }
     } else {
         std::ofstream out(output_path, std::ios::binary);

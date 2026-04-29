@@ -29,6 +29,14 @@ PORT = 2415
 PROJECT_ROOT = Path(__file__).parent.resolve()
 RENDER_EXPORT = PROJECT_ROOT / "build/core/test/render_export"
 ENTITY_EXPORT = PROJECT_ROOT / "build/core/test/entity_export"
+# Windows MSVC puts Release/ subdirectory and .exe suffix
+if sys.platform == "win32":
+    _release = PROJECT_ROOT / "build/core/test/Release/render_export.exe"
+    if _release.exists():
+        RENDER_EXPORT = _release
+    _release = PROJECT_ROOT / "build/core/test/Release/entity_export.exe"
+    if _release.exists():
+        ENTITY_EXPORT = _release
 DWG2DXF = Path(os.environ.get("FT_DWG2DXF", "/tmp/libredwg-0.13.4/programs/dwg2dxf"))
 QCAD_RENDERER = os.environ.get("FT_QCAD_RENDERER")
 STATIC_DIR = PROJECT_ROOT / "platforms/electron"
@@ -125,10 +133,19 @@ def find_qcad_renderer() -> Path | None:
     for app_glob in (
         "/Applications/QCAD*.app/Contents/Resources/dwg2png",
         "/Applications/QCAD*.app/Contents/Resources/dwg2bmp",
+    ):
+        try:
+            candidates.extend(Path("/").glob(app_glob.lstrip("/")))
+        except (NotImplementedError, OSError):
+            pass  # Non-relative patterns unsupported on Python 3.14+ / non-macOS
+    for app_glob in (
         f"{Path.home()}/Applications/QCAD*.app/Contents/Resources/dwg2png",
         f"{Path.home()}/Applications/QCAD*.app/Contents/Resources/dwg2bmp",
     ):
-        candidates.extend(Path("/").glob(app_glob.lstrip("/")))
+        try:
+            candidates.extend(Path.home().glob(app_glob.replace(str(Path.home()) + "/", "")))
+        except (NotImplementedError, OSError):
+            pass
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
             return candidate
@@ -671,10 +688,47 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, f"File not found: {self.path}")
 
+    def do_HEAD(self):
+        """Handle HEAD requests — same routing as GET, body omitted."""
+        raw_path = self.path.split("?")[0]
+
+        # SCS file check (primary consumer: HOOPS viewer frontend useScsFile)
+        if raw_path.startswith("/api/scs/"):
+            filename = unquote(raw_path[len("/api/scs/"):])
+            safe_filename = Path(filename).name
+            scs_path = SCS_ROOT / safe_filename
+            self.send_response(200 if scs_path.exists() else 404)
+            self.send_header("Content-Type", "application/octet-stream")
+            if scs_path.exists():
+                self.send_header("Content-Length", str(scs_path.stat().st_size))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
+        # Parse result check (static .json.gz files)
+        if raw_path.startswith("/test_dwg/") or raw_path.startswith("/test_data/"):
+            safe_path = raw_path.lstrip("/")
+            real_path = PROJECT_ROOT / safe_path
+            try:
+                real_path = real_path.resolve()
+                real_path.relative_to(PROJECT_ROOT)
+                if real_path.exists() and real_path.is_file():
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(real_path.stat().st_size))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
+            except (ValueError, OSError):
+                pass
+
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Filename-Encoded")
         self.end_headers()
 

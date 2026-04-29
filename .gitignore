@@ -23,12 +23,17 @@ test_data/*.json
 test_data/*.json.gz
 test_data/*.dxf
 test_data/*.dwg
+test_dwg.zip
 test_dwg/*.json
 test_dwg/*.json.gz
-test_dwg/*.dwg
 test_dwg/*.pdf
 test_dwg/*.png
 test_dwg/*.nwd
+test_dwg/*.zip
+
+# SCS extracted directories (non-SCS artifacts)
+scs_dwg/*/
+
 
 # Preview/export generated data
 platforms/electron/big.json
@@ -37,6 +42,7 @@ platforms/electron/*_preview.json
 
 # Cache
 .cache/
+.claude/settings.local.json
 
 # Python
 .venv/

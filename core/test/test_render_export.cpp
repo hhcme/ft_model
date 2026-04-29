@@ -956,7 +956,7 @@ int main(int argc, char** argv) {
     const char* ext = input_path + strlen(input_path);
     while (ext > input_path && *ext != '.' && *ext != '/' && *ext != '\\') ext--;
     if (*ext == '.') {
-        is_dwg = (strcasecmp(ext, ".dwg") == 0);
+        is_dwg = (_stricmp(ext, ".dwg") == 0);
     }
 
     Result parse_result;

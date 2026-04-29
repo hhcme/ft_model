@@ -1,5 +1,7 @@
 # core/test/CMakeLists.txt — Test executables
 
+find_package(ZLIB QUIET)
+
 # Standalone parser test — no test framework dependency
 add_executable(test_parser
     test_parser.cpp
@@ -10,7 +12,11 @@ target_link_libraries(test_parser PRIVATE cad_core)
 add_executable(render_export
     test_render_export.cpp
 )
-target_link_libraries(render_export PRIVATE cad_core -lz)
+if(ZLIB_FOUND)
+    target_link_libraries(render_export PRIVATE cad_core ZLIB::ZLIB)
+else()
+    target_link_libraries(render_export PRIVATE cad_core ${CMAKE_DL_LIBS})
+endif()
 
 add_executable(regression_smoke
     test_regression_smoke.cpp
@@ -21,7 +27,11 @@ target_link_libraries(regression_smoke PRIVATE cad_core)
 add_executable(entity_export
     entity_export.cpp
 )
-target_link_libraries(entity_export PRIVATE cad_core -lz)
+if(ZLIB_FOUND)
+    target_link_libraries(entity_export PRIVATE cad_core ZLIB::ZLIB)
+else()
+    target_link_libraries(entity_export PRIVATE cad_core ${CMAKE_DL_LIBS})
+endif()
 
 add_test(
     NAME regression_smoke
