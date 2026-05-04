@@ -154,7 +154,7 @@ void DwgParser::prescan_table_objects(
                 r.set_bit_limit(mdb);
                 if (is_r2007_plus) r.setup_string_stream(static_cast<uint32_t>(mdb));
             }
-            // Skip common object header: handle + EED
+            // Skip common object header: self handle + EED
             (void)r.read_h();
             uint16_t eed_sz = 0;
             while (!r.has_error()) {
@@ -209,8 +209,9 @@ void DwgParser::prescan_table_objects(
                 }
             }
         }
-        dwg_debug_log("[DWG] BLOCK_HEADER pre-scan: %zu names loaded, %zu reverse maps\n",
-                      prescan_block_names, prescan_reverse_maps);
+        dwg_debug_log("[DWG] BLOCK_HEADER pre-scan: %zu names loaded, %zu reverse maps, map=%p size=%zu\n",
+                      prescan_block_names, prescan_reverse_maps,
+                      (void*)&block_names_from_entities, block_names_from_entities.size());
     }
     dwg_debug_log("[DWG] Pre-scan: %zu layer handles, %zu linetype handles, %zu block names loaded\n",
             m_layer_handle_to_index.size(), m_linetype_handle_to_index.size(),

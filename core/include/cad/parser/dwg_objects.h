@@ -53,4 +53,7 @@ std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts();
 // Diagnostic helper: returns a map of dispatched DWG type -> count.
 std::unordered_map<uint32_t, size_t> get_dwg_entity_dispatch_counts();
 
+// Diagnostic helper: dump entity parse success/failure stats to stderr.
+void dump_dwg_entity_parse_stats();
+
 } // namespace cad

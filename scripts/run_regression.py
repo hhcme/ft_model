@@ -20,8 +20,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = ROOT / "build"
 TEST_DWG = ROOT / "test_dwg"
-ENTITY_EXPORT = BUILD_DIR / "core/test/entity_export"
-RENDER_EXPORT = BUILD_DIR / "core/test/render_export"
+
+
+def _find_exe(name: str) -> Path:
+    """Find executable in build dir, checking Debug/Release subdirs on Windows."""
+    candidates = [
+        BUILD_DIR / f"core/test/{name}",
+        BUILD_DIR / f"core/test/Debug/{name}",
+        BUILD_DIR / f"core/test/Release/{name}",
+        BUILD_DIR / f"tools/dwg_to_json/{name}",
+        BUILD_DIR / f"tools/dwg_to_json/Debug/{name}",
+        BUILD_DIR / f"tools/dwg_to_json/Release/{name}",
+    ]
+    for c in candidates:
+        for ext in ("", ".exe"):
+            p = Path(str(c) + ext)
+            if p.exists():
+                return p
+    return candidates[0]
+
+
+ENTITY_EXPORT = _find_exe("entity_export")
+RENDER_EXPORT = _find_exe("render_export")
 DWG2DXF = Path(os.environ.get("FT_DWG2DXF", "/tmp/libredwg-0.13.4/programs/dwg2dxf"))
 TMP = Path("/tmp/cad_compare")
 REF_DXF_DIR = TMP / "ref_dxf"

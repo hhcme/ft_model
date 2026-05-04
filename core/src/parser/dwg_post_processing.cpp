@@ -130,11 +130,13 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                 for (char& c : upper) {
                     c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
                 }
-                const bool is_space_name = (upper == "*MODEL_SPACE" || upper == "*PAPER_SPACE");
+                const bool is_paper_space_name = (upper == "*PAPER_SPACE");
+                const bool is_model_space_name = (upper == "*MODEL_SPACE");
                 const bool is_layout_block_header =
+                    !is_model_space_name &&
                     ctx.handle_object_types.find(h) != ctx.handle_object_types.end() &&
                     ctx.handle_object_types[h] == 49;
-                if (is_space_name || is_layout_block_header) {
+                if (is_paper_space_name || is_layout_block_header) {
                     layout_block_owner_handles[h] = layout_index;
                 }
                 auto type_it = ctx.handle_object_types.find(h);
@@ -171,6 +173,119 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                       viewport_layouts_resolved,
                       layout_viewport_handles.size());
     }
+    // Build block_parent map: block_handle → parent_block_handle
+    // Source: entity_handle_to_block_header (entity → owning BLOCK_HEADER)
+    // If a BLOCK entity handle appears as an entity in another BLOCK_HEADER's handle stream,
+    // the other BLOCK_HEADER is the parent.
+    std::unordered_map<uint64_t, uint64_t> block_parent_map;
+    {
+        // Map BLOCK entity handles → their BLOCK_HEADER handles
+        std::unordered_map<uint64_t, uint64_t> block_entity_to_header;
+        for (const auto& [block_entity_h, block_name] : ctx.block_names_from_entities) {
+            for (const auto& [bh_handle, bh_name] : m_sections.block_names) {
+                if (bh_name == block_name) {
+                    block_entity_to_header[block_entity_h] = bh_handle;
+                    break;
+                }
+            }
+        }
+        // Check entity_handle_to_block_header for BLOCK entities
+        for (const auto& [entity_handle, owner_bh_handle] : ctx.entity_handle_to_block_header) {
+            auto it = block_entity_to_header.find(entity_handle);
+            if (it != block_entity_to_header.end() && it->second != owner_bh_handle) {
+                block_parent_map[it->second] = owner_bh_handle;
+            }
+        }
+    }
+    // T4.4: Deterministic Paper Space inference for layout blocks.
+    // First check if the block's BLOCK_HEADER handle is referenced by a LAYOUT
+    // object — this is deterministic. Only fall back to entity-count heuristic
+    // when the deterministic rule cannot decide.
+    {
+        auto& all_blocks = scene.blocks();
+        for (size_t bi = 0; bi < all_blocks.size(); ++bi) {
+            auto& block = all_blocks[bi];
+            if (block.is_model_space || block.is_paper_space) continue;
+            if (block.name.empty()) continue;
+
+            uint64_t bh_handle = block.dwg_block_header_handle;
+            if (bh_handle == 0) {
+                // Fallback: look up by name
+                for (const auto& [h, name] : m_sections.block_names) {
+                    if (name == block.name) { bh_handle = h; break; }
+                }
+            }
+            if (bh_handle == 0) continue;
+            if (block_parent_map.count(bh_handle) > 0) continue; // already has parent
+
+            // Deterministic rule: is this block's BLOCK_HEADER handle referenced
+            // by any LAYOUT object as its owner block?
+            bool is_layout_block = (layout_block_owner_handles.find(bh_handle) !=
+                                    layout_block_owner_handles.end());
+            if (is_layout_block) {
+                block.is_paper_space = true;
+                block.is_inferred_paper_space = false; // deterministic, not inferred
+                // Re-assign entities to Paper Space without removing from block
+                for (int32_t eidx : block.entity_indices) {
+                    if (eidx >= 0 && static_cast<size_t>(eidx) < scene.entities().size()) {
+                        auto& hdr = scene.entities()[eidx].header;
+                        hdr.space = DrawingSpace::PaperSpace;
+                        hdr.in_block = false;
+                        hdr.owner_block_index = -1;
+                    }
+                }
+                for (int32_t eidx : block.header_owned_entity_indices) {
+                    if (eidx >= 0 && static_cast<size_t>(eidx) < scene.entities().size()) {
+                        auto& hdr = scene.entities()[eidx].header;
+                        hdr.space = DrawingSpace::PaperSpace;
+                        hdr.in_block = false;
+                        hdr.owner_block_index = -1;
+                    }
+                }
+                dwg_debug_log("[DWG] deterministic Paper Space for block '%s' (layout owner)\n",
+                    block.name.c_str());
+                continue;
+            }
+
+            // Heuristic disabled: entity-count threshold mis-classifies many
+            // normal blocks (e.g. *D dimension blocks with >2 entities) as
+            // Paper Space.  Rely on deterministic LAYOUT ownership and owner
+            // handle resolution (entity_common_handles / block-header membership)
+            // for correct space assignment instead.
+            (void)block_parent_map;
+        }
+    }
+
+    // Helper: resolve a block handle to its root space (Model/Paper) by walking up the chain
+    auto resolve_block_root_space = [&](uint64_t block_handle) -> int {
+        // 0 = unknown, 1 = model, 2 = paper
+        std::unordered_set<uint64_t> visited;
+        uint64_t current = block_handle;
+        for (int depth = 0; depth < 16; ++depth) {
+            if (current == 0 || !visited.insert(current).second) break;
+            // Check if current is a known space block
+            auto name_it = m_sections.block_names.find(current);
+            if (name_it != m_sections.block_names.end()) {
+                std::string upper = name_it->second;
+                for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                if (upper == "*MODEL_SPACE") return 1;
+                if (upper == "*PAPER_SPACE") return 2;
+            }
+            auto name_it2 = ctx.block_names_from_entities.find(current);
+            if (name_it2 != ctx.block_names_from_entities.end()) {
+                std::string upper = name_it2->second;
+                for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                if (upper == "*MODEL_SPACE") return 1;
+                if (upper == "*PAPER_SPACE") return 2;
+            }
+            // Walk up to parent
+            auto parent_it = block_parent_map.find(current);
+            if (parent_it == block_parent_map.end()) break;
+            current = parent_it->second;
+        }
+        return 0;
+    };
+
     size_t block_header_space_resolved = 0;
     size_t block_header_model = 0;
     size_t block_header_paper = 0;
@@ -256,6 +371,38 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                     block_idx = scene.find_block(name);
                 }
                 if (block_idx >= 0) {
+                    // Multi-level chain resolution: check if this block's root space is Paper/Model
+                    int root_space = resolve_block_root_space(block_header_handle);
+                    if (root_space == 2) {
+                        // Block chain leads to *Paper_Space → render as PaperSpace
+                        header.space = DrawingSpace::PaperSpace;
+                        header.in_block = false;
+                        header.owner_block_index = -1;
+                        header.layout_index = -1;
+                        // Try to find the layout index
+                        for (const auto& [bh, li] : layout_block_owner_handles) {
+                            auto name2 = m_sections.block_names.find(bh);
+                            if (name2 != m_sections.block_names.end()) {
+                                std::string u = name2->second;
+                                for (char& c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                                if (u == "*PAPER_SPACE") {
+                                    header.layout_index = li;
+                                    break;
+                                }
+                            }
+                        }
+                        block_header_paper++;
+                        block_header_space_resolved++;
+                        continue;
+                    } else if (root_space == 1) {
+                        // Block chain leads to *Model_Space → render as ModelSpace
+                        header.space = DrawingSpace::ModelSpace;
+                        header.in_block = false;
+                        header.owner_block_index = -1;
+                        block_header_model++;
+                        block_header_space_resolved++;
+                        continue;
+                    }
                     header.owner_block_index = block_idx;
                     header.in_block = true;
                     const uint64_t membership_key =
@@ -419,11 +566,34 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                 header.in_block = false;
                 model++;
             } else {
-                // Keep existing in_block state. BLOCK/ENDBLK parsing already
-                // marks real block-definition children. Owner handles can also
-                // point to dictionaries or ordinary containers; hiding those
-                // here would drop valid model-space geometry in real DWGs.
-                normal_block++;
+                // Multi-level chain resolution: check if this block's root space
+                // is Paper/Model by walking up the block parent chain.
+                int root_space = resolve_block_root_space(owner_handle);
+                if (root_space == 2) {
+                    header.space = DrawingSpace::PaperSpace;
+                    header.in_block = false;
+                    header.owner_block_index = -1;
+                    for (const auto& [bh, li] : layout_block_owner_handles) {
+                        auto name2 = m_sections.block_names.find(bh);
+                        if (name2 != m_sections.block_names.end()) {
+                            std::string u = name2->second;
+                            for (char& c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                            if (u == "*PAPER_SPACE") {
+                                header.layout_index = li;
+                                break;
+                            }
+                        }
+                    }
+                    paper++;
+                } else if (root_space == 1) {
+                    header.space = DrawingSpace::ModelSpace;
+                    header.in_block = false;
+                    header.owner_block_index = -1;
+                    model++;
+                } else {
+                    // Keep existing in_block state.
+                    normal_block++;
+                }
             }
             resolved++;
         }
@@ -444,6 +614,35 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
             });
         }
     }
+    // Final pass: mark any top-level entity whose block_header_handle or
+    // owner_handle maps to a layout-owned block as PaperSpace.  Catches
+    // entities that were missed by the block-header membership and owner
+    // resolution loops (e.g. *Paper_Space entities not in entity_object_handles).
+    {
+        size_t final_paper = 0;
+        auto& all_entities = scene.entities();
+        for (auto& ent : all_entities) {
+            if (ent.header.space == DrawingSpace::PaperSpace) continue;
+            if (ent.header.in_block) continue;
+
+            uint64_t check_handle = ent.header.block_header_handle;
+            if (check_handle == 0) check_handle = ent.header.owner_handle;
+            if (check_handle == 0) continue;
+
+            if (layout_block_owner_handles.find(check_handle) !=
+                layout_block_owner_handles.end()) {
+                ent.header.space = DrawingSpace::PaperSpace;
+                ent.header.in_block = false;
+                ent.header.owner_block_index = -1;
+                final_paper++;
+            }
+        }
+        if (final_paper > 0) {
+            dwg_debug_log("[DWG] final paper-space pass (layout owners): %zu entities\n",
+                          final_paper);
+        }
+    }
+
     dwg_debug_log("[DWG] Layer resolution: resolved=%zu map_size=%zu  Linetype resolution: resolved=%zu map_size=%zu\n",
             ctx.g_layer_resolved, m_layer_handle_to_index.size(),
             ctx.g_linetype_resolved, m_linetype_handle_to_index.size());
@@ -503,6 +702,76 @@ void DwgParser::run_post_processing(ParseObjectsContext& ctx,
                 version_family_name(m_version),
                 "Text styles",
             });
+        }
+    }
+
+    // T4.3: Force DEFPOINTS POINT entities into block if owner is a *D dimension block.
+    // These auxiliary points are owned by anonymous dimension blocks but may leak
+    // to top-level when BLOCK/ENDBLK boundaries are missed.
+    {
+        size_t forced_in_block = 0;
+        auto& all_entities = scene.entities();
+        auto& all_blocks = scene.blocks();
+        const auto& all_layers = scene.layers();
+        auto block_name_for_handle_t43 = [&](uint64_t h) -> std::string {
+            auto it1 = ctx.block_names_from_entities.find(h);
+            if (it1 != ctx.block_names_from_entities.end()) return it1->second;
+            auto it2 = m_sections.block_names.find(h);
+            if (it2 != m_sections.block_names.end()) return it2->second;
+            return {};
+        };
+        for (size_t eidx = 0; eidx < all_entities.size(); ++eidx) {
+            auto& ent = all_entities[eidx];
+            if (ent.type() != EntityType::Point) continue;
+            // Check layer is DEFPOINTS
+            if (ent.header.layer_index < 0 ||
+                static_cast<size_t>(ent.header.layer_index) >= all_layers.size()) {
+                continue;
+            }
+            std::string layer_name = all_layers[ent.header.layer_index].name;
+            {
+                std::string upper = layer_name;
+                for (char& c : upper) {
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                }
+                if (upper != "DEFPOINTS") continue;
+            }
+            // Check if owner handle maps to an anonymous dimension block (*D...)
+            uint64_t owner_bh = ent.header.block_header_handle;
+            if (owner_bh == 0) continue;
+            std::string owner_name = block_name_for_handle_t43(owner_bh);
+            if (owner_name.empty()) continue;
+            bool is_dim_block = false;
+            if (owner_name.size() >= 2 && owner_name[0] == '*') {
+                char prefix = static_cast<char>(std::toupper(static_cast<unsigned char>(owner_name[1])));
+                is_dim_block = (prefix == 'D');
+            }
+            if (!is_dim_block) continue;
+            // Find the block by handle and force in_block
+            auto hbi = ctx.block_handle_to_index.find(owner_bh);
+            if (hbi != ctx.block_handle_to_index.end() && hbi->second >= 0) {
+                int32_t block_idx = hbi->second;
+                ent.header.in_block = true;
+                ent.header.owner_block_index = block_idx;
+                // Add to block's header_owned_entity_indices if not already there
+                if (block_idx < static_cast<int32_t>(all_blocks.size())) {
+                    auto& block = all_blocks[block_idx];
+                    bool already_present = false;
+                    for (int32_t bei : block.header_owned_entity_indices) {
+                        if (bei == static_cast<int32_t>(eidx)) {
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if (!already_present) {
+                        block.header_owned_entity_indices.push_back(static_cast<int32_t>(eidx));
+                    }
+                }
+                forced_in_block++;
+            }
+        }
+        if (forced_in_block > 0) {
+            dwg_debug_log("[DWG] DEFPOINTS POINT forced in_block: %zu\n", forced_in_block);
         }
     }
 

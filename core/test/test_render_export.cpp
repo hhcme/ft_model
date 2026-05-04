@@ -74,20 +74,38 @@ public:
     JsonWriter& operator<<(const std::string& s) { write(s.c_str(), s.size()); return *this; }
     JsonWriter& operator<<(char c) { write(&c, 1); return *this; }
 
+    // Safe float/double output — NaN/Inf are written as JSON null
+    JsonWriter& operator<<(float v) {
+        if (!std::isfinite(v)) { write("null", 4); return *this; }
+        char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this;
+    }
+    JsonWriter& operator<<(double v) {
+        if (!std::isfinite(v)) { write("null", 4); return *this; }
+        char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this;
+    }
+
+    // Catch-all for integer types (size_t, int64_t, etc.) — must come AFTER float/double
     template<class T>
     JsonWriter& operator<<(T v) {
+        static_assert(std::is_integral_v<T>, "JsonWriter only supports integral and floating-point types");
         char buf[64];
-        int n = std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(v));
+        int n = 0;
+        if constexpr (std::is_same_v<T, long long>) {
+            n = std::snprintf(buf, sizeof(buf), "%lld", v);
+        } else if constexpr (std::is_same_v<T, unsigned long long>) {
+            n = std::snprintf(buf, sizeof(buf), "%llu", v);
+        } else if constexpr (std::is_same_v<T, long>) {
+            n = std::snprintf(buf, sizeof(buf), "%ld", v);
+        } else if constexpr (std::is_same_v<T, unsigned long>) {
+            n = std::snprintf(buf, sizeof(buf), "%lu", v);
+        } else if constexpr (std::is_signed_v<T>) {
+            n = std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
+        } else {
+            n = std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
+        }
         write(buf, n);
         return *this;
     }
-    JsonWriter& operator<<(int v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%d", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%ld", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(long long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lld", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(unsigned v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%u", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(unsigned long v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%lu", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(float v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this; }
-    JsonWriter& operator<<(double v) { char buf[32]; int n = std::snprintf(buf, sizeof(buf), "%.10g", v); write(buf, n); return *this; }
 
 private:
     static bool ends_with_gz(const std::string& path) {
@@ -916,6 +934,188 @@ static std::string escape_json(const std::string& s) {
     return out;
 }
 
+// ─── Compare-mode entity export helpers ──────────────────────────────────────
+
+static const char* entity_type_name(EntityType t) {
+    switch (t) {
+        case EntityType::Line: return "Line";
+        case EntityType::Circle: return "Circle";
+        case EntityType::Arc: return "Arc";
+        case EntityType::Polyline: return "Polyline";
+        case EntityType::LwPolyline: return "LwPolyline";
+        case EntityType::Spline: return "Spline";
+        case EntityType::Text: return "Text";
+        case EntityType::MText: return "MText";
+        case EntityType::Dimension: return "Dimension";
+        case EntityType::Hatch: return "Hatch";
+        case EntityType::Insert: return "Insert";
+        case EntityType::Point: return "Point";
+        case EntityType::Ellipse: return "Ellipse";
+        case EntityType::Ray: return "Ray";
+        case EntityType::XLine: return "XLine";
+        case EntityType::Viewport: return "Viewport";
+        case EntityType::Solid: return "Solid";
+        case EntityType::Leader: return "Leader";
+        case EntityType::Tolerance: return "Tolerance";
+        case EntityType::MLine: return "MLine";
+        case EntityType::Multileader: return "Multileader";
+    }
+    return "Unknown";
+}
+
+static void write_entity_properties(JsonWriter& out, const EntityVariant& e) {
+    switch (e.type()) {
+        case EntityType::Line: {
+            const auto* p = e.as_line();
+            if (p) {
+                out << ",\"start\":[" << p->start.x << "," << p->start.y << "," << p->start.z << "]";
+                out << ",\"end\":[" << p->end.x << "," << p->end.y << "," << p->end.z << "]";
+            }
+            break;
+        }
+        case EntityType::Circle: {
+            const auto* p = e.as_circle();
+            if (p) {
+                out << ",\"center\":[" << p->center.x << "," << p->center.y << "," << p->center.z << "]";
+                out << ",\"radius\":" << p->radius;
+                if (p->minor_radius > 0.0f && p->minor_radius != p->radius) {
+                    out << ",\"minor_radius\":" << p->minor_radius;
+                    out << ",\"rotation\":" << p->rotation;
+                    out << ",\"start_angle\":" << p->start_angle;
+                    out << ",\"end_angle\":" << p->end_angle;
+                }
+            }
+            break;
+        }
+        case EntityType::Arc: {
+            const auto* p = e.as_arc();
+            if (p) {
+                out << ",\"center\":[" << p->center.x << "," << p->center.y << "," << p->center.z << "]";
+                out << ",\"radius\":" << p->radius;
+                out << ",\"start_angle\":" << p->start_angle;
+                out << ",\"end_angle\":" << p->end_angle;
+            }
+            break;
+        }
+        case EntityType::Polyline:
+        case EntityType::LwPolyline:
+        case EntityType::MLine: {
+            const auto* p = e.as_polyline();
+            if (p) {
+                out << ",\"vertex_count\":" << p->vertex_count;
+                out << ",\"is_closed\":" << (p->is_closed ? "true" : "false");
+            }
+            break;
+        }
+        case EntityType::Spline: {
+            const auto* p = e.as_spline();
+            if (p) {
+                out << ",\"degree\":" << p->degree;
+                out << ",\"is_closed\":" << (p->is_closed ? "true" : "false");
+                out << ",\"control_point_count\":" << p->control_points.size();
+            }
+            break;
+        }
+        case EntityType::Text:
+        case EntityType::MText:
+        case EntityType::Tolerance: {
+            const auto* p = e.as_text();
+            if (p) {
+                out << ",\"position\":[" << p->insertion_point.x << "," << p->insertion_point.y << "," << p->insertion_point.z << "]";
+                out << ",\"text\":\"" << escape_json(p->text) << "\"";
+                out << ",\"height\":" << p->height;
+                out << ",\"rotation\":" << p->rotation;
+                if (e.type() == EntityType::MText) {
+                    out << ",\"rect_width\":" << p->rect_width;
+                    out << ",\"rect_height\":" << p->rect_height;
+                }
+            }
+            break;
+        }
+        case EntityType::Dimension: {
+            const auto* p = e.as_dimension();
+            if (p) {
+                // Guard NaN/Inf in dimension points
+                auto write_point_or_null = [&](const char* name, const Vec3& pt) {
+                    if (std::isfinite(pt.x) && std::isfinite(pt.y) && std::isfinite(pt.z)) {
+                        out << ",\"" << name << "\":[" << pt.x << "," << pt.y << "," << pt.z << "]";
+                    } else {
+                        out << ",\"" << name << "\":null";
+                    }
+                };
+                write_point_or_null("definition_point", p->definition_point);
+                write_point_or_null("text_midpoint", p->text_midpoint);
+                out << ",\"text\":\"" << escape_json(p->text) << "\"";
+                out << ",\"dimension_type\":" << p->dimension_type;
+                out << ",\"rotation\":" << p->rotation;
+            }
+            break;
+        }
+        case EntityType::Insert: {
+            const auto* p = e.as_insert();
+            if (p) {
+                out << ",\"block_index\":" << p->block_index;
+                out << ",\"insertion_point\":[" << p->insertion_point.x << "," << p->insertion_point.y << "," << p->insertion_point.z << "]";
+                out << ",\"x_scale\":" << p->x_scale;
+                out << ",\"y_scale\":" << p->y_scale;
+                out << ",\"rotation\":" << p->rotation;
+            }
+            break;
+        }
+        case EntityType::Point: {
+            const auto* p = e.as_point();
+            if (p) {
+                out << ",\"position\":[" << p->position.x << "," << p->position.y << "," << p->position.z << "]";
+            }
+            break;
+        }
+        case EntityType::Solid: {
+            const auto* p = e.as_solid();
+            if (p) {
+                out << ",\"corner_count\":" << p->corner_count;
+            }
+            break;
+        }
+        case EntityType::Viewport: {
+            const auto* p = e.as_viewport();
+            if (p) {
+                out << ",\"center\":[" << p->center.x << "," << p->center.y << "," << p->center.z << "]";
+                out << ",\"width\":" << p->width;
+                out << ",\"height\":" << p->height;
+            }
+            break;
+        }
+        case EntityType::Ray:
+        case EntityType::XLine: {
+            const auto* p = e.as_line();
+            if (p) {
+                out << ",\"start\":[" << p->start.x << "," << p->start.y << "," << p->start.z << "]";
+                out << ",\"end\":[" << p->end.x << "," << p->end.y << "," << p->end.z << "]";
+            }
+            break;
+        }
+        case EntityType::Leader: {
+            const auto* p = e.as_leader();
+            if (p) {
+                out << ",\"vertex_count\":" << p->vertex_count;
+                out << ",\"is_spline\":" << (p->is_spline ? "true" : "false");
+            }
+            break;
+        }
+        case EntityType::Multileader: {
+            const auto* p = e.as_multileader();
+            if (p) {
+                out << ",\"insertion_point\":[" << p->insertion_point.x << "," << p->insertion_point.y << "," << p->insertion_point.z << "]";
+                out << ",\"text\":\"" << escape_json(p->text) << "\"";
+            }
+            break;
+        }
+        case EntityType::Hatch:
+        default:
+            break;
+    }
+}
+
 // Format a coordinate with sufficient precision for large CAD coordinates.
 // Uses %.10g to preserve ~1mm precision for coordinates in the millions range.
 static std::string fmt_coord(double v) {
@@ -934,16 +1134,22 @@ static std::string fmt_coord(double v) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s <input.dxf> <output.json> [--manifest]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input.dxf> <output.json> [--manifest] [--compare-mode] [--expand-inserts]\n", argv[0]);
         return 1;
     }
 
     const char* input_path = argv[1];
     const char* output_path = argv[2];
     bool manifest_only = false;
+    bool compare_mode = false;
+    bool expand_inserts = false;
     for (int i = 3; i < argc; ++i) {
         if (std::strcmp(argv[i], "--manifest") == 0) {
             manifest_only = true;
+        } else if (std::strcmp(argv[i], "--compare-mode") == 0) {
+            compare_mode = true;
+        } else if (std::strcmp(argv[i], "--expand-inserts") == 0) {
+            expand_inserts = true;
         }
     }
 
@@ -1087,12 +1293,13 @@ int main(int argc, char** argv) {
             auto& block = blocks[bi];
             const bool scaled_insert =
                 bi < block_has_scaled_insert.size() && block_has_scaled_insert[bi];
+            // Skip merge for blocks inferred as Paper Space by post-processing.
+            // Their entities should render directly, not as block definitions.
             bool merge_header_owned =
+                !block.is_inferred_paper_space &&
                 should_merge_dwg_block_header_entities(block, entities, scaled_insert);
-            // When BLOCK/ENDBLK bracketing produced empty entity_indices,
-            // header_owned_entity_indices is the only source of block entities.
-            // Always merge in this case regardless of other merge conditions.
             if (!merge_header_owned &&
+                !block.is_inferred_paper_space &&
                 block.entity_indices.empty() &&
                 block.header_owned_entity_indices.size() >= 1) {
                 merge_header_owned = true;
@@ -1197,6 +1404,12 @@ int main(int argc, char** argv) {
                         entities[static_cast<size_t>(ei)].header.in_block = true;
                     }
                 }
+                for (int32_t ei : block.header_owned_entity_indices) {
+                    block_entity_indices.insert(ei);
+                    if (ei >= 0 && static_cast<size_t>(ei) < entities.size()) {
+                        entities[static_cast<size_t>(ei)].header.in_block = true;
+                    }
+                }
             }
         }
     } else {
@@ -1212,6 +1425,9 @@ int main(int argc, char** argv) {
         if (insert_expansion_active) {
             for (const auto& block : scene.blocks()) {
                 for (int32_t ei : block.entity_indices) {
+                    block_entity_indices.insert(ei);
+                }
+                for (int32_t ei : block.header_owned_entity_indices) {
                     block_entity_indices.insert(ei);
                 }
             }
@@ -2379,10 +2595,12 @@ int main(int argc, char** argv) {
     if (manifest_only) {
         out << "  \"manifest\": true,\n";
     }
-    // Entity type counts for comparison testing
+    // Entity type counts for comparison testing.
+    // Count with INSERT expansion (like HOOPS): INSERT entities are replaced
+    // by their referenced block's entities for fair comparison.
     {
         std::unordered_map<std::string, size_t> tc;
-        for (const auto& e : entities) {
+        auto inc = [&](const EntityVariant& e) {
             switch (e.type()) {
                 case EntityType::Line: tc["Line"]++; break;
                 case EntityType::Circle: tc["Circle"]++; break;
@@ -2394,7 +2612,6 @@ int main(int argc, char** argv) {
                 case EntityType::MText: tc["MText"]++; break;
                 case EntityType::Dimension: tc["Dimension"]++; break;
                 case EntityType::Hatch: tc["Hatch"]++; break;
-                case EntityType::Insert: tc["Insert"]++; break;
                 case EntityType::Point: tc["Point"]++; break;
                 case EntityType::Ellipse: tc["Ellipse"]++; break;
                 case EntityType::Ray: tc["Ray"]++; break;
@@ -2405,6 +2622,58 @@ int main(int argc, char** argv) {
                 case EntityType::Tolerance: tc["Tolerance"]++; break;
                 case EntityType::MLine: tc["MLine"]++; break;
                 case EntityType::Multileader: tc["Multileader"]++; break;
+                default: break;
+            }
+        };
+
+        // Collect all block definition entity indices — these should NOT be
+        // counted in the base total, only through INSERT expansion.
+        std::unordered_set<int32_t> block_def_entities;
+        for (const auto& blk : scene.blocks()) {
+            for (int32_t ei : blk.entity_indices) block_def_entities.insert(ei);
+            for (int32_t ei : blk.header_owned_entity_indices) block_def_entities.insert(ei);
+        }
+
+        // Expand INSERT blocks iteratively (stack-based, no recursion).
+        // Track visited BLOCKS (dedup) and counted ENTITIES (dedup) to match
+        // HOOPS counting behavior: each unique entity counted once.
+        std::unordered_set<int32_t> visited_blocks;
+        std::unordered_set<int32_t> counted_entities;
+        for (size_t ei = 0; ei < entities.size(); ++ei) {
+            const auto& e = entities[ei];
+            if (e.type() == EntityType::Insert) {
+                const auto* ins = std::get_if<InsertEntity>(&e.data);
+                if (!ins || ins->block_index < 0) continue;
+                // BFS expand: visit blocks reachable from this INSERT
+                std::vector<int32_t> stack;
+                stack.push_back(ins->block_index);
+                while (!stack.empty()) {
+                    int32_t bi = stack.back();
+                    stack.pop_back();
+                    const auto& all_blks = scene.blocks();
+                    if (bi < 0 || static_cast<size_t>(bi) >= all_blks.size()) continue;
+                    if (!visited_blocks.insert(bi).second) continue;
+                    const auto& blk = all_blks[static_cast<size_t>(bi)];
+                    auto count_block_ents = [&](const std::vector<int32_t>& indices) {
+                        for (size_t ii = 0; ii < indices.size(); ++ii) {
+                            int32_t bei = indices[ii];
+                            if (bei < 0 || static_cast<size_t>(bei) >= entities.size()) continue;
+                            const auto& be = entities[static_cast<size_t>(bei)];
+                            if (be.type() == EntityType::Insert) {
+                                const auto* bi2 = std::get_if<InsertEntity>(&be.data);
+                                if (bi2 && bi2->block_index >= 0) stack.push_back(bi2->block_index);
+                            } else if (counted_entities.insert(bei).second) {
+                                inc(be);
+                            }
+                        }
+                    };
+                    count_block_ents(blk.entity_indices);
+                    count_block_ents(blk.header_owned_entity_indices);
+                }
+            } else if (block_def_entities.count(static_cast<int32_t>(ei)) == 0) {
+                if (counted_entities.insert(static_cast<int32_t>(ei)).second) {
+                    inc(e);
+                }
             }
         }
         out << "  \"entityTypeCounts\": {";
@@ -2416,6 +2685,159 @@ int main(int argc, char** argv) {
         }
         out << "},\n";
     }
+
+    // ---- entities & inserts arrays (compare-mode) ----
+    if (compare_mode) {
+        std::unordered_set<int32_t> all_block_ents;
+        for (const auto& blk : scene.blocks()) {
+            for (int32_t ei : blk.entity_indices) all_block_ents.insert(ei);
+            for (int32_t ei : blk.header_owned_entity_indices) all_block_ents.insert(ei);
+        }
+
+        out << "  \"entities\": [\n";
+        bool first_ent = true;
+        auto write_entity_json = [&](const EntityVariant& e, int32_t ei, bool from_insert) {
+            if (!first_ent) out << ",\n";
+            first_ent = false;
+
+            std::string layer_name = "0";
+            Color layer_color = Color::white();
+            if (e.header.layer_index >= 0 && static_cast<size_t>(e.header.layer_index) < layers.size()) {
+                layer_name = layers[e.header.layer_index].name;
+                layer_color = layers[e.header.layer_index].color;
+            }
+
+            Color color = layer_color;
+            if (e.header.has_true_color) {
+                color = e.header.true_color;
+            } else if (e.header.color_override != 256 && e.header.color_override != 0) {
+                color = Color::from_aci(e.header.color_override);
+            }
+
+            bool in_block = all_block_ents.count(ei) > 0;
+
+            out << "    {\"type\":\"" << entity_type_name(e.type()) << "\"";
+            out << ",\"layer\":\"" << escape_json(layer_name) << "\"";
+            out << ",\"space\":\"" << drawing_space_name(e.header.space) << "\"";
+            out << ",\"color\":[" << static_cast<int>(color.r) << "," << static_cast<int>(color.g) << "," << static_cast<int>(color.b) << "]";
+            out << ",\"bounds\":{";
+            bool bounds_valid = !e.bounds().is_empty();
+            if (bounds_valid) {
+                // Guard against NaN/Inf corrupting JSON output
+                if (!std::isfinite(e.bounds().min.x) || !std::isfinite(e.bounds().min.y) ||
+                    !std::isfinite(e.bounds().max.x) || !std::isfinite(e.bounds().max.y)) {
+                    bounds_valid = false;
+                }
+            }
+            if (bounds_valid) {
+                out << "\"minX\":" << e.bounds().min.x << ",\"minY\":" << e.bounds().min.y;
+                out << ",\"maxX\":" << e.bounds().max.x << ",\"maxY\":" << e.bounds().max.y;
+                out << ",\"isEmpty\":false";
+            } else {
+                out << "\"isEmpty\":true";
+            }
+            out << "}";
+            out << ",\"inBlock\":" << (in_block ? "true" : "false");
+            if (in_block && e.header.owner_block_index >= 0) {
+                out << ",\"blockIndex\":" << e.header.owner_block_index;
+            }
+            if (from_insert) {
+                out << ",\"fromInsert\":true";
+            }
+            write_entity_properties(out, e);
+            out << "}";
+        };
+
+        for (size_t i = 0; i < entities.size(); ++i) {
+            write_entity_json(entities[i], static_cast<int32_t>(i), false);
+        }
+
+        if (expand_inserts) {
+            for (size_t i = 0; i < entities.size(); ++i) {
+                const auto& e = entities[i];
+                if (e.type() != EntityType::Insert) continue;
+                const auto* ins = std::get_if<InsertEntity>(&e.data);
+                if (!ins || ins->block_index < 0) continue;
+                const auto& blocks = scene.blocks();
+                if (static_cast<size_t>(ins->block_index) >= blocks.size()) continue;
+                const auto& block = blocks[ins->block_index];
+                for (int32_t bei : block.entity_indices) {
+                    if (bei < 0 || static_cast<size_t>(bei) >= entities.size()) continue;
+                    write_entity_json(entities[static_cast<size_t>(bei)], bei, true);
+                }
+                for (int32_t bei : block.header_owned_entity_indices) {
+                    if (bei < 0 || static_cast<size_t>(bei) >= entities.size()) continue;
+                    write_entity_json(entities[static_cast<size_t>(bei)], bei, true);
+                }
+            }
+        }
+
+        out << "\n  ],\n";
+
+        out << "  \"inserts\": [\n";
+        bool first_ins = true;
+        for (size_t i = 0; i < entities.size(); ++i) {
+            const auto& e = entities[i];
+            if (e.type() != EntityType::Insert) continue;
+            const auto* ins = std::get_if<InsertEntity>(&e.data);
+            if (!ins) continue;
+
+            std::string block_name;
+            const auto& blocks = scene.blocks();
+            if (ins->block_index >= 0 && static_cast<size_t>(ins->block_index) < blocks.size()) {
+                block_name = blocks[ins->block_index].name;
+            }
+
+            std::string layer_name = "0";
+            if (e.header.layer_index >= 0 && static_cast<size_t>(e.header.layer_index) < layers.size()) {
+                layer_name = layers[e.header.layer_index].name;
+            }
+
+            if (!first_ins) out << ",\n";
+            first_ins = false;
+
+            out << "    {\"blockName\":\"" << escape_json(block_name) << "\"";
+            out << ",\"blockIndex\":" << ins->block_index;
+            out << ",\"insertionPoint\":[" << ins->insertion_point.x << "," << ins->insertion_point.y << "," << ins->insertion_point.z << "]";
+            out << ",\"scale\":[" << ins->x_scale << "," << ins->y_scale << ",1.0]";
+            out << ",\"rotation\":" << ins->rotation;
+            out << ",\"layer\":\"" << escape_json(layer_name) << "\"";
+            out << "}";
+        }
+        out << "\n  ],\n";
+
+        // blockDefinitions array
+        out << "  \"blockDefinitions\": [\n";
+        bool first_blk = true;
+        for (const auto& blk : scene.blocks()) {
+            if (!first_blk) out << ",\n";
+            first_blk = false;
+            out << "    {\"name\":\"" << escape_json(blk.name) << "\"";
+            out << ",\"basePoint\":[" << blk.base_point.x << "," << blk.base_point.y << "," << blk.base_point.z << "]";
+            out << ",\"isModelSpace\":" << (blk.is_model_space ? "true" : "false");
+            out << ",\"isPaperSpace\":" << (blk.is_paper_space ? "true" : "false");
+            out << ",\"isAnonymous\":" << (blk.is_anonymous ? "true" : "false");
+            out << ",\"entityIndices\":[";
+            bool first_ei = true;
+            for (int32_t ei : blk.entity_indices) {
+                if (!first_ei) out << ",";
+                first_ei = false;
+                out << ei;
+            }
+            out << "]";
+            out << ",\"headerOwnedEntityIndices\":[";
+            first_ei = true;
+            for (int32_t ei : blk.header_owned_entity_indices) {
+                if (!first_ei) out << ",";
+                first_ei = false;
+                out << ei;
+            }
+            out << "]";
+            out << "}";
+        }
+        out << "\n  ],\n";
+    }
+
     out << "  \"bounds\": {\n";
     if (!default_view_bounds.empty) {
         out << "    \"minX\": " << default_view_bounds.min_x << ",\n";

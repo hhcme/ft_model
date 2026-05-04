@@ -30,7 +30,8 @@ bool DwgParser::process_block_endblk(
         m_current_block_name = "__pending__";
         // First check pre-scan mapping (BLOCK_HEADER handle stream → name)
         auto bn_pre = ctx.block_names_from_entities.find(handle);
-        if (bn_pre != ctx.block_names_from_entities.end() && !bn_pre->second.empty()) {
+        bool found_pre = (bn_pre != ctx.block_names_from_entities.end() && !bn_pre->second.empty());
+        if (found_pre) {
             m_current_block_name = bn_pre->second;
         }
         // Also check direct BLOCK_HEADER handle match (some DWGs share handles)
@@ -39,6 +40,19 @@ bool DwgParser::process_block_endblk(
             if (bn_direct != m_sections.block_names.end() && !bn_direct->second.empty()) {
                 m_current_block_name = bn_direct->second;
                 m_current_block_header_handle = handle;
+            }
+        }
+        // Reverse lookup: this BLOCK entity may already be recorded in
+        // entity_handle_to_block_header (filled when its BLOCK_HEADER was parsed).
+        if (m_current_block_name == "__pending__") {
+            auto ehb_it = ctx.entity_handle_to_block_header.find(handle);
+            if (ehb_it != ctx.entity_handle_to_block_header.end()) {
+                uint64_t bh_handle = ehb_it->second;
+                auto bn_it = m_sections.block_names.find(bh_handle);
+                if (bn_it != m_sections.block_names.end() && !bn_it->second.empty()) {
+                    m_current_block_name = bn_it->second;
+                    m_current_block_header_handle = bh_handle;
+                }
             }
         }
         // Try handle stream bridge to find BLOCK_HEADER name.
@@ -100,8 +114,26 @@ bool DwgParser::process_block_endblk(
             block.name = m_current_block_name;
             block.base_point = m_current_block_base_point;
             block.dwg_block_handle = m_current_block_handle;
-            block.is_model_space = (m_current_block_name == "*MODEL_SPACE");
-            block.is_paper_space = (m_current_block_name == "*PAPER_SPACE");
+            block.dwg_block_header_handle = m_current_block_header_handle;
+            // Case-insensitive check for model/paper space blocks
+            // DWG stores these as *Model_Space, *Paper_Space (mixed case)
+            {
+                std::string upper_name = m_current_block_name;
+                for (char& c : upper_name) {
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                }
+                block.is_model_space = (upper_name == "*MODEL_SPACE");
+                block.is_paper_space = (upper_name == "*PAPER_SPACE");
+            }
+
+            // Debug: log block creation
+            if (block.is_model_space || block.is_paper_space) {
+                size_t entity_count = scene.entities().size() - m_block_entity_start;
+                dwg_debug_log("[DWG BLOCK] %s: handle=%llu entities=%zu\n",
+                    m_current_block_name.c_str(),
+                    (unsigned long long)m_current_block_handle,
+                    entity_count);
+            }
             // Xref detection: check if BLOCK_HEADER was flagged as external reference
             {
                 auto it = m_block_is_xref_flags.find(m_current_block_header_handle);
@@ -136,8 +168,15 @@ bool DwgParser::process_block_endblk(
             const auto& added_block = scene.blocks()[static_cast<size_t>(block_idx)];
             for (size_t i = m_block_entity_start; i < scene.entities().size(); ++i) {
                 auto& child = scene.entities()[i].header;
-                child.in_block = true;
-                child.owner_block_index = block_idx;
+                if (added_block.is_model_space || added_block.is_paper_space) {
+                    // Model Space and Paper Space blocks are root containers —
+                    // their entities render directly, not through INSERT.
+                    child.in_block = false;
+                    child.owner_block_index = -1;
+                } else {
+                    child.in_block = true;
+                    child.owner_block_index = block_idx;
+                }
                 if (added_block.is_paper_space) {
                     child.space = DrawingSpace::PaperSpace;
                 } else if (added_block.is_model_space) {

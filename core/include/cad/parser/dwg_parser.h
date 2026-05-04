@@ -4,6 +4,7 @@
 #include "cad/cad_types.h"
 #include "cad/parser/dwg_reader.h"
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <unordered_map>

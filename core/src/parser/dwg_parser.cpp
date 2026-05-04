@@ -505,9 +505,15 @@ Result DwgParser::parse_objects(EntitySink& scene)
         uint32_t saved_num_reactors = 0;
         bool saved_is_xdic_missing = false;
         if (is_graphic) {
+            // Debug: track CED bit consumption for R2004
+            size_t ced_start_bits = 0;
+            if (m_version == DwgVersion::R2004) {
+                ced_start_bits = reader.bit_offset();
+            }
+
             // Graphic entity CED (Common Entity Data)
-            // entity_mode (BB) is present for R2007+ per libredwg common_entity_data.spec.
-            // R2004 does NOT have this field.
+            // entity_mode (BB) — per libredwg spec, present for R2007+.
+            // R2004 does NOT have this field in most files.
             if (m_version >= DwgVersion::R2007) {
                 (void)reader.read_bits(2);  // entity_mode (BB)
             }
@@ -520,19 +526,65 @@ Result DwgParser::parse_objects(EntitySink& scene)
             }
 
             // Color
-            uint16_t color_index;
-            if (m_version >= DwgVersion::R2004) {
-                // R2004+ ENC (Entity Color Encoding) per libredwg common_entity_data.spec
+            uint16_t color_index = 0;
+            if (m_version == DwgVersion::R2004) {
+                // R2004 CMC: some files use BS(index)+BL(rgb)+RC(flag),
+                // others use a single BS with flag in high byte.
+                // Detect by checking if the BS high byte has bits 0x20+ set
+                // (which would trigger alpha/handle reads in the simple format).
+                color_raw = reader.read_bs();
+                uint8_t raw_flag = static_cast<uint8_t>(color_raw >> 8);
+                color_index = color_raw & 0x1ff;
+
+                if (raw_flag > 0x03 && (raw_flag & 0xE0)) {
+                    // High bits set — likely full CMC: BS(index) already read,
+                    // now read BL(rgb) + RC(flag)
+                    uint32_t rgb = reader.read_bl();
+                    color_flag = reader.read_raw_char();
+                    if (rgb != 0) {
+                        uint32_t rgb24 = rgb & 0xFFFFFF;
+                        if (rgb24 != 0) {
+                            entity_hdr.true_color = Color(
+                                static_cast<uint8_t>(rgb24 & 0xFF),
+                                static_cast<uint8_t>((rgb24 >> 8) & 0xFF),
+                                static_cast<uint8_t>((rgb24 >> 16) & 0xFF));
+                            entity_hdr.has_true_color = true;
+                        }
+                    }
+                    if (color_flag & 0x01) (void)reader.read_tv();
+                    if (color_flag & 0x02) (void)reader.read_tv();
+                } else {
+                    // Simple BS format
+                    color_flag = raw_flag;
+                    if (color_flag & 0x20) (void)reader.read_bl();
+                    if (color_flag & 0x40) {
+                        (void)reader.read_h();
+                    } else if (color_flag & 0x80) {
+                        uint32_t rgb = reader.read_bl();
+                        if (rgb != 0) {
+                            uint32_t rgb24 = rgb & 0xFFFFFF;
+                            if (rgb24 != 0) {
+                                entity_hdr.true_color = Color(
+                                    static_cast<uint8_t>(rgb24 & 0xFF),
+                                    static_cast<uint8_t>((rgb24 >> 8) & 0xFF),
+                                    static_cast<uint8_t>((rgb24 >> 16) & 0xFF));
+                                entity_hdr.has_true_color = true;
+                            }
+                        }
+                    }
+                    if ((color_flag & 0x41) == 0x41) (void)reader.read_tv();
+                    if ((color_flag & 0x42) == 0x42) (void)reader.read_tv();
+                }
+            } else if (m_version >= DwgVersion::R2007) {
+                // R2007+: standard BS+flag format (same as original)
                 color_raw = reader.read_bs();
                 color_flag = static_cast<uint8_t>(color_raw >> 8);
                 color_index = color_raw & 0x1ff;
-                if (color_flag & 0x20) {
-                    (void)reader.read_bl();  // alpha_raw
-                }
+                if (color_flag & 0x20) (void)reader.read_bl();
                 if (color_flag & 0x40) {
-                    (void)reader.read_h();   // handle
+                    (void)reader.read_h();
                 } else if (color_flag & 0x80) {
-                    uint32_t rgb = reader.read_bl();  // True Color: BL (32-bit), 0x00BBGGRR
+                    uint32_t rgb = reader.read_bl();
                     if (rgb != 0) {
                         uint32_t rgb24 = rgb & 0xFFFFFF;
                         if (rgb24 != 0) {
@@ -544,15 +596,8 @@ Result DwgParser::parse_objects(EntitySink& scene)
                         }
                     }
                 }
-                if (m_version < DwgVersion::R2007) {
-                    if ((color_flag & 0x41) == 0x41) {
-                        (void)reader.read_tv();  // name
-                    }
-                    if ((color_flag & 0x42) == 0x42) {
-                        (void)reader.read_tv();  // book_name
-                    }
-                }
             } else {
+                // Pre-R2004: simple BS color index
                 color_index = reader.read_bs();
             }
             // R2004-R2007 ENC may produce color_index > 255 from the 9-bit
@@ -612,6 +657,19 @@ Result DwgParser::parse_objects(EntitySink& scene)
             uint8_t lineweight_raw = reader.read_raw_char();
             if (lineweight_raw > 0 && lineweight_raw < 200) {
                 entity_hdr.lineweight = static_cast<float>(lineweight_raw) / 100.0f;
+            }
+
+            // Debug: log CED field-by-field for R2004 LINE entities
+            if (m_version == DwgVersion::R2004 && obj_type == 19) {
+                static int g_line_ced = 0;
+                if (g_line_ced < 5) {
+                    size_t ced_bits = reader.bit_offset() - ced_start_bits;
+                    fprintf(stderr, "[R2004 LINE CED] ced_bits=%zu offset=%zu/%zu color_raw=0x%x color_flag=0x%x lts_set=%d\n",
+                        ced_bits, reader.bit_offset(), reader.bit_limit(),
+                        (unsigned)color_raw, (unsigned)color_flag,
+                        entity_hdr.linetype_scale != 1.0f ? 1 : 0);
+                    g_line_ced++;
+                }
             }
 
             (void)saved_num_reactors;
@@ -693,9 +751,10 @@ Result DwgParser::parse_objects(EntitySink& scene)
                     hreader.set_bit_limit(hs_bit_end);
 
                     // First handle in stream = BLOCK entity handle
+                    uint64_t block_entity_handle = 0;
                     auto block_entity_ref = hreader.read_h();
                     if (!hreader.has_error()) {
-                        uint64_t block_entity_handle = resolve_handle_ref(handle, block_entity_ref);
+                        block_entity_handle = resolve_handle_ref(handle, block_entity_ref);
                         if (block_entity_handle != 0 && !block_name.empty()) {
                             ctx.block_names_from_entities[block_entity_handle] = block_name;
                         }
@@ -704,6 +763,7 @@ Result DwgParser::parse_objects(EntitySink& scene)
                     // Remaining handles = entities owned by this block.
                     // Read until stream exhausted (don't trust num_owned for R2004).
                     uint32_t collected = 0;
+                    std::vector<uint64_t> collected_handles;
                     for (int h_idx = 0; h_idx < 4096 && !hreader.has_error(); ++h_idx) {
                         auto entity_ref = hreader.read_h();
                         if (hreader.has_error()) break;
@@ -711,7 +771,12 @@ Result DwgParser::parse_objects(EntitySink& scene)
                         if (entity_handle != 0) {
                             ctx.entity_handle_to_block_header[entity_handle] = handle;
                             collected++;
+                            if (collected <= 10) collected_handles.push_back(entity_handle);
                         }
+                    }
+                    if (!block_name.empty() && (block_name == "*Paper_Space" || block_name == "*Model_Space")) {
+                        dwg_debug_log("[DWG BLOCK_HEADER handles] name='%s' handle=%llu collected=%u\n",
+                            block_name.c_str(), (unsigned long long)handle, collected);
                     }
                     (void)block_name;
                     (void)hs_bits;
@@ -801,6 +866,17 @@ Result DwgParser::parse_objects(EntitySink& scene)
             const char* cname = (class_it != m_sections.class_map.end())
                 ? class_it->second.first.c_str() : nullptr;
             parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version, cname);
+            // For BLOCK entities, read the full name from the entity data stream.
+            // BLOCK_HEADER table objects store truncated anonymous names (e.g. "*D"),
+            // but the BLOCK entity itself contains the full name (e.g. "*D1077").
+            if (obj_type == 4 && !entity_reader.has_error()) {
+                std::string block_full_name = entity_reader.read_t();
+                if (!block_full_name.empty() && block_full_name != m_current_block_name) {
+                    // Update the current block name with the full name from the entity stream
+                    m_current_block_name = block_full_name;
+                    ctx.block_names_from_entities[handle] = block_full_name;
+                }
+            }
             entity_reader_end_offset = entity_reader.bit_offset();
         }
 
@@ -812,6 +888,11 @@ Result DwgParser::parse_objects(EntitySink& scene)
                              entity_reader_end_offset);
 
         ctx.graphic_count++;
+    }
+
+    // ---- Dump entity parse stats for debugging ----
+    if (dwg_debug_enabled()) {
+        dump_dwg_entity_parse_stats();
     }
 
     // ---- Diagnostic record emission ----

@@ -195,7 +195,7 @@ def extract_ezdxf_entities(dxf_path: str) -> list[dict]:
 
 def load_our_entities(json_path: str) -> list[dict]:
     """Load entities from our entity_export JSON."""
-    with open(json_path) as f:
+    with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
     return data.get("entities", []), data.get("entity_counts", {})
 

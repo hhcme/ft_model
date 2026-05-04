@@ -755,6 +755,20 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
             if (success) g_success_counts[obj_type]++;
             return;
         }
+        if (std::strstr(class_name, "HATCH") != nullptr ||
+            std::strstr(class_name, "AcDbHatch") != nullptr) {
+            parse_hatch(reader, header, scene, version);
+            bool success = (scene.entities().size() > before);
+            if (success) g_success_counts[obj_type]++;
+            return;
+        }
+        if (std::strstr(class_name, "DIMENSION") != nullptr ||
+            std::strstr(class_name, "AcDbDimension") != nullptr) {
+            parse_dimension(reader, header, scene, version);
+            bool success = (scene.entities().size() > before);
+            if (success) g_success_counts[obj_type]++;
+            return;
+        }
         // Unknown class entity — skip silently.
         return;
     }
@@ -813,6 +827,9 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
     }
     if (success) {
         g_success_counts[obj_type]++;
+    } else {
+        // Track failures for non-special types
+        g_success_counts[obj_type + 10000]++;
     }
 }
 
@@ -824,6 +841,21 @@ void reset_dwg_entity_parser_state() {
 
 std::unordered_map<uint32_t, size_t> get_dwg_entity_success_counts() {
     return g_success_counts;
+}
+
+void dump_dwg_entity_parse_stats() {
+    fprintf(stderr, "[DWG ENTITY PARSE STATS]\n");
+    for (const auto& [type, dispatched] : g_dispatch_counts) {
+        auto it = g_success_counts.find(type);
+        size_t succeeded = (it != g_success_counts.end()) ? it->second : 0;
+        auto fail_it = g_success_counts.find(type + 10000);
+        size_t failed = (fail_it != g_success_counts.end()) ? fail_it->second : 0;
+        if (dispatched > 0 && type < 100) {
+            double rate = succeeded * 100.0 / dispatched;
+            fprintf(stderr, "  type=%3u dispatched=%5zu succeeded=%5zu failed=%5zu rate=%.0f%%\n",
+                type, dispatched, succeeded, failed, rate);
+        }
+    }
 }
 
 std::unordered_map<uint32_t, size_t> get_dwg_entity_dispatch_counts() {

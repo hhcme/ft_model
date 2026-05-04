@@ -53,6 +53,14 @@ dwg_cache/
 
 # Environment / secrets
 .env*
+tools/dwg_to_scs/hoops_license.h
+tools/dwg_to_json/hoops_license.h
+
+# Python
+__pycache__/
+
+# Build variants
+build_mingw/
 
 # Logs
 *.log

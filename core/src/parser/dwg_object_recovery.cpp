@@ -108,6 +108,7 @@ bool DwgParser::prepare_object_at_offset(const uint8_t* obj_data, size_t obj_dat
                         entity_data_bytes);
     reader.set_bit_limit(entity_bits);
     const uint32_t obj_type = is_r2010_plus ? reader.read_bot() : reader.read_bs();
+
     size_t framed_main_data_bits = main_data_bits;
     // R2004-R2007: bitsize (RL) indicates end of main data / start of handle stream.
     // R2010+: handle_stream_size (UMC) is read separately before object data.
@@ -128,6 +129,17 @@ bool DwgParser::prepare_object_at_offset(const uint8_t* obj_data, size_t obj_dat
             handle_stream_valid = false;
         }
     }
+    // Debug: log R2004 RL values for first few graphic entities
+    if (!is_r2010_plus && m_version >= DwgVersion::R2004 && obj_type < 100) {
+        static int g_r2004_rl_count = 0;
+        if (g_r2004_rl_count < 15) {
+            fprintf(stderr, "[R2004 RL] type=%u entity_bits=%zu framed=%zu valid=%d\n",
+                (unsigned)obj_type, entity_bits, framed_main_data_bits,
+                handle_stream_valid ? 1 : 0);
+            g_r2004_rl_count++;
+        }
+    }
+
     if (reader.has_error() || (require_known_type && !is_known_object_type(obj_type))) {
         return fail(reader.has_error() ? "object_type_read_failed" : "unknown_object_type");
     }

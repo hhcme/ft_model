@@ -17,6 +17,7 @@ struct Block {
     bool is_paper_space = false;
     bool is_anonymous = false;
     bool is_xref = false;
+    bool is_inferred_paper_space = false;  // Set by post-processing when block is inferred as Paper Space
     bool xref_overlaid = false;
     int32_t owner_layout_index = -1;
     uint64_t dwg_block_handle = 0;
