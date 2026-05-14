@@ -556,11 +556,12 @@ void parse_multileader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& sce
     }
 
     uint32_t content_type = r.read_bl();
+    std::string style_name;
     if (content_type == 2 && !r.has_error()) {
         ml.text = r.read_t();
         double tlx = r.read_bd(), tly = r.read_bd(), tlz = r.read_bd();
         double tdx = r.read_bd(), tdy = r.read_bd(), tdz = r.read_bd();
-        (void)r.read_t();  // text_style name (handle resolved in post-processing)
+        style_name = r.read_t();
         double th = r.read_bd();
         if (has_custom_ocs) {
             ml.text_location = ocs_point_to_wcs(tlx, tly, tlz, basis);
@@ -575,6 +576,11 @@ void parse_multileader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& sce
         r.read_h();
         r.read_bd(); r.read_bd(); r.read_bd();
         r.read_bd(); r.read_bd(); r.read_bd();
+    }
+
+    // Resolve text_style_index from style name
+    if (!style_name.empty()) {
+        ml.text_style_index = scene.find_text_style(style_name);
     }
 
     EntityHeader ml_hdr = hdr;
