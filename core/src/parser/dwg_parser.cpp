@@ -629,7 +629,13 @@ Result DwgParser::parse_objects(EntitySink& scene)
 
             // R2004+: plotstyle flags (BB) — not present in R2000
             if (m_version >= DwgVersion::R2004) {
-                (void)reader.read_bits(2);
+                uint8_t ps_flags = reader.read_bits(2);
+                if (ps_flags == 1 || ps_flags == 3) {
+                    entity_hdr.plot_style_index = -2; // ByBlock
+                } else if (ps_flags == 2) {
+                    entity_hdr.plot_style_index = -3; // Handle follows (unresolved)
+                }
+                // ps_flags == 0: ByLayer (default -1)
             }
 
             // R2004+: material flags (BB)
@@ -672,7 +678,8 @@ Result DwgParser::parse_objects(EntitySink& scene)
                 }
             }
 
-            (void)saved_num_reactors;
+            entity_hdr.has_reactors = (saved_num_reactors > 0);
+            entity_hdr.has_extension_dict = !saved_is_xdic_missing;
         } else {
             // Non-graphic object common header
             uint32_t num_reactors = reader.read_bl();
@@ -827,15 +834,18 @@ Result DwgParser::parse_objects(EntitySink& scene)
                     }
                 }
             }
-            // Handle table objects (LAYER, LTYPE, STYLE, DIMSTYLE)
-            if (obj_type == 51 || obj_type == 53 ||
-                obj_type == 65 ||
-                obj_type == 57 || obj_type == 69) {
+            // Handle table objects (LAYER, LTYPE, STYLE, DIMSTYLE, VPORT,
+            // GROUP, MLINESTYLE, UCS, VIEW, APPID)
+            if (obj_type == 51 || obj_type == 53 || obj_type == 57 ||
+                obj_type == 62 || obj_type == 64 || obj_type == 65 ||
+                obj_type == 66 || obj_type == 67 || obj_type == 68 ||
+                obj_type == 69) {
                 parse_dwg_table_object(reader, obj_type, scene,
                                        m_version, entity_bits, main_data_bits,
                                        handle,
                                        &m_layer_handle_to_index,
-                                       &m_linetype_handle_to_index);
+                                       &m_linetype_handle_to_index,
+                                       &m_plotstyle_handle_to_index);
             }
             ctx.non_graphic_count++;
             continue;
@@ -865,7 +875,7 @@ Result DwgParser::parse_objects(EntitySink& scene)
             auto class_it = m_sections.class_map.find(obj_type);
             const char* cname = (class_it != m_sections.class_map.end())
                 ? class_it->second.first.c_str() : nullptr;
-            parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version, cname);
+            parse_dwg_entity(entity_reader, obj_type, entity_hdr, scene, m_version, cname, ctx);
             // For BLOCK entities, read the full name from the entity data stream.
             // BLOCK_HEADER table objects store truncated anonymous names (e.g. "*D"),
             // but the BLOCK entity itself contains the full name (e.g. "*D1077").

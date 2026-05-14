@@ -10,6 +10,7 @@
 namespace cad {
 
 class EntitySink;
+struct ParseObjectsContext;
 
 // ============================================================
 // DWG entity/object type readers
@@ -28,7 +29,8 @@ enum class DwgVersion : uint8_t;
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
                        const EntityHeader& header, EntitySink& scene,
                        DwgVersion version,
-                       const char* class_name = nullptr);
+                       const char* class_name,
+                       ParseObjectsContext& ctx);
 
 // Parse a DWG table/object entry (LAYER, LTYPE, STYLE, DIMSTYLE, VPORT).
 // The reader is positioned after the common object header.
@@ -42,7 +44,8 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               size_t entity_bits, size_t main_data_bits,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index = nullptr,
-                              std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index = nullptr);
+                              std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index = nullptr,
+                              std::unordered_map<uint64_t, int32_t>* plotstyle_handle_to_index = nullptr);
 
 // Reset per-file DWG entity assembly state.
 void reset_dwg_entity_parser_state();

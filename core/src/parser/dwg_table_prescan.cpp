@@ -92,7 +92,8 @@ void DwgParser::prescan_table_objects(
                 parse_dwg_table_object(r, ot, scene, m_version,
                                        edb * 8, mdb, handle,
                                        &m_layer_handle_to_index,
-                                       &m_linetype_handle_to_index);
+                                       &m_linetype_handle_to_index,
+                                       &m_plotstyle_handle_to_index);
             }
         }
     };

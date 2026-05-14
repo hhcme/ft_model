@@ -417,6 +417,7 @@ private:
     // pre-scan because entities/layers may appear before their table records.
     std::unordered_map<uint64_t, int32_t> m_layer_handle_to_index;
     std::unordered_map<uint64_t, int32_t> m_linetype_handle_to_index;
+    std::unordered_map<uint64_t, int32_t> m_plotstyle_handle_to_index;
 
     // ---- Object recovery scan budget ----
     // Limits total recovery scans across all objects within a single

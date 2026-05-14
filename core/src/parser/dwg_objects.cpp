@@ -4,8 +4,10 @@
 #include "cad/parser/dwg_entity_common.h"
 #include "cad/parser/dwg_entity_annotation.h"
 #include "cad/parser/dwg_entity_hatch.h"
+#include "cad/parser/dwg_parse_objects_context.h"
 #include "cad/scene/scene_graph.h"
 #include "cad/scene/entity.h"
+#include "cad/scene/shx_font_cache.h"
 #include "cad/cad_types.h"
 #include "cad/scene/viewport.h"
 
@@ -79,17 +81,20 @@ void parse_ray(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
 void parse_xline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                  DwgVersion version);
 void parse_mline(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
-                 DwgVersion version);
+                DwgVersion version);
+void parse_wipeout(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                   DwgVersion version);
 void parse_multileader(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                        DwgVersion version);
 void parse_vertex_2d(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
-                     DwgVersion version);
+                     DwgVersion version, PendingPolyline2d& pending);
 void parse_polyline_2d(DwgBitReader& r, const EntityHeader& hdr,
-                       EntitySink& scene, DwgVersion version);
+                       EntitySink& scene, DwgVersion version, PendingPolyline2d& pending);
 void parse_polyline_pface(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
                           DwgVersion version);
 void parse_polyline_mesh(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene);
-void parse_seqend(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene);
+void parse_seqend(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
+                  PendingPolyline2d& pending);
 
 // ============================================================
 // Local entity parsers that remain in this TU
@@ -127,7 +132,7 @@ void parse_insert(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
     }
 
     double rotation = r.read_bd();
-    r.read_bd(); r.read_bd(); r.read_bd();  // extrusion (3 BD)
+    double nx = r.read_bd(), ny = r.read_bd(), nz = r.read_bd();  // extrusion
     bool has_attribs = r.read_b();
     if (version >= DwgVersion::R2004 && has_attribs) {
         r.read_bl();  // num_owned
@@ -153,8 +158,13 @@ void parse_insert(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene,
         !std::isfinite(rotation)) return;
 
     InsertEntity ins;
-    ins.block_index     = hdr.block_index;  // Set by handle stream parsing in parse_objects
-    ins.insertion_point = {safe_float(ix), safe_float(iy), safe_float(iz)};
+    ins.block_index     = hdr.block_index;
+    if (!is_default_extrusion(nx, ny, nz)) {
+        OcsBasis basis = make_ocs_basis(nx, ny, nz);
+        ins.insertion_point = ocs_point_to_wcs(ix, iy, iz, basis);
+    } else {
+        ins.insertion_point = {safe_float(ix), safe_float(iy), safe_float(iz)};
+    }
     ins.x_scale         = safe_float(sx);
     ins.y_scale         = safe_float(sy);
     ins.rotation        = safe_float(rotation);
@@ -347,13 +357,14 @@ std::string read_table_text(DwgBitReader& r) {
 // ============================================================
 // LAYER (type 51) table object
 // Fields: [class_version RC] + [standard_flags BS] + [name TU]
-//         + [color CMC] + [linetype handle H] + [more handles]
+//         + [color CMC] + [linetype handle H] + [plotstyle handle H]
 // ============================================================
 static int32_t parse_layer_object(DwgBitReader& r, EntitySink& scene,
                                 DwgVersion version,
                                 const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
                                 size_t main_data_bits, size_t entity_bits,
-                                const std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index) {
+                                const std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index,
+                                std::unordered_map<uint64_t, int32_t>* plotstyle_handle_to_index) {
     DwgBitReader state_reader = r;
     (void)state_reader.read_raw_char();  // class_version
     std::string name = state_reader.read_t();
@@ -406,26 +417,49 @@ static int32_t parse_layer_object(DwgBitReader& r, EntitySink& scene,
         color = Color::white();
     }
 
-    // For R2010+, handles are in a separate handle stream (after main_data_bits).
-    // Skip remaining main-data fields only for pre-R2010 formats.
+    // Extract linetype and plotstyle handles from handle stream.
+    // Pre-R2010: handles are inline in main data after object-specific fields.
+    // R2010+: handles are in a separate stream after main_data_bits.
+    // We scan handles and match against maps rather than assuming fixed order.
+    int32_t linetype_index = -1;
+    int32_t plotstyle_index = -1;
     if (version < DwgVersion::R2010) {
         while (!r.has_error() && r.bit_offset() < main_data_bits) {
             auto h = r.read_h();
             if (h.value == 0 && h.code == 0) break;
+            if (linetype_index < 0 && linetype_handle_to_index) {
+                auto it = linetype_handle_to_index->find(h.value);
+                if (it != linetype_handle_to_index->end()) {
+                    linetype_index = it->second;
+                    continue;
+                }
+            }
+            if (plotstyle_index < 0 && plotstyle_handle_to_index) {
+                auto it = plotstyle_handle_to_index->find(h.value);
+                if (it != plotstyle_handle_to_index->end()) {
+                    plotstyle_index = it->second;
+                }
+            }
         }
-    }
-
-    // Read linetype handle from handle stream (at end of entity data)
-    int32_t linetype_index = -1;
-    if (main_data_bits < entity_bits) {
-        DwgBitReader hr = r;  // copy reader at current position
+    } else if (main_data_bits < entity_bits) {
+        DwgBitReader hr = r;
         hr.set_bit_offset(main_data_bits);
         hr.set_bit_limit(entity_bits);
-        auto lt_handle = hr.read_h();
-        if (lt_handle.value != 0 && linetype_handle_to_index) {
-            auto it = linetype_handle_to_index->find(lt_handle.value);
-            if (it != linetype_handle_to_index->end()) {
-                linetype_index = it->second;
+        for (int i = 0; i < 6 && !hr.has_error(); ++i) {
+            auto h = hr.read_h();
+            if (h.value == 0 && h.code == 0) break;
+            if (linetype_index < 0 && linetype_handle_to_index) {
+                auto it = linetype_handle_to_index->find(h.value);
+                if (it != linetype_handle_to_index->end()) {
+                    linetype_index = it->second;
+                    continue;
+                }
+            }
+            if (plotstyle_index < 0 && plotstyle_handle_to_index) {
+                auto it = plotstyle_handle_to_index->find(h.value);
+                if (it != plotstyle_handle_to_index->end()) {
+                    plotstyle_index = it->second;
+                }
             }
         }
     }
@@ -446,6 +480,9 @@ static int32_t parse_layer_object(DwgBitReader& r, EntitySink& scene,
     }
     if (linetype_index >= 0) {
         layer.linetype_index = linetype_index;
+    }
+    if (plotstyle_index >= 0) {
+        layer.plot_style_index = plotstyle_index;
     }
     scene.update_layer(layer_idx, layer);
     return layer_idx;
@@ -483,6 +520,12 @@ static int32_t parse_ltype_object(DwgBitReader& r, EntitySink& scene,
         dash_lengths.push_back(static_cast<float>(r.read_bd()));
     }
 
+    // Alignment byte: 'L'=left, 'C'=center, 'R'=right, 'F'=fit, 0=none
+    int alignment = 0;
+    if (!r.has_error() && r.bit_offset() < main_data_bits) {
+        alignment = r.read_raw_char();
+    }
+
     // Skip any remaining handles
     while (!r.has_error() && r.bit_offset() < main_data_bits) {
         auto h = r.read_h();
@@ -505,6 +548,9 @@ static int32_t parse_ltype_object(DwgBitReader& r, EntitySink& scene,
     if (!corrupt && !dash_lengths.empty()) {
         lt.pattern.dash_array = std::move(dash_lengths);
     }
+    if (alignment >= 'L' && alignment <= 'F') {
+        lt.pattern.alignment = alignment;
+    }
 
     return scene.add_linetype(std::move(lt));
 }
@@ -514,11 +560,13 @@ static int32_t parse_ltype_object(DwgBitReader& r, EntitySink& scene,
 // Fields: [class_version RC] + [flags BL] + [name TU]
 //         + [font_name TU] + [bigfont_name TU]
 //         + [height BD] + [width BD] + [oblique BD] + [flags2 BL]
+//         + [plotstyle handle H]
 // ============================================================
-static void parse_style_object(DwgBitReader& r, EntitySink& scene,
+static int32_t parse_style_object(DwgBitReader& r, EntitySink& scene,
                                 DwgVersion version,
                                 const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
-                                size_t main_data_bits, size_t entity_bits) {
+                                size_t main_data_bits, size_t entity_bits,
+                                std::unordered_map<uint64_t, int32_t>* /*plotstyle_handle_to_index*/) {
     if (version >= DwgVersion::R2010) {
         (void)r.read_raw_char();  // class_version (RC)
     }
@@ -533,23 +581,37 @@ static void parse_style_object(DwgBitReader& r, EntitySink& scene,
     double height = r.read_bd();
     double width = r.read_bd();
     double oblique = r.read_bd();
-    (void)oblique;
-    (void)r.read_bl();  // flags2
+    uint32_t flags2 = r.read_bl();  // generation flags: bit0=vertical, bit2=upside-down, bit3=backward
 
-    // Skip remaining handles
-    while (!r.has_error() && r.bit_offset() < main_data_bits) {
-        auto h = r.read_h();
-        if (h.value == 0 && h.code == 0) break;
+    // Scan remaining handles (pre-R2010 inline; R2010+ in handle stream after main_data_bits)
+    // Plotstyle handle resolution for STYLE/DIMSTYLE is handled by the caller
+    // which populates plotstyle_handle_to_index after we return the style index.
+    if (version < DwgVersion::R2010) {
+        while (!r.has_error() && r.bit_offset() < main_data_bits) {
+            auto h = r.read_h();
+            if (h.value == 0 && h.code == 0) break;
+        }
+    } else if (main_data_bits < entity_bits) {
+        DwgBitReader hr = r;
+        hr.set_bit_offset(main_data_bits);
+        hr.set_bit_limit(entity_bits);
+        for (int i = 0; i < 4 && !hr.has_error(); ++i) {
+            auto h = hr.read_h();
+            if (h.value == 0 && h.code == 0) break;
+        }
     }
     (void)main_data_bits; (void)entity_bits;
 
-    if (!reader_ok(r)) return;
+    if (!reader_ok(r)) return -1;
 
     TextStyle style;
     style.name = name;
     style.font_file = font_name;
+    style.bigfont_file = bigfont_name;
     style.fixed_height = static_cast<float>(height);
     style.width_factor = static_cast<float>(width);
+    style.oblique_angle = static_cast<float>(oblique);
+    style.generation_flags = static_cast<int32_t>(flags2);
     // SHX detection: either bigfont is present or font_file ends with .shx
     {
         std::string fl = font_name;
@@ -558,32 +620,185 @@ static void parse_style_object(DwgBitReader& r, EntitySink& scene,
             (fl.size() > 4 && fl.compare(fl.size() - 4, 4, ".shx") == 0);
     }
 
-    scene.add_text_style(std::move(style));
+    // Resolve SHX font from file paths — populates shx_font_index / bigfont_index
+    if (style.is_shx) {
+        ShxFontCache::instance().resolve_text_style(style, "");
+    }
+
+    return scene.add_text_style(std::move(style));
 }
 
 // ============================================================
 // DIMSTYLE (type 69) table object
-// Complex structure: skip most fields, create placeholder.
+// Best-effort parser: reads name and critical dimension variables.
+// Field order follows the agent spec (dwg-infra.md); misalignment
+// is tolerated — we sanity-check each value and skip on error.
 // ============================================================
-static void parse_dimstyle_object(DwgBitReader& r, EntitySink& scene,
+static int32_t parse_dimstyle_object(DwgBitReader& r, EntitySink& scene,
                                    DwgVersion version,
                                    const uint8_t* /*obj_data*/, size_t /*obj_bytes*/,
-                                   size_t main_data_bits, size_t entity_bits) {
+                                   size_t main_data_bits, size_t entity_bits,
+                                   std::unordered_map<uint64_t, int32_t>* /*plotstyle_handle_to_index*/) {
+    (void)entity_bits;
     if (version >= DwgVersion::R2010) {
         (void)r.read_raw_char();  // class_version (RC)
     }
 
-    // DIMSTYLE is very complex — skip all fields
+    TextStyle dimstyle;
+    dimstyle.is_dimstyle = true;
+
+    // Strings (R2007+ read from string stream; older read inline TV)
+    dimstyle.name = r.read_t();
+    std::string dimpost  = r.read_t();
+    std::string dimapost = r.read_t();
+    (void)dimpost;
+    (void)dimapost;
+
+    // Boolean flags
+    bool dimtol = r.read_b();
+    bool dimlim = r.read_b();
+    (void)dimtol;
+    (void)dimlim;
+
+    // Helper: read BD with bounds checking
+    auto read_safe_bd = [&](float min_val, float max_val) -> float {
+        if (r.has_error() || r.bit_offset() >= main_data_bits) {
+            return 0.0f;
+        }
+        double v = r.read_bd();
+        if (r.has_error() || !std::isfinite(v) || static_cast<float>(v) < min_val || static_cast<float>(v) > max_val) {
+            return 0.0f;
+        }
+        return static_cast<float>(v);
+    };
+
+    // Tolerance / rounding (read to consume bits, not stored yet)
+    (void)read_safe_bd(-1e6f, 1e6f); // dimtm
+    (void)read_safe_bd(-1e6f, 1e6f); // dimtp
+    (void)read_safe_bd(0.0f, 1e6f);  // dimrnd
+    (void)read_safe_bd(0.0f, 1e6f);  // dimalt (alternate scale factor)
+
+    // Zero-suppression BS fields (consume bits)
+    if (!r.has_error() && r.bit_offset() < main_data_bits) (void)r.read_bs(); // dimazin
+    if (!r.has_error() && r.bit_offset() < main_data_bits) (void)r.read_bs(); // dimazin_alt
+
+    // Critical control fields (mapped to TextStyle DIMSTYLE members)
+    float dimasz = read_safe_bd(0.0f, 1e6f);
+    if (dimasz > 0.0f) dimstyle.arrow_size = dimasz;
+
+    (void)read_safe_bd(0.0f, 1e6f); // dimcen (not stored in TextStyle)
+
+    float dimexe = read_safe_bd(0.0f, 1e6f);
+    if (dimexe >= 0.0f) dimstyle.ext_line_extension = dimexe;
+
+    float dimexo = read_safe_bd(0.0f, 1e6f);
+    if (dimexo >= 0.0f) dimstyle.ext_line_offset = dimexo;
+
+    float dimgap = read_safe_bd(-1e6f, 1e6f);
+    (void)dimgap; // not stored in TextStyle yet
+
+    float dimlfac = read_safe_bd(0.0f, 1e6f);
+    if (dimlfac > 0.0f) dimstyle.linear_scale_factor = dimlfac;
+
+    float dimscale = read_safe_bd(0.0f, 1e6f);
+    if (dimscale > 0.0f) dimstyle.dim_scale = dimscale;
+
+    float dimtxt = read_safe_bd(0.0f, 1e6f);
+    if (dimtxt > 0.0f) dimstyle.dim_text_height = dimtxt;
+
+    // Skip arrow-block handles (dimblk, dimblk1, dimblk2).
+    // Pre-R2010: inline in main data; R2010+: in handle stream.
+    for (int i = 0; i < 3 && !r.has_error() && r.bit_offset() < main_data_bits; ++i) {
+        auto h = r.read_h();
+        if (h.value == 0 && h.code == 0) break;
+    }
+
+    auto read_safe_bs = [&]() -> int32_t {
+        if (r.has_error() || r.bit_offset() >= main_data_bits) return -1;
+        uint16_t v = r.read_bs();
+        if (r.has_error()) return -1;
+        return static_cast<int32_t>(v);
+    };
+
+    (void)read_safe_bs(); // dimadec
+    int32_t dimclrd_idx = read_safe_bs();
+    int32_t dimclre_idx = read_safe_bs();
+    int32_t dimclrt_idx = read_safe_bs();
+    if (dimclrd_idx >= 0 && dimclrd_idx <= 256) {
+        dimstyle.dim_clrd = Color::from_aci(dimclrd_idx);
+    }
+    if (dimclre_idx >= 0 && dimclre_idx <= 256) {
+        dimstyle.dim_clre = Color::from_aci(dimclre_idx);
+    }
+    if (dimclrt_idx >= 0 && dimclrt_idx <= 256) {
+        dimstyle.dim_clrt = Color::from_aci(dimclrt_idx);
+    }
+
+    int32_t dimdec = read_safe_bs();
+    if (dimdec >= 0) dimstyle.dim_precision = dimdec;
+
+    (void)read_safe_bs(); // dimfit
+    (void)read_safe_bs(); // dimjust
+    (void)read_safe_bs(); // dimfrac
+
+    int32_t dimunit = read_safe_bs();
+    if (dimunit >= 0) dimstyle.dim_unit = dimunit;
+
+    (void)read_safe_bs(); // dimupt
+    (void)read_safe_bs(); // dimtzin
+    (void)read_safe_bs(); // dimazin
+
+    int32_t dimse1 = read_safe_bs();
+    if (dimse1 >= 0) dimstyle.dim_se1 = (dimse1 != 0);
+
+    int32_t dimse2 = read_safe_bs();
+    if (dimse2 >= 0) dimstyle.dim_se2 = (dimse2 != 0);
+
+    (void)read_safe_bs(); // dimsoxd
+
+    int32_t dimtad = read_safe_bs();
+    if (dimtad >= 0) dimstyle.dim_tad = dimtad;
+
+    (void)read_safe_bs(); // dimtih
+    (void)read_safe_bs(); // dimtoh
+
+    int32_t dimtofl = read_safe_bs();
+    if (dimtofl >= 0) dimstyle.dim_tofl = (dimtofl != 0);
+
+    // Skip any remaining main-data fields
     while (!r.has_error() && r.bit_offset() < main_data_bits) {
         (void)r.read_bl();
     }
-    (void)main_data_bits; (void)entity_bits;
 
-    if (!reader_ok(r)) return;
+    if (!reader_ok(r)) return -1;
 
-    TextStyle dimstyle;
-    dimstyle.name = "[DIMSTYLE]";
-    scene.add_text_style(std::move(dimstyle));
+    // Apply deterministic defaults for missing critical fields
+    if (dimstyle.dim_scale <= 0.0f) dimstyle.dim_scale = 1.0f;
+    if (dimstyle.dim_text_height <= 0.0f) dimstyle.dim_text_height = 2.5f;
+    if (dimstyle.arrow_size <= 0.0f) dimstyle.arrow_size = 0.18f * dimstyle.dim_scale;
+    if (dimstyle.ext_line_extension < 0.0f) dimstyle.ext_line_extension = 1.25f;
+    if (dimstyle.ext_line_offset < 0.0f) dimstyle.ext_line_offset = 0.625f;
+    if (dimstyle.linear_scale_factor <= 0.0f) dimstyle.linear_scale_factor = 1.0f;
+
+    return scene.add_text_style(std::move(dimstyle));
+}
+
+// ============================================================
+// Stub table object parsers — read name and skip remaining fields.
+// These objects are not yet stored in SceneGraph, but parsing
+// them avoids bit drift and provides diagnostics.
+// ============================================================
+static void parse_stub_table_object(DwgBitReader& r, DwgVersion version,
+                                    size_t main_data_bits, const char* type_name) {
+    (void)type_name;
+    if (version >= DwgVersion::R2010) {
+        (void)r.read_raw_char();  // class_version
+    }
+    (void)r.read_t();  // name
+    // Skip remaining main-data fields
+    while (!r.has_error() && r.bit_offset() < main_data_bits) {
+        (void)r.read_bl();
+    }
 }
 
 static int32_t parse_vport_object(DwgBitReader& r, EntitySink& scene,
@@ -696,7 +911,8 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               size_t entity_bits, size_t main_data_bits,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index,
-                              std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index) {
+                              std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index,
+                              std::unordered_map<uint64_t, int32_t>* plotstyle_handle_to_index) {
     const uint8_t* obj_data = reader.data();
     size_t obj_bytes = reader.data_size();
 
@@ -704,7 +920,8 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
         case 51:  // LAYER
             {
                 int32_t layer_idx = parse_layer_object(reader, scene, version, obj_data, obj_bytes,
-                                   main_data_bits, entity_bits, linetype_handle_to_index);
+                                   main_data_bits, entity_bits, linetype_handle_to_index,
+                                   plotstyle_handle_to_index);
                 if (layer_handle_to_index && layer_idx >= 0) {
                     (*layer_handle_to_index)[handle] = layer_idx;
                 }
@@ -721,16 +938,41 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                 return linetype_idx;
             }
         case 53:  // STYLE
-            parse_style_object(reader, scene, version, obj_data, obj_bytes,
-                               main_data_bits, entity_bits);
-            break;
+            {
+                int32_t style_idx = parse_style_object(reader, scene, version, obj_data, obj_bytes,
+                               main_data_bits, entity_bits, plotstyle_handle_to_index);
+                if (plotstyle_handle_to_index && style_idx >= 0) {
+                    (*plotstyle_handle_to_index)[handle] = style_idx;
+                }
+                return style_idx;
+            }
         case 69:  // DIMSTYLE
-            parse_dimstyle_object(reader, scene, version, obj_data, obj_bytes,
-                                  main_data_bits, entity_bits);
-            break;
+            {
+                int32_t dimstyle_idx = parse_dimstyle_object(reader, scene, version, obj_data, obj_bytes,
+                                  main_data_bits, entity_bits, plotstyle_handle_to_index);
+                if (plotstyle_handle_to_index && dimstyle_idx >= 0) {
+                    (*plotstyle_handle_to_index)[handle] = dimstyle_idx;
+                }
+                return dimstyle_idx;
+            }
         case 65:  // VPORT
             return parse_vport_object(reader, scene, version, obj_data, obj_bytes,
                                       main_data_bits, entity_bits);
+        case 62:  // GROUP
+            parse_stub_table_object(reader, version, main_data_bits, "GROUP");
+            break;
+        case 64:  // MLINESTYLE
+            parse_stub_table_object(reader, version, main_data_bits, "MLINESTYLE");
+            break;
+        case 66:  // UCS
+            parse_stub_table_object(reader, version, main_data_bits, "UCS");
+            break;
+        case 67:  // VIEW
+            parse_stub_table_object(reader, version, main_data_bits, "VIEW");
+            break;
+        case 68:  // APPID
+            parse_stub_table_object(reader, version, main_data_bits, "APPID");
+            break;
         default:
             break;
     }
@@ -740,11 +982,39 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
 // ============================================================
 // Public entry point — dispatches to type-specific parsers
 // ============================================================
+
+static void apply_entity_semantics(EntityVariant& entity) {
+    switch (entity.header.type) {
+        case EntityType::Dimension: case EntityType::Leader:
+        case EntityType::Tolerance: case EntityType::Multileader:
+            entity.header.semantic = EntitySemantic::Annotation;
+            entity.header.modifiers |= kModAlwaysDraw;
+            break;
+        case EntityType::Text: case EntityType::MText:
+            entity.header.semantic = EntitySemantic::Text;
+            entity.header.modifiers |= kModScreenOriented;
+            break;
+        case EntityType::Hatch: case EntityType::Solid:
+            entity.header.semantic = EntitySemantic::Fill;
+            break;
+        case EntityType::Insert: case EntityType::Viewport:
+            entity.header.semantic = EntitySemantic::Structure;
+            break;
+        case EntityType::Point: case EntityType::Ray: case EntityType::XLine:
+            entity.header.semantic = EntitySemantic::Helper;
+            break;
+        default:
+            entity.header.semantic = EntitySemantic::Geometry;
+            break;
+    }
+}
+
 void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
                        const EntityHeader& header, EntitySink& scene,
                        DwgVersion version,
-                       const char* class_name) {
-    g_dispatch_counts[obj_type]++;
+                       const char* class_name,
+                       ParseObjectsContext& ctx) {
+    g_dispatch_counts[obj_type]++;  // DEPRECATED global - TODO remove
     size_t before = scene.entities().size();
 
     // Class-based entity dispatch (type >= 500, identified by class name)
@@ -764,7 +1034,7 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
         }
         if (std::strstr(class_name, "DIMENSION") != nullptr ||
             std::strstr(class_name, "AcDbDimension") != nullptr) {
-            parse_dimension(reader, header, scene, version);
+            parse_dimension(reader, header, scene, version, obj_type);
             bool success = (scene.entities().size() > before);
             if (success) g_success_counts[obj_type]++;
             return;
@@ -775,33 +1045,28 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
 
     switch (obj_type) {
         case 1:   parse_text(reader, header, scene, version);         break;  // TEXT
-        case 2:   parse_block(reader, header, scene, version);        break;  // ATTRIB (skip)
-        case 3:   parse_block(reader, header, scene, version);        break;  // ATTDEF (skip)
+        case 2:   // ATTRIB — handled inline in annotation parser, skip entity output
+        case 3:   // ATTDEF — template definition, skip entity output
+            break;
         case 4:   parse_block(reader, header, scene, version);        break;  // BLOCK
         case 5:   parse_endblk(reader, header, scene, version);       break;  // ENDBLK
-        case 6:   parse_seqend(reader, header, scene);                 break;  // SEQEND
+        case 6:   parse_seqend(reader, header, scene, ctx.pending_polyline2d); break;  // SEQEND
         case 7:   parse_insert(reader, header, scene, version, false); break;  // INSERT
         case 8:   parse_insert(reader, header, scene, version, true);  break;  // MINSERT
         case 17:  parse_arc(reader, header, scene, version);          break;  // ARC
         case 18:  parse_circle(reader, header, scene, version);       break;  // CIRCLE
         case 19:  parse_line(reader, header, scene, version);         break;  // LINE
-        case 10:  parse_vertex_2d(reader, header, scene, version);   break;  // VERTEX_2D
-        case 15:  parse_polyline_2d(reader, header, scene, version); break;  // POLYLINE_2D
-        case 20:  // DIMENSION_ORDINATE
-        case 21:  // DIMENSION_LINEAR
-        case 22:  // DIMENSION_ALIGNED
-        case 23:  // DIMENSION_ANG3PT
-        case 24:  // DIMENSION_ANG2LN
-        case 25:  // DIMENSION_RADIUS
-        case 26:  // DIMENSION_DIAMETER
-            parse_dimension(reader, header, scene, version);
-            break;
+        case 10:  parse_vertex_2d(reader, header, scene, version, ctx.pending_polyline2d); break;
+        case 15:  parse_polyline_2d(reader, header, scene, version, ctx.pending_polyline2d); break;
+        case 20: case 21: case 22: case 23: case 24: case 25: case 26:
+            parse_dimension(reader, header, scene, version, obj_type); break;
         case 27:  parse_point(reader, header, scene, version);        break;  // POINT
         case 28:  parse_3dface(reader, header, scene, version);      break;  // 3DFACE
         case 29:  parse_polyline_pface(reader, header, scene, version); break;  // POLYLINE_PFACE
         case 30:  parse_polyline_mesh(reader, header, scene);         break;  // POLYLINE_MESH
         case 31:  parse_solid(reader, header, scene, version);        break;  // SOLID
         case 32:  parse_solid(reader, header, scene, version);        break;  // TRACE
+        case 33:  parse_wipeout(reader, header, scene, version);       break;  // WIPEOUT
         case 34:  parse_viewport(reader, header, scene, version);       break;  // VIEWPORT
         case 35:  parse_ellipse(reader, header, scene, version);      break;  // ELLIPSE
         case 36:  parse_spline(reader, header, scene, version);       break;  // SPLINE
@@ -826,10 +1091,14 @@ void parse_dwg_entity(DwgBitReader& reader, uint32_t obj_type,
         success = !reader.has_error();
     }
     if (success) {
-        g_success_counts[obj_type]++;
+        g_success_counts[obj_type]++;  // DEPRECATED global
     } else {
-        // Track failures for non-special types
-        g_success_counts[obj_type + 10000]++;
+        g_success_counts[obj_type + 10000]++;  // DEPRECATED global
+    }
+
+    // Apply EntitySemantic and EntityModifier
+    for (size_t eidx = before; eidx < scene.entities().size(); ++eidx) {
+        apply_entity_semantics(scene.entities()[eidx]);
     }
 }
 
