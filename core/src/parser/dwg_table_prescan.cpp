@@ -93,6 +93,7 @@ void DwgParser::prescan_table_objects(
                                        edb * 8, mdb, handle,
                                        &m_layer_handle_to_index,
                                        &m_linetype_handle_to_index,
+                                       &m_text_style_handle_to_index,
                                        &m_plotstyle_handle_to_index);
             }
         }

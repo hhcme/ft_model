@@ -183,6 +183,29 @@ void DwgParser::decode_role_handles(
                 }
             }
         }
+
+        // TEXT/MTEXT text_style resolution: look for style handle in entity_specific
+        if ((obj_type == 1 || obj_type == 44) && !roles.entity_specific.empty()) {
+            auto& entities = scene.entities();
+            for (size_t eidx = entities_before; eidx < entities.size(); ++eidx) {
+                auto& ent = entities[eidx];
+                if (ent.type() != EntityType::Text && ent.type() != EntityType::MText) continue;
+                TextEntity* txt = nullptr;
+                if (ent.type() == EntityType::Text) {
+                    txt = std::get_if<6>(&ent.data);
+                } else {
+                    txt = std::get_if<7>(&ent.data);
+                }
+                if (!txt || txt->text_style_index > 0) continue;
+                for (uint64_t spec_handle : roles.entity_specific) {
+                    auto ts_it = m_text_style_handle_to_index.find(spec_handle);
+                    if (ts_it != m_text_style_handle_to_index.end()) {
+                        txt->text_style_index = ts_it->second;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     if (obj_type == 7 || obj_type == 8) {

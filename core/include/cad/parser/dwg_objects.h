@@ -45,6 +45,7 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index = nullptr,
                               std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index = nullptr,
+                              std::unordered_map<uint64_t, int32_t>* text_style_handle_to_index = nullptr,
                               std::unordered_map<uint64_t, int32_t>* plotstyle_handle_to_index = nullptr);
 
 // Reset per-file DWG entity assembly state.

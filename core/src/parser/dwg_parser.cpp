@@ -845,6 +845,7 @@ Result DwgParser::parse_objects(EntitySink& scene)
                                        handle,
                                        &m_layer_handle_to_index,
                                        &m_linetype_handle_to_index,
+                                       &m_text_style_handle_to_index,
                                        &m_plotstyle_handle_to_index);
             }
             ctx.non_graphic_count++;

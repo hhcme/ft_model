@@ -912,6 +912,7 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                               uint64_t handle,
                               std::unordered_map<uint64_t, int32_t>* layer_handle_to_index,
                               std::unordered_map<uint64_t, int32_t>* linetype_handle_to_index,
+                              std::unordered_map<uint64_t, int32_t>* text_style_handle_to_index,
                               std::unordered_map<uint64_t, int32_t>* plotstyle_handle_to_index) {
     const uint8_t* obj_data = reader.data();
     size_t obj_bytes = reader.data_size();
@@ -943,6 +944,9 @@ int32_t parse_dwg_table_object(DwgBitReader& reader, uint32_t obj_type,
                                main_data_bits, entity_bits, plotstyle_handle_to_index);
                 if (plotstyle_handle_to_index && style_idx >= 0) {
                     (*plotstyle_handle_to_index)[handle] = style_idx;
+                }
+                if (text_style_handle_to_index && style_idx >= 0) {
+                    (*text_style_handle_to_index)[handle] = style_idx;
                 }
                 return style_idx;
             }
