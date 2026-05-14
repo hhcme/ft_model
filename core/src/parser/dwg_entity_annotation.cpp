@@ -312,6 +312,8 @@ void parse_dimension(DwgBitReader& r, const EntityHeader& hdr, EntitySink& scene
     dim.lspace_factor    = safe_float(lspace_factor);
     dim.flip_arrow1      = flip_arrow1;
     dim.flip_arrow2      = flip_arrow2;
+    dim.ins_scale        = {safe_float(isx), safe_float(isy), safe_float(isz)};
+    dim.ins_rotation     = safe_float(ins_rot);
 
     if (dim.text.empty() && std::isfinite(act_measurement) && act_measurement != 0.0) {
         char buf[32]; snprintf(buf, sizeof(buf), "%.2f", act_measurement); dim.text = buf;
