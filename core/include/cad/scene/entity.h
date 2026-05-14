@@ -97,8 +97,11 @@ struct EntityHeader {
     uint64_t block_header_handle = 0;
     uint32_t validation_flags = 0;
     bool is_proxy_fallback = false;
-    EntitySemantic semantic = EntitySemantic::Geometry;  // functional classification
-    uint16_t modifiers = kModNone;                        // behavior flags
+    bool eed_present = false;             // Extended Entity Data attached
+    bool has_reactors = false;            // Reactors present in handle stream
+    bool has_extension_dict = false;      // Extension dictionary present
+    EntitySemantic semantic = EntitySemantic::Geometry;
+    uint16_t modifiers = kModNone;
 };
 
 // ============================================================
@@ -126,6 +129,7 @@ struct ArcEntity {
     float radius = 0.0f;
     float start_angle = 0.0f;          // radians
     float end_angle = 0.0f;            // radians
+    Vec3 normal = Vec3::unit_z();      // OCS extrusion normal
 };
 
 struct PolylineEntity {
@@ -144,18 +148,28 @@ struct SplineEntity {
     std::vector<Vec3> fit_points;
     std::vector<float> knots;
     std::vector<float> weights;
+    Vec3 beg_tangent = {0, 0, 0};
+    Vec3 end_tangent = {0, 0, 0};
+    float fit_tolerance = 0.0f;
 };
 
 struct TextEntity {
     Vec3 insertion_point;
+    Vec3 alignment_point;              // TEXT alignment point (second alignment pt), zero when unused
     float height = 0.0f;
     float rotation = 0.0f;            // radians
     float width_factor = 1.0f;
     float rect_width = 0.0f;          // MTEXT reference rectangle width, 0 when absent
     float rect_height = 0.0f;         // MTEXT reference rectangle height, 0 when absent
+    float oblique_angle = 0.0f;       // italic/slanted text angle (radians)
     std::string text;
     int32_t text_style_index = 0;
     int32_t alignment = 0;            // 0=left, 1=center, 2=right, etc.
+    int32_t v_align = 0;              // vertical alignment
+    int32_t generation = 0;           // text mirror flags
+    int32_t flow_dir = 0;             // MTEXT flow direction
+    int32_t linespace_style = 0;      // MTEXT line spacing style
+    float linespace_factor = 1.0f;    // MTEXT line spacing factor
 };
 
 struct HatchEntity {
@@ -163,13 +177,28 @@ struct HatchEntity {
     float pattern_scale = 1.0f;
     float pattern_angle = 0.0f;
     bool is_solid = false;
+    bool is_gradient = false;
+    float gradient_angle = 0.0f;
+    float gradient_shift = 0.0f;
+    bool single_color_gradient = false;
+    float gradient_tint = 0.0f;
+    std::vector<Color> gradient_colors;
+    std::string gradient_name;
 
     struct BoundaryLoop {
         std::vector<Vec3> vertices;
         bool is_closed = true;
     };
 
+    struct PatternDefLine {
+        float angle = 0.0f;
+        Vec2 origin = {0.0f, 0.0f};
+        Vec2 delta = {0.0f, 0.0f};
+        std::vector<float> dash_lengths;
+    };
+
     std::vector<BoundaryLoop> loops;
+    std::vector<PatternDefLine> pattern_lines;
 };
 
 struct InsertEntity {
@@ -185,16 +214,28 @@ struct InsertEntity {
 };
 
 struct DimensionEntity {
-    Vec3 definition_point;
-    Vec3 text_midpoint;
+    Vec3 definition_point;            // group 10/20/30
+    Vec3 text_midpoint;               // group 11/21/31
+    Vec3 ext1_start;                  // group 13/23/33
+    Vec3 ext2_start;                  // group 14/24/34
+    Vec3 extra_pt;                    // angular center / radius arc pt
+    Vec3 extra_pt2;                   // ANG2LN second extension line end
     std::string text;
     int32_t dimension_type = 0;
-    float rotation = 0.0f;            // radians
+    float rotation = 0.0f;            // text rotation
+    float measured_value = 0.0f;
+    float horiz_dir = 0.0f;
+    float lspace_factor = 1.0f;
+    int32_t attachment = 0;
+    int32_t lspace_style = 0;
+    bool flip_arrow1 = false;
+    bool flip_arrow2 = false;
 };
 
 struct SolidEntity {
-    Vec3 corners[4];                  // up to 4 vertices; unused corners default to third corner
-    int32_t corner_count = 3;         // 3 or 4
+    Vec3 corners[4];
+    int32_t corner_count = 3;
+    uint8_t edge_visibility = 0x0F;   // 3DFACE per-edge visibility
 };
 
 struct PointEntity {
@@ -226,12 +267,15 @@ struct LeaderEntity {
 
 struct MultileaderEntity {
     Vec3 insertion_point;
+    Vec3 text_location;              // text position for MText content
+    Vec3 text_direction;             // text direction vector for MText content
     std::string text;                  // text content if content_type == text
     float text_height = 0.0f;
     float arrowhead_size = 0.0f;
     bool has_landing = false;
     bool has_dogleg = false;
     int32_t leader_type = 0;           // 0=straight, 1=spline
+    int32_t text_style_index = 0;      // resolved text style index
     // Leader line vertices stored in scene vertex buffer.
     // Each leader line is a contiguous run of vertices, terminated by
     // a NaN sentinel in the x-coordinate (or just end-of-range).

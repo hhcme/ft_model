@@ -27,6 +27,10 @@ uint8_t DwgBitReader::read_bit()
     }
     size_t byte_idx = m_bit_pos >> 3;
     size_t bit_idx = 7 - (m_bit_pos & 7);  // MSB first within each byte
+    if (byte_idx >= m_size) {
+        m_error = true;
+        return 0;
+    }
     uint8_t val = (m_data[byte_idx] >> bit_idx) & 1;
     ++m_bit_pos;
     return val;
